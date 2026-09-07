@@ -27,6 +27,9 @@ def save_work_log(
     zone_number, block_number, container_index,
     serial_number="", fault_description="", work_performed="",
     status="Fixed", sap_ticket="", comments="",
+    root_cause="", engineer="", start_time="", end_time="",
+    affects_availability=0, unavailability_id=None,
+    availability_impact="none", exclusion_id=None,
 ) -> int:
     conn = get_connection()
     try:
@@ -36,15 +39,87 @@ def save_work_log(
                 project_id, container_id, date,
                 zone_number, block_number, container_index,
                 serial_number, fault_description, work_performed,
-                status, sap_ticket, comments
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                status, sap_ticket, comments,
+                root_cause, engineer, start_time, end_time,
+                affects_availability, unavailability_id,
+                availability_impact, exclusion_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (project_id, container_id, date,
               zone_number, block_number, container_index,
               serial_number, fault_description, work_performed,
-              status, sap_ticket, comments))
+              status, sap_ticket, comments,
+              root_cause, engineer, start_time, end_time,
+              1 if affects_availability else 0, unavailability_id,
+              availability_impact, exclusion_id))
         entry_id = cur.lastrowid
         conn.commit()
         return entry_id
+    finally:
+        conn.close()
+
+
+# ── Work-report materials (parts consumed) ──────────────────────────────────
+
+def add_work_log_material(work_log_id, material_number, description="",
+                          quantity=1.0, unit="", warehouse_id=None,
+                          tx_id=None) -> int:
+    conn = get_connection()
+    try:
+        cur = conn.execute("""
+            INSERT INTO work_log_materials
+                (work_log_id, material_number, description, quantity, unit,
+                 warehouse_id, tx_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (work_log_id, material_number, description, float(quantity),
+              unit, warehouse_id, tx_id))
+        mid = cur.lastrowid
+        conn.commit()
+        return mid
+    finally:
+        conn.close()
+
+
+def get_work_log_materials(work_log_id) -> List[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM work_log_materials WHERE work_log_id=? ORDER BY id",
+            (work_log_id,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def set_work_log_unavailability(work_log_id, unavailability_id):
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE work_logs SET unavailability_id=?, affects_availability=1, "
+            "availability_impact='counts' WHERE id=?",
+            (unavailability_id, work_log_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_work_log_exclusion(work_log_id, exclusion_id):
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE work_logs SET exclusion_id=?, affects_availability=1, "
+            "availability_impact='excluded' WHERE id=?",
+            (exclusion_id, work_log_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_work_log(entry_id: int) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM work_logs WHERE id=?",
+                           (entry_id,)).fetchone()
+        return dict(row) if row else None
     finally:
         conn.close()
 
@@ -63,7 +138,12 @@ def get_work_logs(
                 wl.container_index AS container_num,
                 c.container_type, wl.serial_number,
                 wl.fault_description, wl.work_performed,
-                wl.status, wl.sap_ticket, wl.comments, wl.created_at
+                wl.status, wl.sap_ticket, wl.comments, wl.created_at,
+                wl.root_cause, wl.engineer, wl.start_time, wl.end_time,
+                wl.affects_availability, wl.unavailability_id,
+                wl.container_id,
+                (SELECT COUNT(*) FROM work_log_materials m
+                    WHERE m.work_log_id = wl.id) AS material_count
             FROM work_logs wl
             JOIN projects   p ON wl.project_id   = p.id
             JOIN containers c ON wl.container_id = c.id
@@ -85,7 +165,53 @@ def get_work_logs(
         conn.close()
 
 
+def get_work_logs_for_month(project_id: int, year: int, month: int) -> List[dict]:
+    """All work reports for a project within one calendar month — used to
+    auto-populate the monthly report's corrective-maintenance section."""
+    import calendar
+    last = calendar.monthrange(int(year), int(month))[1]
+    start = f"{int(year):04d}-{int(month):02d}-01"
+    end   = f"{int(year):04d}-{int(month):02d}-{last:02d}"
+    return get_work_logs(project_id=project_id, date_from=start, date_to=end)
+
+
 def delete_work_log(entry_id: int):
+    """Delete a work log and reverse its side effects: restore consumed stock
+    (matching IN transaction) and remove the linked downtime event so the
+    monthly report no longer counts it."""
+    row = get_work_log(entry_id)
+    if row:
+        # reverse each consumed material with an IN transaction
+        from datetime import date as _date
+        try:
+            from services.stock_service import record_transaction
+            for m in get_work_log_materials(entry_id):
+                if m.get("warehouse_id") and (m.get("quantity") or 0) > 0:
+                    record_transaction(
+                        warehouse_id=m["warehouse_id"],
+                        material_number=m["material_number"],
+                        transaction_type="IN",
+                        quantity=float(m["quantity"]),
+                        transaction_date=str(_date.today()),
+                        project_id=row.get("project_id"),
+                        reference=f"WL-{entry_id} reversal",
+                        notes="Work log deleted — stock restored",
+                    )
+        except Exception:
+            pass
+        # remove the linked availability event (counts) / exclusion (excluded)
+        if row.get("unavailability_id"):
+            try:
+                from services.availability_service import delete_manual_unavailability
+                delete_manual_unavailability(row["unavailability_id"])
+            except Exception:
+                pass
+        if row.get("exclusion_id"):
+            try:
+                from services.availability_service import delete_exclusion
+                delete_exclusion(row["exclusion_id"])
+            except Exception:
+                pass
     conn = get_connection()
     try:
         conn.execute("DELETE FROM work_logs WHERE id=?", (entry_id,))
@@ -95,7 +221,8 @@ def delete_work_log(entry_id: int):
 
 
 def update_work_log(entry_id: int, **fields):
-    allowed = {"date","fault_description","work_performed","status","sap_ticket","comments"}
+    allowed = {"date","fault_description","work_performed","status","sap_ticket",
+               "comments","root_cause","engineer","start_time","end_time"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return

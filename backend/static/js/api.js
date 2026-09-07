@@ -104,6 +104,23 @@ const API = (() => {
     return _req('GET', '/projects');
   }
 
+  // ── Stock (spare parts) ────────────────────────────────────────────────────
+
+  /** Project stock: [{ project_id, material_number, description, quantity, unit, min_quantity }] */
+  async function getStock(projectId) {
+    return _req('GET', `/stock?project_id=${encodeURIComponent(projectId)}`);
+  }
+
+  /** Record a material write-off. payload = { id, project_id, material_number, description, quantity, block, note, log_date } */
+  async function postWriteoff(payload) {
+    return _req('POST', '/stock/writeoff', payload);
+  }
+
+  /** Record a field event (PM / downtime / exclusion). payload = { id, project_id, kind, blocks, date_from, date_to, hours, exclusion_type, description } */
+  async function postEvent(payload) {
+    return _req('POST', '/events', payload);
+  }
+
   // ── Sync ─────────────────────────────────────────────────────────────────────
 
   /**
@@ -159,5 +176,6 @@ const API = (() => {
   }
 
   // ── Public API ───────────────────────────────────────────────────────────────
-  return { login, logout, ping, getProjects, pullDelta, pushChanges, uploadImage };
+  return { login, logout, ping, getProjects, pullDelta, pushChanges, uploadImage,
+           getStock, postWriteoff, postEvent };
 })();

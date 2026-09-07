@@ -8,7 +8,7 @@ All pages listed clearly. New pages: Checklists, Stock, KPIs, Assets.
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QStackedWidget, QLabel, QPushButton, QSizePolicy,
-    QFrame, QStatusBar
+    QFrame, QStatusBar, QScrollArea
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
@@ -30,6 +30,7 @@ from ui.stock_page        import StockPage
 from ui.kpi_page          import KpiPage
 from ui.asset_page           import AssetPage
 from ui.worklog_entry_form   import FieldLogEntryPage, FieldLogRecordsPage
+from ui.project_launcher      import ProjectLauncher
 from ui.sync_settings_dialog import SyncSettingsDialog
 
 from ui.project_dialog        import ProjectDialog
@@ -60,14 +61,15 @@ PAGE_FIELD_LOG  = 14
 PAGE_FIELD_RECS = 15
 PAGE_PROJECTS   = 16
 PAGE_MONTHLY    = 17
+PAGE_LAUNCHER   = 18
 
 PAGE_NAMES = {
     PAGE_DASHBOARD: "Dashboard",
     PAGE_DAILY_LOG: "Daily Log",
     PAGE_REPORTS:   "Reports",
     PAGE_ANALYTICS: "Analytics",
-    PAGE_WORK_LOG:  "Work Log",
-    PAGE_WORK_RPT:  "Work Report",
+    PAGE_WORK_LOG:  "Work Report",
+    PAGE_WORK_RPT:  "Work Log Report",
     PAGE_LIFECYCLE: "Container Lifecycle",
     PAGE_MATERIALS: "Materials",
     PAGE_SCADA:     "SCADA Report",
@@ -78,9 +80,15 @@ PAGE_NAMES = {
     PAGE_BLOCK_RPT: "Block Performance",
     PAGE_FIELD_LOG: "Field Log",
     PAGE_FIELD_RECS: "Field Log — Records",
-    PAGE_PROJECTS:  "Projects",
+    PAGE_PROJECTS:  "Project Setup",
     PAGE_MONTHLY:   "Monthly Reports",
+    PAGE_LAUNCHER:  "Select Project",
 }
+
+# Pages that can be scoped to the shell's "current project". Each such page
+# exposes set_current_project(project_id); the shell calls it when a project
+# is opened. Pages without the method are simply skipped (still self-scoped).
+PROJECT_SCOPED_PAGES = ("projects_page", "monthly_page")
 
 
 class NavButton(QPushButton):
@@ -105,9 +113,11 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1150, 720)
         self._nav_buttons = []
         self.sync_worker  = None
+        self.current_project_id   = None
+        self.current_project_name = None
         self._ensure_project_warehouses()   # backfill warehouses for old projects
         self._build_ui()
-        self._navigate(PAGE_DASHBOARD)
+        self._show_launcher()                # front door: pick a project first
         self._update_status()
         self._start_sync_worker()
 
@@ -139,33 +149,88 @@ class MainWindow(QMainWindow):
         ll.addWidget(sub)
         sl.addWidget(logo)
 
-        self._add_section(sl, "OVERVIEW")
-        self._add_nav(sl, "📊", "Dashboard",     PAGE_DASHBOARD)
+        # ── Current-project header (hidden until a project is opened) ──────
+        self.proj_header = QWidget()
+        self.proj_header.setObjectName("ProjHeader")
+        self.proj_header.setStyleSheet(
+            "#ProjHeader{background:#142038;border-bottom:1px solid #0F1E30;}")
+        phl = QVBoxLayout(self.proj_header)
+        phl.setContentsMargins(16, 12, 12, 12)
+        phl.setSpacing(4)
+        cap = QLabel("CURRENT PROJECT")
+        cap.setStyleSheet("color:#4A6080;font-size:9px;font-weight:bold;"
+                          "letter-spacing:1px;background:transparent;")
+        phl.addWidget(cap)
+        self.current_proj_lbl = QLabel("—")
+        self.current_proj_lbl.setWordWrap(True)
+        self.current_proj_lbl.setStyleSheet(
+            "color:#FFFFFF;font-size:13px;font-weight:bold;background:transparent;")
+        phl.addWidget(self.current_proj_lbl)
+        switch_btn = QPushButton("⇄  Switch project")
+        switch_btn.setObjectName("SwitchBtn")
+        switch_btn.setCursor(Qt.PointingHandCursor)
+        switch_btn.setStyleSheet(
+            "#SwitchBtn{background:#1E3A5F;color:#8FA3BE;border:none;border-radius:4px;"
+            "padding:5px 8px;font-size:11px;text-align:left;}"
+            "#SwitchBtn:hover{background:#243D5C;color:#FFFFFF;}")
+        switch_btn.clicked.connect(self._switch_project)
+        phl.addWidget(switch_btn)
+        sl.addWidget(self.proj_header)
 
-        self._add_section(sl, "OPERATIONS")
-        self._add_nav(sl, "📋", "Daily Log",     PAGE_DAILY_LOG)
-        self._add_nav(sl, "🔧", "Work Log",      PAGE_WORK_LOG)
-        self._add_nav(sl, "📸", "Field Log",     PAGE_FIELD_LOG)
-        self._add_nav(sl, "🗂", "Field Log — Records", PAGE_FIELD_RECS)
-        self._add_nav(sl, "✅", "Checklists",    PAGE_CHECKLIST)
+        # ── Module navigation, grouped by intent (hidden until project) ────
+        self.module_nav = QWidget()
+        self.module_nav.setStyleSheet("background:#1A2B45;")
+        mn = QVBoxLayout(self.module_nav)
+        mn.setContentsMargins(0, 0, 0, 0)
+        mn.setSpacing(0)
 
-        self._add_section(sl, "ASSETS & STOCK")
-        self._add_nav(sl, "🏷", "Asset Register", PAGE_ASSETS)
-        self._add_nav(sl, "📦", "Spare Parts",    PAGE_STOCK)
-        self._add_nav(sl, "🧾", "Materials",      PAGE_MATERIALS)
+        self._add_section(mn, "OPERATE")
+        self._add_nav(mn, "📊", "Overview",       PAGE_DASHBOARD)
+        self._add_nav(mn, "📋", "Daily Log",      PAGE_DAILY_LOG)
+        self._add_nav(mn, "🔧", "Work Reports",   PAGE_WORK_LOG)
+        self._add_nav(mn, "📸", "Field Log",      PAGE_FIELD_LOG)
+        self._add_nav(mn, "🗂", "Field Records",  PAGE_FIELD_RECS)
 
-        self._add_section(sl, "REPORTS & KPI")
-        self._add_nav(sl, "📈", "Reports",        PAGE_REPORTS)
-        self._add_nav(sl, "📋", "Work Report",    PAGE_WORK_RPT)
-        self._add_nav(sl, "🔍", "Lifecycle",      PAGE_LIFECYCLE)
-        self._add_nav(sl, "📉", "Analytics",      PAGE_ANALYTICS)
-        self._add_nav(sl, "🎯", "KPI Dashboard",  PAGE_KPI)
-        self._add_nav(sl, "📄", "SCADA Report",   PAGE_SCADA)
-        self._add_nav(sl, "🔋", "Block Performance", PAGE_BLOCK_RPT)
-        self._add_nav(sl, "🗂", "Projects",         PAGE_PROJECTS)
-        self._add_nav(sl, "📅", "Monthly Reports",  PAGE_MONTHLY)
+        self._add_section(mn, "MAINTAIN")
+        self._add_nav(mn, "✅", "Checklists / PM", PAGE_CHECKLIST)
+        self._add_nav(mn, "🏷", "Asset Register",  PAGE_ASSETS)
+        self._add_nav(mn, "📦", "Spare Parts",     PAGE_STOCK)
+        self._add_nav(mn, "🧾", "Materials",       PAGE_MATERIALS)
 
-        sl.addStretch()
+        self._add_section(mn, "REPORT")
+        self._add_nav(mn, "📅", "Monthly Reports",   PAGE_MONTHLY)
+        self._add_nav(mn, "🔋", "Block Performance", PAGE_BLOCK_RPT)
+
+        self._add_section(mn, "SETUP")
+        self._add_nav(mn, "⚙", "Project Setup",     PAGE_PROJECTS)
+
+        # Legacy analytics/report pages — still reachable, tucked away and
+        # collapsed by default so the primary nav stays lean.
+        self._add_collapsible(mn, "MORE TOOLS", [
+            ("🔍", "Lifecycle",     PAGE_LIFECYCLE),
+            ("📄", "SCADA Report",  PAGE_SCADA),
+            ("🎯", "KPI Dashboard", PAGE_KPI),
+            ("📉", "Analytics",     PAGE_ANALYTICS),
+            ("📈", "Reports",       PAGE_REPORTS),
+            ("📋", "Work Log Report", PAGE_WORK_RPT),
+        ])
+
+        # Scrollable so the grouped nav never gets clipped on short windows.
+        self.nav_scroll = QScrollArea()
+        self.nav_scroll.setWidgetResizable(True)
+        self.nav_scroll.setFrameShape(QFrame.NoFrame)
+        self.nav_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.nav_scroll.setStyleSheet(
+            "QScrollArea{border:none;background:#1A2B45;}"
+            "QScrollBar:vertical{background:#1A2B45;width:8px;margin:0;}"
+            "QScrollBar::handle:vertical{background:#3A4E6E;border-radius:4px;min-height:28px;}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+        )
+        self.nav_scroll.setWidget(self.module_nav)
+        sl.addWidget(self.nav_scroll, 1)
+
+        self.proj_header.setVisible(False)
+        self.module_nav.setVisible(False)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
@@ -226,6 +291,9 @@ class MainWindow(QMainWindow):
         self.field_log_records    = FieldLogRecordsPage()    # timeline + report
         self.projects_page        = ProjectsPage()           # 16
         self.monthly_page         = MonthlyReportsPage()     # 17
+        self.launcher             = ProjectLauncher()        # 18
+        self.launcher.project_selected.connect(self._open_project)
+        self.launcher.new_project_requested.connect(self._new_project)
         # New entries → refresh the records timeline so it's current when opened
         self.field_log_page.entry_saved.connect(
             lambda: self.field_log_records._load_timeline())
@@ -249,6 +317,7 @@ class MainWindow(QMainWindow):
             self.field_log_records,# 15  (Field Log — records)
             self.projects_page,    # 16  (Projects)
             self.monthly_page,     # 17  (Monthly Reports)
+            self.launcher,         # 18  (Project launcher — front door)
         ]:
             self.stack.addWidget(page)
 
@@ -264,8 +333,8 @@ class MainWindow(QMainWindow):
     def _add_section(self, layout, text):
         lbl = QLabel(text)
         lbl.setStyleSheet(
-            "color:#4A6080;font-size:10px;font-weight:bold;"
-            "padding:12px 16px 4px 20px;background:#1A2B45;letter-spacing:1px;"
+            "color:#8296B3;font-size:10px;font-weight:bold;"
+            "padding:14px 16px 6px 20px;background:transparent;letter-spacing:1.5px;"
         )
         layout.addWidget(lbl)
 
@@ -274,6 +343,35 @@ class MainWindow(QMainWindow):
         btn.clicked.connect(lambda _, idx=page_idx: self._navigate(idx))
         layout.addWidget(btn)
         self._nav_buttons.append((btn, page_idx))
+
+    def _add_collapsible(self, layout, title, items):
+        """A section header that toggles a group of nav buttons (collapsed by
+        default). Keeps legacy pages reachable without cluttering the nav."""
+        header = QPushButton(f"{title}    ▸")
+        header.setObjectName("NavToggle")
+        header.setCursor(Qt.PointingHandCursor)
+        header.setStyleSheet(
+            "#NavToggle{color:#8296B3;font-size:10px;font-weight:bold;letter-spacing:1.5px;"
+            "background:transparent;border:none;text-align:left;padding:14px 16px 6px 20px;}"
+            "#NavToggle:hover{color:#FFFFFF;}"
+        )
+        body = QWidget()
+        body.setStyleSheet("background:#1A2B45;")
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(0)
+        for icon, label, idx in items:
+            self._add_nav(bl, icon, label, idx)
+        body.setVisible(False)
+
+        def _toggle():
+            vis = not body.isVisible()
+            body.setVisible(vis)
+            header.setText(f"{title}    {'▾' if vis else '▸'}")
+
+        header.clicked.connect(_toggle)
+        layout.addWidget(header)
+        layout.addWidget(body)
 
     def _navigate(self, page_idx: int):
         self.stack.setCurrentIndex(page_idx)
@@ -287,6 +385,44 @@ class MainWindow(QMainWindow):
             f"  {PAGE_NAMES.get(page_idx,'')}  |  "
             f"{len(get_all_projects())} project(s)"
         )
+
+    # ── Project shell (launcher ↔ workspace) ────────────────────────────────
+    def _show_launcher(self):
+        """Return to the front door: no project selected, module nav hidden."""
+        self.current_project_id = None
+        self.current_project_name = None
+        self.proj_header.setVisible(False)
+        self.module_nav.setVisible(False)
+        for btn, _idx in self._nav_buttons:
+            btn.set_active(False)
+        self.launcher.reload()
+        self.stack.setCurrentIndex(PAGE_LAUNCHER)
+        self.status_bar.showMessage(
+            f"  Select a project  |  {len(get_all_projects())} project(s)")
+
+    def _open_project(self, pid: int, name: str):
+        """Enter a project's workspace and scope the shell to it."""
+        self.current_project_id = pid
+        self.current_project_name = name
+        self.current_proj_lbl.setText(name or "—")
+        self.proj_header.setVisible(True)
+        self.module_nav.setVisible(True)
+        self._push_current_project()
+        self._navigate(PAGE_DASHBOARD)   # open on Overview
+
+    def _switch_project(self):
+        self._show_launcher()
+
+    def _push_current_project(self):
+        """Tell project-scoped pages which project is now active."""
+        pid = self.current_project_id
+        for attr in PROJECT_SCOPED_PAGES:
+            page = getattr(self, attr, None)
+            if page is not None and hasattr(page, "set_current_project"):
+                try:
+                    page.set_current_project(pid)
+                except Exception:
+                    pass
 
     def _new_project(self):
         dlg = ProjectDialog(self)
@@ -324,6 +460,8 @@ class MainWindow(QMainWindow):
         self.kpi_page.refresh_projects()
         self.asset_page.refresh_projects()
         self.dashboard_page.refresh()
+        self.launcher.reload()
+        self._push_current_project()
         self._update_status()
 
     def _update_status(self):

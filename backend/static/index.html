@@ -10,7 +10,7 @@
   <title>BESS Field Log</title>
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="apple-touch-icon" href="/app/icons/icon-192.png" />
-  <link rel="stylesheet" href="/app/css/app.css" />
+  <link rel="stylesheet" href="/app/css/app.css?v=8" />
 </head>
 <body>
 
@@ -51,6 +51,7 @@
   <header class="topbar">
     <span class="topbar-title">📋 Field Log</span>
     <div class="topbar-actions">
+      <button class="icon-btn" onclick="App.goStock()" title="Spare parts">📦</button>
       <button class="icon-btn" onclick="App.syncNow()" title="Sync">🔄</button>
       <button class="icon-btn" onclick="App.goSettings()" title="Settings">⚙️</button>
     </div>
@@ -69,7 +70,7 @@
 
   <div id="timeline" class="timeline"></div>
 
-  <button class="fab" onclick="App.goCreate()">＋</button>
+  <button class="fab" onclick="App.openAddSheet()">＋</button>
 </div>
 
 <!-- CREATE LOG -->
@@ -229,14 +230,125 @@
   </div>
 </div>
 
+<!-- STOCK — spare parts + write-off -->
+<div id="screen-stock" class="screen">
+  <header class="topbar">
+    <button class="icon-btn" onclick="App.goHome()">‹</button>
+    <span class="topbar-title">📦 Spare Parts</span>
+    <button class="icon-btn" onclick="App.loadStock()" title="Refresh">🔄</button>
+  </header>
+  <div class="screen-body">
+    <div class="form-group">
+      <label>Project</label>
+      <select id="stock-proj" onchange="App.onStockProject()"></select>
+    </div>
+    <div id="stock-note" class="stock-note" style="display:none"></div>
+    <div id="stock-list" class="stock-list"></div>
+  </div>
+</div>
+
+<!-- WRITE-OFF MODAL -->
+<div id="writeoff-modal" class="modal" style="display:none">
+  <div class="modal-card">
+    <h3 id="wo-title">Write off</h3>
+    <p id="wo-avail" class="wo-avail"></p>
+    <div class="form-group">
+      <label>Quantity used *</label>
+      <input id="wo-qty" type="number" min="0" step="any" inputmode="decimal" value="1" />
+    </div>
+    <div class="form-group">
+      <label>Block (optional)</label>
+      <input id="wo-block" type="text" inputmode="numeric" placeholder="e.g. 3" />
+    </div>
+    <div class="form-group">
+      <label>Note (optional)</label>
+      <input id="wo-note" type="text" placeholder="what it was used for" />
+    </div>
+    <div id="wo-error" class="error-msg" style="display:none"></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="App.closeWriteoff()">Cancel</button>
+      <button class="btn btn-primary" onclick="App.confirmWriteoff()">Write off</button>
+    </div>
+  </div>
+</div>
+
+<!-- REPORT EVENT — PM / downtime / exclusion -->
+<div id="screen-event" class="screen">
+  <header class="topbar">
+    <button class="icon-btn" onclick="App.goHome()">‹</button>
+    <span class="topbar-title">Report Event</span>
+    <button id="ev-save" class="topbar-save" onclick="App.saveEvent()">Save</button>
+  </header>
+  <div class="screen-body">
+    <div class="form-group">
+      <label>Project *</label>
+      <select id="ev-proj"></select>
+    </div>
+    <div class="form-group">
+      <label>Type *</label>
+      <select id="ev-kind" onchange="App.onEventKind()">
+        <option value="pm">🧰 Preventive Maintenance (counts as downtime)</option>
+        <option value="counts">⛔ Downtime — our fault (reduces availability)</option>
+        <option value="excluded">➖ Excluded — not our fault (grid, force majeure)</option>
+      </select>
+    </div>
+    <div class="form-group" id="ev-excltype-group" style="display:none">
+      <label>Exclusion reason *</label>
+      <select id="ev-excltype">
+        <option value="Grid Outage">Grid Outage</option>
+        <option value="Force Majeure">Force Majeure</option>
+        <option value="Scheduled Maintenance">Scheduled Maintenance</option>
+        <option value="Major Fault">Major Fault</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>From *</label>
+        <input id="ev-from" type="date" />
+      </div>
+      <div class="form-group">
+        <label>To *</label>
+        <input id="ev-to" type="date" />
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label id="ev-blocks-label">Block(s)</label>
+        <input id="ev-blocks" type="text" inputmode="numeric" placeholder="e.g. 3 or 1,2,3 (empty = all)" />
+      </div>
+      <div class="form-group">
+        <label>Duration (h)</label>
+        <input id="ev-hours" type="number" min="0" step="any" inputmode="decimal" value="0" />
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Description</label>
+      <textarea id="ev-desc" rows="3" placeholder="What was done / what happened…"></textarea>
+    </div>
+    <div id="ev-error" class="error-msg" style="display:none"></div>
+    <p class="ev-hint" id="ev-hint"></p>
+  </div>
+</div>
+
+<!-- ADD SHEET — choose what to create -->
+<div id="add-sheet" class="modal" style="display:none" onclick="if(event.target===this)App.closeAddSheet()">
+  <div class="modal-card">
+    <h3>Add</h3>
+    <button class="btn btn-outline btn-block sheet-btn" onclick="App.closeAddSheet(); App.goCreate();">📋&nbsp; Field Log entry</button>
+    <button class="btn btn-outline btn-block sheet-btn" onclick="App.closeAddSheet(); App.goEvent();">🛠️&nbsp; PM / downtime</button>
+    <button class="btn btn-outline btn-block sheet-btn" onclick="App.closeAddSheet(); App.goStock();">📦&nbsp; Write off material</button>
+    <button class="btn btn-primary btn-block" style="margin-top:10px" onclick="App.closeAddSheet()">Cancel</button>
+  </div>
+</div>
+
 <!-- LIGHTBOX -->
 <div id="lightbox" class="lightbox" onclick="this.style.display='none'">
   <img id="lightbox-img" src="" alt="" />
 </div>
 
-<script src="/app/js/db.js"></script>
-<script src="/app/js/api.js"></script>
-<script src="/app/js/app.js"></script>
+<script src="/app/js/db.js?v=8"></script>
+<script src="/app/js/api.js?v=8"></script>
+<script src="/app/js/app.js?v=8"></script>
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/app/sw.js').catch(() => {});

@@ -6576,3 +6576,18 @@ ed"}
 {"time":"2026-09-03T11:24:45","level":"INFO","logger":"watchfiles.main","msg":"3 changes detected"}
 {"time":"2026-09-03T11:24:45","level":"INFO","logger":"bess.sync","msg":"sync.push.complete"}
 {"time":"2026-09-03T11:24:46","level":"INFO","logger":"watchfiles.main","msg":"3 changes detected"}
+{"time":"2026-09-07T16:54:40","level":"INFO","logger":"bess.main","msg":"startup.admin_created: username='admin' — change the password immediately!"}
+{"time":"2026-09-07T16:54:40","level":"INFO","logger":"bess.main","msg":"startup.ready"}
+{"time":"2026-09-07T16:55:26","level":"INFO","logger":"bess.auth","msg":"auth.login.success"}
+{"time":"2026-09-07T16:57:35","level":"INFO","logger":"bess.auth","msg":"auth.login.success"}
+{"time":"2026-09-07T17:06:33","level":"INFO","logger":"bess.main","msg":"startup.ready"}
+{"time":"2026-09-07T17:06:52","level":"INFO","logger":"bess.auth","msg":"auth.login.success"}
+{"time":"2026-09-07T17:10:31","level":"INFO","logger":"bess.auth","msg":"auth.login.success"}
+{"time":"2026-09-07T17:19:50","level":"INFO","logger":"bess.auth","msg":"auth.login.success"}
+{"time":"2026-09-07T17:21:44","level":"INFO","logger":"bess.auth","msg":"auth.login.success"}
+{"time":"2026-09-07T17:30:51","level":"INFO","logger":"bess.main","msg":"startup.ready"}
+{"time":"2026-09-07T17:32:11","level":"INFO","logger":"bess.auth","msg":"auth.login.success"}
+{"time":"2026-09-07T17:32:42","level":"INFO","logger":"bess.auth","msg":"auth.login.success"}
+{"time":"2026-09-07T17:35:23","level":"INFO","logger":"bess.auth","msg":"auth.login.success"}
+{"time":"2026-09-07T17:40:32","level":"INFO","logger":"bess.main","msg":"startup.ready"}
+{"time":"2026-09-07T17:45:57","level":"INFO","logger":"bess.sync","msg":"sync.push.complete"}

@@ -4,7 +4,7 @@
  */
 const DB = (() => {
   const DB_NAME    = 'bess_field_log';
-  const DB_VERSION = 1;
+  const DB_VERSION = 3;
   let _db = null;
 
   // ── Open / upgrade ──────────────────────────────────────────────────────────
@@ -32,6 +32,18 @@ const DB = (() => {
 
         if (!db.objectStoreNames.contains('meta')) {
           db.createObjectStore('meta', { keyPath: 'key' });
+        }
+
+        // v2: offline queue of material write-offs
+        if (!db.objectStoreNames.contains('writeoffs')) {
+          const wo = db.createObjectStore('writeoffs', { keyPath: 'id' });
+          wo.createIndex('sync_status', 'sync_status', { unique: false });
+        }
+
+        // v3: offline queue of field events (PM / downtime / exclusion)
+        if (!db.objectStoreNames.contains('events')) {
+          const ev = db.createObjectStore('events', { keyPath: 'id' });
+          ev.createIndex('sync_status', 'sync_status', { unique: false });
         }
       };
 
@@ -132,6 +144,56 @@ const DB = (() => {
     });
   }
 
+  // ── Write-offs (offline queue) ───────────────────────────────────────────────
+
+  async function saveWriteoff(wo) {
+    return wrap((await store('writeoffs', 'readwrite')).put(wo));
+  }
+
+  async function getPendingWriteoffs() {
+    const s = await store('writeoffs');
+    return new Promise((res, rej) => {
+      const results = [];
+      const req = s.openCursor();
+      req.onsuccess = e => {
+        const cur = e.target.result;
+        if (!cur) { res(results); return; }
+        if (cur.value.sync_status !== 'synced') results.push(cur.value);
+        cur.continue();
+      };
+      req.onerror = e => rej(e.target.error);
+    });
+  }
+
+  async function deleteWriteoff(id) {
+    return wrap((await store('writeoffs', 'readwrite')).delete(id));
+  }
+
+  // ── Field events (offline queue) ─────────────────────────────────────────────
+
+  async function saveFieldEvent(ev) {
+    return wrap((await store('events', 'readwrite')).put(ev));
+  }
+
+  async function getPendingFieldEvents() {
+    const s = await store('events');
+    return new Promise((res, rej) => {
+      const results = [];
+      const req = s.openCursor();
+      req.onsuccess = e => {
+        const cur = e.target.result;
+        if (!cur) { res(results); return; }
+        if (cur.value.sync_status !== 'synced') results.push(cur.value);
+        cur.continue();
+      };
+      req.onerror = e => rej(e.target.error);
+    });
+  }
+
+  async function deleteFieldEvent(id) {
+    return wrap((await store('events', 'readwrite')).delete(id));
+  }
+
   // ── Meta (cursor, settings) ─────────────────────────────────────────────────
 
   async function getMeta(key, defaultVal = null) {
@@ -149,6 +211,8 @@ const DB = (() => {
     markSynced, deleteEntry,
     saveImage, getImagesForEntry, deleteImage,
     deleteImagesForEntry, getPendingImages,
+    saveWriteoff, getPendingWriteoffs, deleteWriteoff,
+    saveFieldEvent, getPendingFieldEvents, deleteFieldEvent,
     getMeta, setMeta,
   };
 })();

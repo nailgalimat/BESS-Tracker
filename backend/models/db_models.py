@@ -74,6 +74,68 @@ class Project(Base):
     updated_at   = Column(String, default=_now)
 
 
+# ── Stock (spare parts) ─────────────────────────────────────────────────────
+# Mirror of the desktop project-warehouse stock — published by the desktop on
+# each sync so the phone can show what's on the shelf. Write-offs recorded on
+# the phone decrement this mirror and are pulled back by the desktop, which
+# applies them as real OUT stock transactions.
+
+class StockItem(Base):
+    __tablename__ = "stock_items"
+
+    project_id      = Column(Integer, primary_key=True)
+    material_number = Column(String,  primary_key=True)
+    description     = Column(String, default="")
+    quantity        = Column(Float,  default=0)
+    unit            = Column(String, default="")
+    min_quantity    = Column(Float,  default=0)
+    updated_at      = Column(String, default=_now)
+
+
+class StockWriteoff(Base):
+    __tablename__ = "stock_writeoffs"
+
+    id              = Column(String, primary_key=True)   # UUID from client
+    user_id         = Column(String, ForeignKey("users.id", ondelete="CASCADE"),
+                             nullable=False, index=True)
+    project_id      = Column(Integer, nullable=False, index=True)
+    material_number = Column(String,  nullable=False)
+    description     = Column(String,  default="")
+    quantity        = Column(Float,   default=0)
+    block           = Column(String,  default="")
+    note            = Column(String,  default="")
+    log_date        = Column(String,  nullable=False)    # YYYY-MM-DD
+    created_at      = Column(String,  default=_now, nullable=False)
+    updated_at      = Column(String,  default=_now, nullable=False, index=True)
+    version         = Column(Integer, default=1, nullable=False)
+    origin_device   = Column(String,  nullable=True)
+
+
+# ── Field events (PM / downtime / exclusion captured on the phone) ───────────
+# Created on the phone, pulled by the desktop which routes each into the right
+# report table: kind 'pm' → pm_activities; 'counts' → manual_unavailability;
+# 'excluded' → availability_exclusions.
+
+class FieldEvent(Base):
+    __tablename__ = "field_events"
+
+    id             = Column(String, primary_key=True)   # UUID from client
+    user_id        = Column(String, ForeignKey("users.id", ondelete="CASCADE"),
+                            nullable=False, index=True)
+    project_id     = Column(Integer, nullable=False, index=True)
+    kind           = Column(String,  nullable=False)    # pm | counts | excluded
+    blocks         = Column(String,  default="")        # csv block ids ('' = whole plant)
+    date_from      = Column(String,  nullable=False)    # YYYY-MM-DD
+    date_to        = Column(String,  nullable=False)
+    hours          = Column(Float,   default=0)
+    exclusion_type = Column(String,  default="")        # only for kind='excluded'
+    description    = Column(String,  default="")
+    created_at     = Column(String,  default=_now, nullable=False)
+    updated_at     = Column(String,  default=_now, nullable=False, index=True)
+    version        = Column(Integer, default=1, nullable=False)
+    origin_device  = Column(String,  nullable=True)
+
+
 # ── Work log entries ──────────────────────────────────────────────────────────
 
 class WorkLogEntry(Base):

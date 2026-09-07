@@ -51,6 +51,7 @@ const App = {
     document.getElementById('f-parts').value   = '';
     document.getElementById('f-tags').value    = '';
     document.getElementById('create-error').style.display = 'none';
+    this._refreshFaultList();
     await this._fillProjectSelect();
     this._show('screen-create');
   },
@@ -70,6 +71,40 @@ const App = {
     if (last && projects.some(p => String(p.id) === last)) sel.value = last;
   },
 
+  // ── Add sheet (choose what to create) ───────────────────────────────────────
+  openAddSheet()  { document.getElementById('add-sheet').style.display = 'flex'; },
+  closeAddSheet() { document.getElementById('add-sheet').style.display = 'none'; },
+
+  // ── Custom fault / alarm suggestions (remembered per device) ─────────────────
+  _refreshFaultList() {
+    const dl = document.getElementById('fault-list');
+    if (!dl) return;
+    [...dl.querySelectorAll('option[data-custom]')].forEach(o => o.remove());
+    let customs = [];
+    try { customs = JSON.parse(localStorage.getItem('custom_faults') || '[]'); } catch (_) {}
+    const known = new Set([...dl.options].map(o => o.value.toLowerCase()));
+    for (const f of customs) {
+      if (f && !known.has(f.toLowerCase())) {
+        const o = document.createElement('option');
+        o.value = f; o.setAttribute('data-custom', '1');
+        dl.appendChild(o); known.add(f.toLowerCase());
+      }
+    }
+  },
+
+  _rememberFault(fault) {
+    if (!fault) return;
+    const dl = document.getElementById('fault-list');
+    const known = new Set([...(dl ? dl.options : [])].map(o => o.value.toLowerCase()));
+    if (known.has(fault.toLowerCase())) return;   // already a base or saved suggestion
+    let customs = [];
+    try { customs = JSON.parse(localStorage.getItem('custom_faults') || '[]'); } catch (_) {}
+    if (!customs.some(x => x.toLowerCase() === fault.toLowerCase())) {
+      customs.push(fault);
+      try { localStorage.setItem('custom_faults', JSON.stringify(customs)); } catch (_) {}
+    }
+  },
+
   goSettings() {
     const user   = localStorage.getItem('username') || '—';
     const server = localStorage.getItem('server_url') || '—';
@@ -81,7 +116,9 @@ const App = {
 
   async _fillSettingsStatus() {
     const last    = await DB.getMeta('last_sync_at', null);
-    const pending = (await DB.getPendingEntries()).length;
+    const pending = (await DB.getPendingEntries()).length
+                  + (await DB.getPendingWriteoffs()).length
+                  + (await DB.getPendingFieldEvents()).length;
     document.getElementById('s-lastsync').textContent = last ? last.slice(0, 16).replace('T', ' ') : '—';
     document.getElementById('s-pending').textContent  = pending;
   },
@@ -267,6 +304,7 @@ const App = {
     entry.image_ids = imageIds;
 
     await DB.saveEntry(entry);
+    this._rememberFault(fault);        // remember a newly-typed fault/alarm
     this._stagedPhotos = [];
 
     if (navigator.onLine) this._syncQuiet();
@@ -369,6 +407,227 @@ const App = {
     }
   },
 
+  // ── Stock (spare parts + write-off) ─────────────────────────────────────────
+  _stockItems: [],
+  _woItem:     null,
+
+  async goStock() {
+    let projects = await DB.getMeta('projects', []);
+    if ((!projects || !projects.length) && navigator.onLine) {
+      try { projects = await API.getProjects(); await DB.setMeta('projects', projects); } catch (_) {}
+    }
+    const sel = document.getElementById('stock-proj');
+    sel.innerHTML = '';
+    if (!projects || !projects.length) {
+      sel.innerHTML = '<option value="">— No projects —</option>';
+    } else {
+      for (const p of projects) {
+        const o = document.createElement('option');
+        o.value = p.id; o.textContent = p.name; sel.appendChild(o);
+      }
+      const last = localStorage.getItem('last_project_id');
+      if (last && projects.some(p => String(p.id) === last)) sel.value = last;
+    }
+    this._show('screen-stock');
+    await this.loadStock();
+  },
+
+  onStockProject() {
+    const v = document.getElementById('stock-proj').value;
+    if (v) localStorage.setItem('last_project_id', v);
+    this.loadStock();
+  },
+
+  async loadStock() {
+    const sel  = document.getElementById('stock-proj');
+    const pid  = sel.value ? parseInt(sel.value, 10) : null;
+    const list = document.getElementById('stock-list');
+    const note = document.getElementById('stock-note');
+    if (!pid) { list.innerHTML = '<div class="empty">Select a project.</div>'; return; }
+    list.innerHTML = '<div class="loading">Loading…</div>';
+
+    let items = null;
+    if (navigator.onLine) {
+      try { items = await API.getStock(pid); await DB.setMeta('stock:' + pid, items); note.style.display = 'none'; }
+      catch (_) { items = null; }
+    }
+    if (items === null) {
+      items = await DB.getMeta('stock:' + pid, []);
+      note.textContent = '⚠ Offline — showing last synced stock.';
+      note.style.display = 'block';
+    }
+    this._stockItems = await this._adjustedStock(pid, items);
+    this._renderStock();
+  },
+
+  async _adjustedStock(pid, items) {
+    // Subtract not-yet-synced write-offs so the displayed quantity is honest offline
+    const pend = await DB.getPendingWriteoffs();
+    const used = {};
+    for (const w of pend) {
+      if (w.project_id === pid) used[w.material_number] = (used[w.material_number] || 0) + Number(w.quantity || 0);
+    }
+    return (items || []).map(it => ({
+      ...it,
+      quantity: Math.max(0, Number(it.quantity || 0) - (used[it.material_number] || 0)),
+    }));
+  },
+
+  _renderStock() {
+    const list = document.getElementById('stock-list');
+    if (!this._stockItems.length) {
+      list.innerHTML = '<div class="empty">No stock for this project.<br>Add it on the desktop Spare Parts page.</div>';
+      return;
+    }
+    list.innerHTML = this._stockItems.map((it, i) => {
+      const low = it.min_quantity > 0 && it.quantity <= it.min_quantity;
+      return `<div class="stock-item" data-i="${i}">
+        <div class="stock-main">
+          <div class="stock-mat">${_esc(it.material_number)}</div>
+          <div class="stock-desc">${_esc(it.description || '')}</div>
+        </div>
+        <div class="stock-qty ${low ? 'low' : ''}">${(+it.quantity).toLocaleString()} <span>${_esc(it.unit || '')}</span></div>
+      </div>`;
+    }).join('');
+    list.querySelectorAll('.stock-item').forEach(el => {
+      el.addEventListener('click', () => this.openWriteoff(this._stockItems[+el.dataset.i]));
+    });
+  },
+
+  openWriteoff(item) {
+    this._woItem = item;
+    document.getElementById('wo-title').textContent = 'Write off — ' + item.material_number;
+    document.getElementById('wo-avail').textContent = `In stock: ${(+item.quantity).toLocaleString()} ${item.unit || ''}`;
+    document.getElementById('wo-qty').value   = 1;
+    document.getElementById('wo-block').value = '';
+    document.getElementById('wo-note').value  = '';
+    document.getElementById('wo-error').style.display = 'none';
+    document.getElementById('writeoff-modal').style.display = 'flex';
+  },
+
+  closeWriteoff() {
+    document.getElementById('writeoff-modal').style.display = 'none';
+    this._woItem = null;
+  },
+
+  async confirmWriteoff() {
+    if (!this._woItem) return;
+    const qty   = parseFloat(document.getElementById('wo-qty').value);
+    const errEl = document.getElementById('wo-error');
+    if (!(qty > 0)) { _showErr(errEl, 'Enter a quantity greater than 0.'); return; }
+    const pid = parseInt(document.getElementById('stock-proj').value, 10);
+    const wo  = {
+      id:              _uuid(),
+      project_id:      pid,
+      material_number: this._woItem.material_number,
+      description:     this._woItem.description || '',
+      quantity:        qty,
+      block:           document.getElementById('wo-block').value.trim(),
+      note:            document.getElementById('wo-note').value.trim(),
+      log_date:        _today(),
+      created_at:      new Date().toISOString(),
+      sync_status:     'local',
+    };
+    await DB.saveWriteoff(wo);
+    this.closeWriteoff();
+    await this.loadStock();                       // reflect immediately (pending applied)
+    if (navigator.onLine) { await this._syncWriteoffs(); await this.loadStock(); }
+  },
+
+  async _syncWriteoffs() {
+    const pend = await DB.getPendingWriteoffs();
+    for (const w of pend) {
+      try {
+        await API.postWriteoff({
+          id: w.id, project_id: w.project_id, material_number: w.material_number,
+          description: w.description, quantity: w.quantity, block: w.block,
+          note: w.note, log_date: w.log_date, created_at: w.created_at,
+        });
+        await DB.deleteWriteoff(w.id);            // server owns it now
+      } catch (_) { /* keep pending, retry next sync */ }
+    }
+  },
+
+  // ── Report event (PM / downtime / exclusion) ────────────────────────────────
+  async goEvent() {
+    let projects = await DB.getMeta('projects', []);
+    if ((!projects || !projects.length) && navigator.onLine) {
+      try { projects = await API.getProjects(); await DB.setMeta('projects', projects); } catch (_) {}
+    }
+    const sel = document.getElementById('ev-proj');
+    sel.innerHTML = '';
+    if (!projects || !projects.length) {
+      sel.innerHTML = '<option value="">— No projects —</option>';
+    } else {
+      for (const p of projects) {
+        const o = document.createElement('option');
+        o.value = p.id; o.textContent = p.name; sel.appendChild(o);
+      }
+      const last = localStorage.getItem('last_project_id');
+      if (last && projects.some(p => String(p.id) === last)) sel.value = last;
+    }
+    document.getElementById('ev-kind').value  = 'pm';
+    document.getElementById('ev-from').value   = _today();
+    document.getElementById('ev-to').value     = _today();
+    document.getElementById('ev-blocks').value = '';
+    document.getElementById('ev-hours').value  = '0';
+    document.getElementById('ev-desc').value   = '';
+    document.getElementById('ev-error').style.display = 'none';
+    this.onEventKind();
+    this._show('screen-event');
+  },
+
+  onEventKind() {
+    const k = document.getElementById('ev-kind').value;
+    document.getElementById('ev-excltype-group').style.display = (k === 'excluded') ? 'block' : 'none';
+    document.getElementById('ev-blocks-label').textContent = (k === 'counts') ? 'Block(s) *' : 'Block(s)';
+    const hint = document.getElementById('ev-hint');
+    if (k === 'pm')          hint.textContent = 'PM counts as downtime — reduces availability in the monthly report (per block × duration).';
+    else if (k === 'counts') hint.textContent = 'Counted as unavailability — reduces availability.';
+    else                     hint.textContent = 'Credited back — does NOT reduce availability.';
+  },
+
+  async saveEvent() {
+    const errEl = document.getElementById('ev-error');
+    const pid   = document.getElementById('ev-proj').value;
+    if (!pid) { _showErr(errEl, 'Select a project.'); return; }
+    const kind   = document.getElementById('ev-kind').value;
+    const from   = document.getElementById('ev-from').value;
+    const to     = document.getElementById('ev-to').value || from;
+    const blocks = document.getElementById('ev-blocks').value.trim();
+    const hours  = parseFloat(document.getElementById('ev-hours').value) || 0;
+    const desc   = document.getElementById('ev-desc').value.trim();
+    if (!from) { _showErr(errEl, 'Pick a date.'); return; }
+    if (kind === 'counts' && !blocks) { _showErr(errEl, 'Block is required for downtime that counts.'); return; }
+    if ((kind === 'counts' || kind === 'excluded') && !(hours > 0)) { _showErr(errEl, 'Enter the downtime duration in hours.'); return; }
+
+    localStorage.setItem('last_project_id', pid);
+    const ev = {
+      id: _uuid(), project_id: parseInt(pid, 10), kind, blocks,
+      date_from: from, date_to: to, hours,
+      exclusion_type: kind === 'excluded' ? document.getElementById('ev-excltype').value : '',
+      description: desc, created_at: new Date().toISOString(), sync_status: 'local',
+    };
+    await DB.saveFieldEvent(ev);
+    if (navigator.onLine) this._syncEvents();
+    this._show('screen-home');
+    await this._loadTimeline();
+  },
+
+  async _syncEvents() {
+    const pend = await DB.getPendingFieldEvents();
+    for (const e of pend) {
+      try {
+        await API.postEvent({
+          id: e.id, project_id: e.project_id, kind: e.kind, blocks: e.blocks,
+          date_from: e.date_from, date_to: e.date_to, hours: e.hours,
+          exclusion_type: e.exclusion_type, description: e.description, created_at: e.created_at,
+        });
+        await DB.deleteFieldEvent(e.id);
+      } catch (_) { /* keep pending, retry next sync */ }
+    }
+  },
+
   // ── Sync ───────────────────────────────────────────────────────────────────
   async syncNow() {
     const bar = document.getElementById('sync-bar');
@@ -406,6 +665,10 @@ const App = {
       const projects = await API.getProjects();
       if (Array.isArray(projects)) await DB.setMeta('projects', projects);
     } catch (_) { /* offline or old server — picker uses cached list */ }
+
+    // ── Push pending material write-offs + field events (non-fatal) ───────────
+    try { await this._syncWriteoffs(); } catch (_) {}
+    try { await this._syncEvents(); } catch (_) {}
 
     // ── Push pending entries ──────────────────────────────────────────────────
     const pending = await DB.getPendingEntries();

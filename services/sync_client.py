@@ -48,7 +48,12 @@ def login(server_url: str, username: str, password: str) -> dict:
     Updates sync_config tokens and saves.
     Returns the user dict on success, raises on failure.
     """
-    url = server_url.rstrip("/")
+    url = server_url.strip().rstrip("/")
+    # Be forgiving: the PWA lives at …/app but the REST API is at the root.
+    # If someone pastes the phone URL (…/app), posting to /app/auth/login hits
+    # the static mount and returns 405 — so strip a trailing /app here.
+    if url.endswith("/app"):
+        url = url[:-4].rstrip("/")
     resp = requests.post(
         f"{url}/auth/login",
         json={"username": username, "password": password,
@@ -292,6 +297,212 @@ def push_projects():
         pass
 
 
+def push_stock():
+    """Publish per-project warehouse stock to the server so the phone can see
+    what's on the shelf. Replace-all semantics; failures are non-fatal."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT w.project_id            AS project_id,
+                   s.material_number       AS material_number,
+                   COALESCE(m.description,'') AS description,
+                   s.quantity              AS quantity,
+                   s.unit                  AS unit,
+                   s.min_quantity          AS min_quantity
+            FROM stock_items s
+            JOIN warehouses w ON s.warehouse_id = w.id
+            LEFT JOIN materials m ON m.material_number = s.material_number
+            WHERE w.project_id IS NOT NULL
+        """).fetchall()
+        items = [dict(r) for r in rows]
+    finally:
+        conn.close()
+    try:
+        _request("put", "/stock", json={"items": items})
+    except RequestException:
+        pass
+
+
+def pull_writeoffs() -> dict:
+    """Pull mobile material write-offs and apply each as an OUT stock
+    transaction on the matching project warehouse. Idempotent: a write-off is
+    only applied once (dedup on reference 'MOB-<id>')."""
+    from services.stock_service import get_project_warehouse_id, record_transaction
+    stats = {"applied": 0, "errors": 0}
+    cursor = sync_config.stock_cursor
+
+    while True:
+        try:
+            resp = _request("get", "/stock/writeoffs", params={"since": cursor})
+            if resp.status_code != 200:
+                stats["errors"] += 1
+                break
+            body = resp.json()
+        except RequestException:
+            stats["errors"] += 1
+            break
+
+        for wo in body.get("writeoffs", []):
+            ref = f"MOB-{wo['id']}"
+            try:
+                conn = get_connection()
+                try:
+                    seen = conn.execute(
+                        "SELECT 1 FROM stock_transactions WHERE reference=? LIMIT 1",
+                        (ref,)).fetchone()
+                finally:
+                    conn.close()
+                if seen:
+                    continue   # already applied
+                wh_id = get_project_warehouse_id(wo["project_id"])
+                if not wh_id:
+                    continue   # project has no warehouse locally — skip
+                note = f"Mobile write-off"
+                if wo.get("block"):
+                    note += f" · block {wo['block']}"
+                if wo.get("note"):
+                    note += f" · {wo['note']}"
+                record_transaction(
+                    warehouse_id=wh_id,
+                    material_number=wo["material_number"],
+                    transaction_type="OUT",
+                    quantity=float(wo.get("quantity") or 0),
+                    transaction_date=wo.get("log_date") or _now()[:10],
+                    project_id=wo["project_id"],
+                    reference=ref,
+                    notes=note,
+                )
+                stats["applied"] += 1
+            except Exception:
+                stats["errors"] += 1
+
+        new_cursor = body.get("cursor")
+        if new_cursor and new_cursor > cursor:
+            cursor = new_cursor
+            sync_config.stock_cursor = cursor
+            sync_config.save()
+        if not body.get("has_more", False):
+            break
+
+    return stats
+
+
+def _parse_blocks_csv(csv: str) -> list:
+    out = []
+    for tok in (csv or "").split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if "-" in tok:
+            try:
+                a, z = (int(x) for x in tok.split("-", 1))
+                out += list(range(min(a, z), max(a, z) + 1))
+            except ValueError:
+                continue
+        else:
+            try:
+                out.append(int(tok))
+            except ValueError:
+                continue
+    return out
+
+
+def _field_event_seen(event_id: str) -> bool:
+    conn = get_connection()
+    try:
+        return conn.execute(
+            "SELECT 1 FROM synced_field_events WHERE event_id=? LIMIT 1",
+            (event_id,)).fetchone() is not None
+    finally:
+        conn.close()
+
+
+def _mark_field_event(event_id: str, kind: str):
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO synced_field_events (event_id, kind) VALUES (?, ?)",
+            (event_id, kind))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def pull_field_events() -> dict:
+    """Pull phone-captured PM / downtime / exclusion events and route each into
+    the matching report table. Deduped via synced_field_events so re-pulling
+    never double-counts."""
+    from services.availability_service import (
+        add_manual_unavailability, add_exclusion, EXCLUSION_TYPES)
+    from services.report_workflow_service import add_pm_activity
+    stats = {"applied": 0, "errors": 0}
+    cursor = sync_config.field_cursor
+
+    while True:
+        try:
+            resp = _request("get", "/events", params={"since": cursor})
+            if resp.status_code != 200:
+                stats["errors"] += 1
+                break
+            body = resp.json()
+        except RequestException:
+            stats["errors"] += 1
+            break
+
+        for ev in body.get("events", []):
+            if _field_event_seen(ev["id"]):
+                continue
+            try:
+                pid = ev["project_id"]
+                df  = ev.get("date_from") or ""
+                dt  = ev.get("date_to") or df
+                hrs = float(ev.get("hours") or 0)
+                desc = ev.get("description") or ""
+                blocks_csv = ev.get("blocks") or ""
+                year  = int(df[:4]) if len(df) >= 4 else None
+                month = int(df[5:7]) if len(df) >= 7 else None
+                kind = ev.get("kind")
+
+                if kind == "pm":
+                    add_pm_activity(pid, year, month,
+                                    affected_blocks=blocks_csv, date_from=df,
+                                    date_to=dt, hours=hrs, description=desc)
+                elif kind == "counts":
+                    blks = _parse_blocks_csv(blocks_csv) or [0]
+                    for b in blks:
+                        add_manual_unavailability(
+                            block=b, date_from=df, date_to=dt, downtime_h=hrs,
+                            lc=None, cause=desc or "Field-reported",
+                            project_id=pid, year=year, month=month)
+                elif kind == "excluded":
+                    et = ev.get("exclusion_type") or "Major Fault"
+                    if et not in EXCLUSION_TYPES:
+                        et = "Major Fault"
+                    total_min = min(int(round(hrs * 60)), 1439)
+                    time_to = f"{total_min // 60:02d}:{total_min % 60:02d}" if hrs > 0 else "23:59"
+                    add_exclusion(exclusion_type=et, date_from=df, date_to=dt,
+                                  time_from="00:00", time_to=time_to,
+                                  affected_blocks=blocks_csv, description=desc,
+                                  project_id=pid, year=year, month=month)
+                else:
+                    continue
+
+                _mark_field_event(ev["id"], kind or "")
+                stats["applied"] += 1
+            except Exception:
+                stats["errors"] += 1
+
+        new_cursor = body.get("cursor")
+        if new_cursor and new_cursor > cursor:
+            cursor = new_cursor
+            sync_config.field_cursor = cursor
+            sync_config.save()
+        if not body.get("has_more", False):
+            break
+
+    return stats
+
+
 # ── Pull ──────────────────────────────────────────────────────────────────────
 
 def _apply_pulled_entry(data: dict, action: str):
@@ -481,8 +692,11 @@ def sync_now() -> SyncResult:
         return SyncResult(0, 0, 0, 0, 0)
 
     push_projects()
+    push_stock()
     push_stats = push_pending()
     pull_stats  = pull_delta()
+    pull_writeoffs()
+    pull_field_events()
     download_pending_remote_images()
 
     sync_config.last_sync_at = _now()

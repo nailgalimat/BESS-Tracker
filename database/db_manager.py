@@ -150,6 +150,43 @@ def initialize_database():
             )
         """)
 
+        # Migration: Work Report fields on work_logs — root cause, engineer,
+        # start/end time, and the "affects availability" link to a
+        # manual_unavailability row that the monthly report consumes.
+        _wl_cols = [r[1] for r in c.execute(
+            "PRAGMA table_info(work_logs)").fetchall()]
+        for _col, _decl in [
+            ("root_cause",           "TEXT DEFAULT ''"),
+            ("engineer",             "TEXT DEFAULT ''"),
+            ("start_time",           "TEXT DEFAULT ''"),
+            ("end_time",             "TEXT DEFAULT ''"),
+            ("affects_availability", "INTEGER DEFAULT 0"),
+            ("unavailability_id",    "INTEGER"),
+            ("availability_impact",  "TEXT DEFAULT 'none'"),  # none|counts|excluded
+            ("exclusion_id",         "INTEGER"),
+        ]:
+            if _col not in _wl_cols:
+                c.execute(f"ALTER TABLE work_logs ADD COLUMN {_col} {_decl}")
+
+        # ── WORK-REPORT MATERIALS (parts consumed on a work log) ───────────
+        # One row per material used on a work_log. On save an OUT stock
+        # transaction is recorded from the project warehouse (tx_id); deleting
+        # the work log reverses each with a matching IN.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS work_log_materials (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                work_log_id     INTEGER NOT NULL,
+                material_number TEXT    NOT NULL,
+                description     TEXT    DEFAULT '',
+                quantity        REAL    NOT NULL DEFAULT 1,
+                unit            TEXT    DEFAULT '',
+                warehouse_id    INTEGER,
+                tx_id           INTEGER,
+                created_at      TEXT    DEFAULT (datetime('now')),
+                FOREIGN KEY (work_log_id) REFERENCES work_logs(id) ON DELETE CASCADE
+            )
+        """)
+
         # ── CHECKLIST TEMPLATES ───────────────────────────────────────────
         # A template defines what checks to perform for a given container type
         # or a custom named scope (e.g. "Block commissioning - LC+PCS+4xBESS")
@@ -483,6 +520,18 @@ def initialize_database():
             )
         """)
 
+        # ── SYNCED FIELD EVENTS (dedupe log for mobile PM/downtime pull) ─────
+        # Records which phone-captured field_events have already been applied
+        # into pm_activities / manual_unavailability / availability_exclusions,
+        # so re-pulling never double-counts.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS synced_field_events (
+                event_id   TEXT PRIMARY KEY,
+                kind       TEXT DEFAULT '',
+                applied_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
         # ── ENSURE MAIN WAREHOUSE EXISTS ──────────────────────────────────
         existing = c.execute(
             "SELECT id FROM warehouses WHERE is_main=1"
@@ -519,6 +568,7 @@ def initialize_database():
             "CREATE INDEX IF NOT EXISTS idx_wli_worklog               ON work_log_images(work_log_id)",
             "CREATE INDEX IF NOT EXISTS idx_wlt_worklog               ON work_log_tags(work_log_id)",
             "CREATE INDEX IF NOT EXISTS idx_wlsp_worklog              ON worklog_spare_parts(work_log_id)",
+            "CREATE INDEX IF NOT EXISTS idx_wlm_worklog               ON work_log_materials(work_log_id)",
         ]
         for idx in indexes:
             c.execute(idx)

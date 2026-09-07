@@ -19,7 +19,8 @@ from PyQt5.QtWidgets import (
     QLabel, QComboBox, QDateEdit, QLineEdit, QTextEdit,
     QPushButton, QMessageBox, QGroupBox, QTableWidget,
     QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QMenu, QAction, QDialog, QDialogButtonBox
+    QMenu, QAction, QDialog, QDialogButtonBox,
+    QCheckBox, QDoubleSpinBox, QTimeEdit, QScrollArea, QFrame,
 )
 from PyQt5.QtCore import Qt, QDate
 from PyQt5.QtGui import QFont, QColor
@@ -31,7 +32,19 @@ from services.project_service import (
 from services.work_log_service import (
     save_work_log, get_work_logs, delete_work_log,
     update_work_log, STATUS_OPTIONS, STATUS_COLORS,
+    add_work_log_material, set_work_log_unavailability, set_work_log_exclusion,
 )
+from services.stock_service import (
+    get_project_warehouse_id, get_stock, record_transaction,
+)
+from services.availability_service import (
+    add_manual_unavailability, add_exclusion, EXCLUSION_TYPES,
+)
+
+
+def _row_widget(layout):
+    """Wrap a layout in a QWidget so it can be dropped into a QFormLayout row."""
+    w = QWidget(); w.setLayout(layout); return w
 
 
 # Friendly column headers for the table
@@ -60,6 +73,8 @@ class WorkLogForm(QWidget):
         super().__init__(parent)
         self._containers = []   # containers in selected block
         self._all_rows   = []   # raw dicts from last DB query
+        self._materials  = []   # parts staged for this work report
+        self._wh_id      = None # project warehouse id (materials source)
         self._build_ui()
         self._load_projects()
 
@@ -69,20 +84,25 @@ class WorkLogForm(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
 
-        title = QLabel("🔧  Maintenance Work Log")
+        title = QLabel("🔧  Work Reports")
         title.setFont(QFont("Segoe UI", 14, QFont.Bold))
         layout.addWidget(title)
 
         splitter = QSplitter(Qt.Horizontal)
 
-        # ── LEFT: Entry form ──────────────────────────────────────────────
+        # ── LEFT: Entry form (scrollable — the Work Report has grown) ──────
+        form_scroll = QScrollArea()
+        form_scroll.setWidgetResizable(True)
+        form_scroll.setFrameShape(QFrame.NoFrame)
+        form_scroll.setMinimumWidth(390)
+        form_scroll.setMaximumWidth(470)
+        form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         form_widget = QWidget()
-        form_widget.setMaximumWidth(370)
         form_layout = QVBoxLayout(form_widget)
         form_layout.setSpacing(6)
 
-        # Location group
-        loc_group = QGroupBox("Location")
+        # Asset group — pick the asset, serial + type auto-fill
+        loc_group = QGroupBox("Asset")
         loc_form = QFormLayout()
 
         self.proj_combo = QComboBox()
@@ -123,30 +143,108 @@ class WorkLogForm(QWidget):
         work_form = QFormLayout()
 
         self.fault_input = QTextEdit()
-        self.fault_input.setMaximumHeight(70)
+        self.fault_input.setMaximumHeight(56)
         self.fault_input.setPlaceholderText("Describe the fault or error observed...")
         work_form.addRow("Fault / Error *:", self.fault_input)
 
+        self.root_cause_input = QTextEdit()
+        self.root_cause_input.setMaximumHeight(48)
+        self.root_cause_input.setPlaceholderText("Root cause (optional)…")
+        work_form.addRow("Root Cause:", self.root_cause_input)
+
         self.work_input = QTextEdit()
-        self.work_input.setMaximumHeight(70)
-        self.work_input.setPlaceholderText("Describe the work performed...")
-        work_form.addRow("Work Performed *:", self.work_input)
+        self.work_input.setMaximumHeight(56)
+        self.work_input.setPlaceholderText("Describe the corrective action performed...")
+        work_form.addRow("Corrective Action *:", self.work_input)
 
         self.status_combo = QComboBox()
         self.status_combo.addItems(STATUS_OPTIONS)
         work_form.addRow("Result Status *:", self.status_combo)
+
+        self.engineer_input = QLineEdit()
+        self.engineer_input.setPlaceholderText("Engineer name (optional)")
+        work_form.addRow("Engineer:", self.engineer_input)
+
+        time_row = QHBoxLayout(); time_row.setContentsMargins(0, 0, 0, 0)
+        self.start_time = QTimeEdit(); self.start_time.setDisplayFormat("HH:mm")
+        self.end_time = QTimeEdit(); self.end_time.setDisplayFormat("HH:mm")
+        time_row.addWidget(QLabel("Start")); time_row.addWidget(self.start_time)
+        time_row.addWidget(QLabel("End")); time_row.addWidget(self.end_time)
+        work_form.addRow("Time:", _row_widget(time_row))
 
         self.sap_input = QLineEdit()
         self.sap_input.setPlaceholderText("e.g. SAP-12345 (optional)")
         work_form.addRow("SAP Ticket:", self.sap_input)
 
         self.comments_input = QTextEdit()
-        self.comments_input.setMaximumHeight(55)
+        self.comments_input.setMaximumHeight(44)
         self.comments_input.setPlaceholderText("Optional comments...")
         work_form.addRow("Comments:", self.comments_input)
 
         work_group.setLayout(work_form)
         form_layout.addWidget(work_group)
+
+        # Materials used → decrements the project warehouse on save
+        mat_group = QGroupBox("Materials Used")
+        mat_l = QVBoxLayout(mat_group)
+        self.no_materials = QCheckBox("No materials used")
+        self.no_materials.toggled.connect(self._toggle_no_materials)
+        mat_l.addWidget(self.no_materials)
+        pick_row = QHBoxLayout(); pick_row.setContentsMargins(0, 0, 0, 0)
+        self.mat_combo = QComboBox(); self.mat_combo.setMinimumWidth(150)
+        pick_row.addWidget(self.mat_combo, 1)
+        self.mat_qty = QDoubleSpinBox(); self.mat_qty.setRange(0.0, 100000)
+        self.mat_qty.setValue(1); self.mat_qty.setDecimals(2)
+        pick_row.addWidget(self.mat_qty)
+        add_mat_btn = QPushButton("➕"); add_mat_btn.setFixedWidth(34)
+        add_mat_btn.clicked.connect(self._add_material)
+        pick_row.addWidget(add_mat_btn)
+        mat_l.addLayout(pick_row)
+        self.mat_hint = QLabel("")
+        self.mat_hint.setStyleSheet("color:#8A5A00;font-size:11px;")
+        self.mat_hint.setWordWrap(True)
+        mat_l.addWidget(self.mat_hint)
+        self.mat_table = QTableWidget(0, 3)
+        self.mat_table.setHorizontalHeaderLabels(["Material", "Qty", "Unit"])
+        self.mat_table.setMaximumHeight(110)
+        self.mat_table.horizontalHeader().setStretchLastSection(True)
+        self.mat_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.mat_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.mat_table.verticalHeader().setVisible(False)
+        mat_l.addWidget(self.mat_table)
+        rm_mat_btn = QPushButton("🗑  Remove selected material")
+        rm_mat_btn.clicked.connect(self._remove_material)
+        mat_l.addWidget(rm_mat_btn)
+        form_layout.addWidget(mat_group)
+
+        # Availability impact — classify how this event affects availability
+        av_group = QGroupBox("Availability Impact")
+        av_l = QFormLayout(av_group)
+        self.impact_combo = QComboBox()
+        self.impact_combo.addItem("No impact on availability", "none")
+        self.impact_combo.addItem("Counts as unavailability (our fault / PM)", "counts")
+        self.impact_combo.addItem("Excluded — not our fault (grid, force majeure)", "excluded")
+        self.impact_combo.currentIndexChanged.connect(self._on_impact_changed)
+        av_l.addRow("Impact:", self.impact_combo)
+        self.downtime_h = QDoubleSpinBox(); self.downtime_h.setRange(0.0, 100000)
+        self.downtime_h.setDecimals(2); self.downtime_h.setSuffix(" h")
+        self.downtime_h.setEnabled(False)
+        av_l.addRow("Downtime:", self.downtime_h)
+        self.lc_combo = QComboBox()
+        self.lc_combo.addItem("Whole block", None)
+        self.lc_combo.addItem("LC 1", 1); self.lc_combo.addItem("LC 2", 2)
+        self.lc_combo.setEnabled(False)
+        av_l.addRow("Scope:", self.lc_combo)
+        self.excl_type = QComboBox()
+        for t in EXCLUSION_TYPES:
+            self.excl_type.addItem(t, t)
+        self.excl_type.setEnabled(False)
+        av_l.addRow("Exclusion type:", self.excl_type)
+        self.av_hint = QLabel("Choose how this event affects the monthly availability figure.")
+        self.av_hint.setStyleSheet("color:#6B7A8D;font-size:11px;")
+        self.av_hint.setWordWrap(True)
+        av_l.addRow(self.av_hint)
+        form_layout.addWidget(av_group)
 
         # Buttons
         btn_row = QHBoxLayout()
@@ -154,7 +252,7 @@ class WorkLogForm(QWidget):
         clear_btn.clicked.connect(self._clear_form)
         btn_row.addWidget(clear_btn)
 
-        save_btn = QPushButton("✅  Save Entry")
+        save_btn = QPushButton("✅  Save Work Report")
         save_btn.setFixedHeight(38)
         save_btn.setStyleSheet(
             "QPushButton{background:#4CAF50;color:white;font-weight:bold;"
@@ -166,7 +264,8 @@ class WorkLogForm(QWidget):
         form_layout.addLayout(btn_row)
         form_layout.addStretch()
 
-        splitter.addWidget(form_widget)
+        form_scroll.setWidget(form_widget)
+        splitter.addWidget(form_scroll)
 
         # ── RIGHT: Filter + Table ─────────────────────────────────────────
         right_widget = QWidget()
@@ -242,8 +341,11 @@ class WorkLogForm(QWidget):
         right_layout.addWidget(self.table)
 
         splitter.addWidget(right_widget)
-        splitter.setSizes([370, 700])
-        layout.addWidget(splitter)
+        splitter.setCollapsible(0, False)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([440, 760])
+        layout.addWidget(splitter, 1)
 
     # ── Project/location cascade ──────────────────────────────────────────
 
@@ -270,6 +372,7 @@ class WorkLogForm(QWidget):
                 self.zone_combo.addItem(f"Zone {z}", userData=z)
         self.zone_combo.blockSignals(False)
         self._on_zone_changed()
+        self._reload_materials_combo()
 
     def _on_zone_changed(self):
         self.block_combo.blockSignals(True)
@@ -308,6 +411,92 @@ class WorkLogForm(QWidget):
             self.serial_label.setText(c.serial_number or "N/A")
             self.type_label.setText(c.container_type)
 
+    # ── Materials & availability ────────────────────────────────────────────
+
+    def _reload_materials_combo(self):
+        """Populate the material picker from the current project's warehouse."""
+        self.mat_combo.clear()
+        self._materials = []
+        self._refresh_mat_table()
+        self.mat_hint.setText("")
+        pid = self.proj_combo.currentData()
+        self._wh_id = None
+        if not pid:
+            return
+        self._wh_id = get_project_warehouse_id(pid)
+        if not self._wh_id:
+            self.mat_hint.setText("No project warehouse yet.")
+            return
+        stock = get_stock(self._wh_id)
+        if not stock:
+            self.mat_hint.setText("No stock in the project warehouse — add it on the Spare Parts page.")
+        for s in stock:
+            label = (f"{s['material_number']} — {s.get('description','')}  "
+                     f"({s['quantity']:g} {s.get('unit','')} in stock)")
+            self.mat_combo.addItem(label, s)
+
+    def _toggle_no_materials(self, checked):
+        self.mat_combo.setEnabled(not checked)
+        self.mat_qty.setEnabled(not checked)
+        if checked:
+            self._materials = []
+            self._refresh_mat_table()
+
+    def _add_material(self):
+        if self.no_materials.isChecked():
+            return
+        data = self.mat_combo.currentData()
+        if not data:
+            QMessageBox.information(self, "No material",
+                "No stock available in the project warehouse.\n"
+                "Add stock on the Spare Parts page first.")
+            return
+        qty = self.mat_qty.value()
+        if qty <= 0:
+            return
+        avail = data.get("quantity", 0) or 0
+        if qty > avail:
+            self.mat_hint.setText(
+                f"⚠ {data['material_number']}: only {avail:g} in stock (will go to 0).")
+        else:
+            self.mat_hint.setText("")
+        self._materials.append({
+            "material_number": data["material_number"],
+            "description":     data.get("description", ""),
+            "quantity":        qty,
+            "unit":            data.get("unit", ""),
+        })
+        self._refresh_mat_table()
+
+    def _remove_material(self):
+        r = self.mat_table.currentRow()
+        if 0 <= r < len(self._materials):
+            self._materials.pop(r)
+            self._refresh_mat_table()
+
+    def _refresh_mat_table(self):
+        self.mat_table.setRowCount(0)
+        for m in self._materials:
+            r = self.mat_table.rowCount()
+            self.mat_table.insertRow(r)
+            for c, v in enumerate([m["material_number"],
+                                   f"{m['quantity']:g}", m["unit"]]):
+                self.mat_table.setItem(r, c, QTableWidgetItem(str(v)))
+
+    def _on_impact_changed(self, *_):
+        mode = self.impact_combo.currentData()
+        counts = (mode == "counts")
+        excluded = (mode == "excluded")
+        self.downtime_h.setEnabled(counts or excluded)
+        self.lc_combo.setEnabled(counts)
+        self.excl_type.setEnabled(excluded)
+        if counts:
+            self.av_hint.setText("Counted as downtime — reduces availability in the monthly report.")
+        elif excluded:
+            self.av_hint.setText("Credited back — this downtime will NOT reduce availability.")
+        else:
+            self.av_hint.setText("Choose how this event affects the monthly availability figure.")
+
     # ── Save ──────────────────────────────────────────────────────────────
 
     def _save_entry(self):
@@ -324,15 +513,19 @@ class WorkLogForm(QWidget):
             QMessageBox.warning(self, "Required", "Work performed is required.")
             return
 
+        pid = self.proj_combo.currentData()
         cid = self.container_combo.currentData()
         c   = next((x for x in self._containers if x.id == cid), None)
+        date_str = self.date_edit.date().toString("yyyy-MM-dd")
+        block    = self.block_combo.currentData()
+        impact   = self.impact_combo.currentData()
 
         entry_id = save_work_log(
-            project_id       = self.proj_combo.currentData(),
+            project_id       = pid,
             container_id     = cid,
-            date             = self.date_edit.date().toString("yyyy-MM-dd"),
+            date             = date_str,
             zone_number      = self.zone_combo.currentData(),
-            block_number     = self.block_combo.currentData(),
+            block_number     = block,
             container_index  = c.container_index if c else 0,
             serial_number    = c.serial_number if c else "",
             fault_description= self.fault_input.toPlainText().strip(),
@@ -340,18 +533,95 @@ class WorkLogForm(QWidget):
             status           = self.status_combo.currentText(),
             sap_ticket       = self.sap_input.text().strip(),
             comments         = self.comments_input.toPlainText().strip(),
+            root_cause       = self.root_cause_input.toPlainText().strip(),
+            engineer         = self.engineer_input.text().strip(),
+            start_time       = self.start_time.time().toString("HH:mm"),
+            end_time         = self.end_time.time().toString("HH:mm"),
+            affects_availability = 1 if impact in ("counts", "excluded") else 0,
+            availability_impact  = impact,
         )
-        QMessageBox.information(self, "Saved", f"Work log #{entry_id} saved.")
+
+        # ── Fan-out 1: material consumption → OUT stock transactions ─────────
+        extras = []
+        consumed = (not self.no_materials.isChecked()
+                    and self._materials and self._wh_id)
+        if consumed:
+            for m in self._materials:
+                tx_id = None
+                try:
+                    tx_id = record_transaction(
+                        warehouse_id     = self._wh_id,
+                        material_number  = m["material_number"],
+                        transaction_type = "OUT",
+                        quantity         = m["quantity"],
+                        transaction_date = date_str,
+                        project_id       = pid,
+                        reference        = f"WL-{entry_id}",
+                        notes            = "Work report material",
+                    )
+                except Exception as e:
+                    QMessageBox.warning(self, "Stock",
+                        f"Could not deduct {m['material_number']}:\n{e}")
+                add_work_log_material(
+                    entry_id, m["material_number"], m["description"],
+                    m["quantity"], m["unit"], self._wh_id, tx_id)
+            extras.append(f"{len(self._materials)} material(s) deducted from stock")
+
+        # ── Fan-out 2: availability impact → counts (downtime) or excluded ──
+        h = self.downtime_h.value()
+        desc = self.fault_input.toPlainText().strip()[:200] or "Work report"
+        y, mo = self.date_edit.date().year(), self.date_edit.date().month()
+        if impact == "counts" and h > 0 and block:
+            try:
+                unavail_id = add_manual_unavailability(
+                    block=int(block), date_from=date_str, date_to=date_str,
+                    downtime_h=h, lc=self.lc_combo.currentData(), cause=desc,
+                    project_id=pid, year=y, month=mo)
+                set_work_log_unavailability(entry_id, unavail_id)
+                extras.append(f"{h:g} h counted as unavailability")
+            except Exception as e:
+                QMessageBox.warning(self, "Availability",
+                    f"Work report saved, but the downtime event failed:\n{e}")
+        elif impact == "excluded" and h > 0 and block:
+            try:
+                total_min = min(int(round(h * 60)), 1439)
+                time_to = f"{total_min // 60:02d}:{total_min % 60:02d}"
+                excl_id = add_exclusion(
+                    exclusion_type=self.excl_type.currentData(),
+                    date_from=date_str, date_to=date_str,
+                    time_from="00:00", time_to=time_to,
+                    affected_blocks=str(block), description=desc,
+                    project_id=pid, year=y, month=mo)
+                set_work_log_exclusion(entry_id, excl_id)
+                extras.append(f"{h:g} h excluded ({self.excl_type.currentData()}) — not counted")
+            except Exception as e:
+                QMessageBox.warning(self, "Availability",
+                    f"Work report saved, but the exclusion failed:\n{e}")
+
+        msg = f"Work report #{entry_id} saved."
+        if extras:
+            msg += "\n\n• " + "\n• ".join(extras)
+        QMessageBox.information(self, "Saved", msg)
         self._clear_work_fields()
+        self._reload_materials_combo()   # refresh stock quantities in the picker
         self._load_table()
 
     def _clear_work_fields(self):
         self.fault_input.clear()
+        self.root_cause_input.clear()
         self.work_input.clear()
         self.status_combo.setCurrentIndex(0)
+        self.engineer_input.clear()
         self.sap_input.clear()
         self.comments_input.clear()
         self.date_edit.setDate(QDate.currentDate())
+        self.no_materials.setChecked(False)
+        self._materials = []
+        self._refresh_mat_table()
+        self.impact_combo.setCurrentIndex(0)
+        self.downtime_h.setValue(0)
+        self.lc_combo.setCurrentIndex(0)
+        self.excl_type.setCurrentIndex(0)
 
     def _clear_form(self):
         self.proj_combo.setCurrentIndex(0)
@@ -414,7 +684,10 @@ class WorkLogForm(QWidget):
         if entry_id < 0:
             return
         answer = QMessageBox.question(
-            self, "Delete?", "Delete this work log entry?",
+            self, "Delete?",
+            "Delete this work report?\n\n"
+            "Any consumed stock will be restored and the linked downtime "
+            "event removed from the monthly report.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
         if answer == QMessageBox.Yes:

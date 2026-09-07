@@ -161,6 +161,15 @@ class ProjectsPage(QWidget):
         self.prepared_by.setText(cfg.get('prepared_by') or '')
         self.reviewed_by.setText(cfg.get('reviewed_by') or '')
 
+    def set_current_project(self, pid):
+        """Called by the shell when a project is opened in the launcher."""
+        if pid is None:
+            return
+        for r in range(self.proj_list.count()):
+            if self.proj_list.item(r).data(Qt.UserRole) == pid:
+                self.proj_list.setCurrentRow(r)
+                return
+
     def _new_project(self):
         name, ok = QInputDialog.getText(self, "New Project", "Project name:")
         if not ok or not name.strip():

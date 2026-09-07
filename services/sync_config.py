@@ -104,6 +104,22 @@ class SyncConfig:
         self._data["last_cursor"] = v
 
     @property
+    def stock_cursor(self) -> str:
+        return self._data.get("stock_cursor", "0")
+
+    @stock_cursor.setter
+    def stock_cursor(self, v: str):
+        self._data["stock_cursor"] = v
+
+    @property
+    def field_cursor(self) -> str:
+        return self._data.get("field_cursor", "0")
+
+    @field_cursor.setter
+    def field_cursor(self, v: str):
+        self._data["field_cursor"] = v
+
+    @property
     def last_sync_at(self) -> str:
         return self._data.get("last_sync_at", "")
 

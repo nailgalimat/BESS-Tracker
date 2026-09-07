@@ -33,7 +33,7 @@ from config import settings
 from database import engine, Base, SessionLocal
 from models.db_models import User
 from services.auth_service import hash_password
-from routers import auth, worklogs, images, sync, projects
+from routers import auth, worklogs, images, sync, projects, stock, events
 
 
 # ── Structured logging ────────────────────────────────────────────────────────
@@ -162,6 +162,8 @@ app.include_router(worklogs.router)
 app.include_router(images.router)
 app.include_router(sync.router)
 app.include_router(projects.router)
+app.include_router(stock.router)
+app.include_router(events.router)
 
 
 @app.get("/healthz", tags=["ops"])

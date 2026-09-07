@@ -4,6 +4,7 @@
 # Build with:  pyinstaller --clean "BESS Tracker.spec"
 
 import os
+from PyInstaller.utils.hooks import collect_data_files
 
 # Project root (the directory containing this .spec file).
 PROJECT_ROOT = os.path.dirname(os.path.abspath(SPEC))
@@ -20,6 +21,11 @@ datas = [
 _hist = os.path.join(PROJECT_ROOT, 'data', 'monthly_history.json')
 if os.path.exists(_hist):
     datas.append((_hist, 'data'))
+
+# certifi CA bundle — required for `requests` HTTPS (cloud sync over https://).
+# Without this the frozen exe raises SSL CERTIFICATE_VERIFY_FAILED even though
+# a browser on the same machine connects fine.
+datas += collect_data_files('certifi')
 
 hidden = [
     # PyQt5 — sometimes missed by the auto-analyser when widgets are imported lazily
@@ -77,6 +83,7 @@ hidden = [
     'services.report_workflow_service',
     'ui.projects_page',
     'ui.monthly_reports_page',
+    'ui.project_launcher',
     'services.image_service',
     'services.sync_config',
     'services.sync_client',
@@ -108,6 +115,7 @@ hidden = [
     # requests + Pillow used by sync/images
     'requests',
     'requests.adapters',
+    'certifi',
     'PIL',
     'PIL.Image',
     'PIL.ExifTags',

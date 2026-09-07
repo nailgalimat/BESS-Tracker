@@ -72,6 +72,19 @@ def rename_warehouse(warehouse_id: int, new_name: str):
         conn.close()
 
 
+def get_project_warehouse_id(project_id: int) -> Optional[int]:
+    """Returns the warehouse id bound to a project, or None if none exists yet."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id FROM warehouses WHERE project_id=? ORDER BY id LIMIT 1",
+            (project_id,)
+        ).fetchone()
+        return row["id"] if row else None
+    finally:
+        conn.close()
+
+
 def ensure_project_warehouse(project_id: int, project_name: str) -> int:
     """Creates a warehouse for a project if it doesn't exist. Returns warehouse_id."""
     conn = get_connection()

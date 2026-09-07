@@ -13,14 +13,19 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit,
     QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPushButton, QGroupBox,
     QTableWidget, QTableWidgetItem, QAbstractItemView, QTabWidget, QDialog,
-    QDialogButtonBox, QMessageBox, QProgressBar, QScrollArea,
+    QDialogButtonBox, QMessageBox, QProgressBar, QScrollArea, QCheckBox,
 )
 from PyQt5.QtCore import Qt, QDate
 
 from ui.components import PageHeader, PrimaryButton, SecondaryButton
 import services.report_workflow_service as rw
 import services.availability_service as av
+import services.work_log_service as wls
+from services.worklog_entry_service import get_worklog_entries
 from services.report_workflow_service import MONTHS_EN
+
+# Field Log categories that count as corrective maintenance for the report
+CORRECTIVE_CATS = {'fault', 'repair', 'maintenance'}
 
 from ui.scada_report_page import ExclusionDialog, BalancingDialog
 from ui.block_report_page import (
@@ -95,6 +100,7 @@ class MonthlyReportsPage(QWidget):
         super().__init__(parent)
         self._pid = None; self._year = None; self._month = None
         self._worker = None
+        self._wr_rows = []          # work reports auto-pulled for the month
         self._build_ui()
         self._reload_projects()
 
@@ -135,7 +141,10 @@ class MonthlyReportsPage(QWidget):
 
     # PM tab
     def _build_pm_tab(self):
-        w = QWidget(); l = QVBoxLayout(w)
+        w = QWidget(); outer = QVBoxLayout(w)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        inner = QWidget(); l = QVBoxLayout(inner)
+
         g = QGroupBox("Preventive Maintenance (per block, with duration)")
         gl = QVBoxLayout(g)
         br = QHBoxLayout()
@@ -146,15 +155,51 @@ class MonthlyReportsPage(QWidget):
         self.pm_table = _table(["ID", "From", "To", "Blocks", "Hours", "Description"],
                                [0, 100, 100, 120, 60])
         self.pm_table.doubleClicked.connect(lambda *_: self._edit_pm())
-        gl.addWidget(self.pm_table); l.addWidget(g)
+        gl.addWidget(self.pm_table)
+        pm_hint = QLabel("PM counts as unavailability — its hours reduce "
+                         "availability in the monthly report (added automatically "
+                         "at generation).")
+        pm_hint.setStyleSheet("color:#6B7A8D;font-size:11px;"); pm_hint.setWordWrap(True)
+        gl.addWidget(pm_hint)
+        l.addWidget(g)
 
-        cmg = QGroupBox("Corrective Maintenance (one per line)")
+        # Corrective Maintenance auto-pulled from the month's Work Reports
+        wrg = QGroupBox("Corrective Maintenance — auto-pulled from Work Reports")
+        wrl = QVBoxLayout(wrg)
+        hdr = QHBoxLayout()
+        self.cm_include = QCheckBox("Include these work reports in the monthly report")
+        self.cm_include.setChecked(True)
+        hdr.addWidget(self.cm_include)
+        hdr.addStretch()
+        self.wr_count_lbl = QLabel("—")
+        self.wr_count_lbl.setStyleSheet("color:#6B7A8D;font-style:italic;")
+        hdr.addWidget(self.wr_count_lbl)
+        refresh_wr = SecondaryButton("⟲  Refresh")
+        refresh_wr.clicked.connect(self._refresh_work_reports)
+        hdr.addWidget(refresh_wr)
+        wrl.addLayout(hdr)
+        self.wr_table = _table(
+            ["ID", "Date", "Block", "Fault", "Action", "SAP", "Status"],
+            [0, 90, 50, 190, 190, 80])
+        wrl.addWidget(self.wr_table)
+        wr_hint = QLabel("🖥 desktop Work Reports + 📱 mobile Field Log entries "
+                         "(fault / repair / maintenance) for this month. Downtime "
+                         "marked on the desktop also feeds the Unavailability tab.")
+        wr_hint.setStyleSheet("color:#6B7A8D;font-size:11px;"); wr_hint.setWordWrap(True)
+        wrl.addWidget(wr_hint)
+        l.addWidget(wrg)
+
+        cmg = QGroupBox("Additional corrective notes (one per line)")
         cml = QVBoxLayout(cmg)
-        self.cm_text = QTextEdit(); self.cm_text.setPlaceholderText("Corrective actions this month, one per line…")
+        self.cm_text = QTextEdit()
+        self.cm_text.setMaximumHeight(90)
+        self.cm_text.setPlaceholderText("Extra corrective actions not captured as Work Reports…")
         cml.addWidget(self.cm_text)
-        save = SecondaryButton("💾  Save CM"); save.clicked.connect(self._save_narrative)
+        save = SecondaryButton("💾  Save notes"); save.clicked.connect(self._save_narrative)
         r = QHBoxLayout(); r.addStretch(); r.addWidget(save); cml.addLayout(r)
         l.addWidget(cmg)
+
+        l.addStretch(); scroll.setWidget(inner); outer.addWidget(scroll)
         self.tabs.addTab(w, "Works & PM")
 
     # Unavailability tab
@@ -269,6 +314,15 @@ class MonthlyReportsPage(QWidget):
             if i >= 0: self.proj_combo.setCurrentIndex(i)
         super().showEvent(e)
 
+    def set_current_project(self, pid):
+        """Called by the shell when a project is opened in the launcher —
+        pre-selects it here (the month is still opened explicitly)."""
+        if pid is None:
+            return
+        i = self.proj_combo.findData(pid)
+        if i >= 0:
+            self.proj_combo.setCurrentIndex(i)
+
     def _on_project(self, *_):
         pass  # month is opened explicitly via the button
 
@@ -295,6 +349,7 @@ class MonthlyReportsPage(QWidget):
 
     def _load_all(self):
         self._refresh_pm(); self._refresh_excl(); self._refresh_man(); self._refresh_bal()
+        self._refresh_work_reports()
         m = rw.get_report_month(self._pid, self._year, self._month) or {}
         self.report_number.setText(m.get('report_number', '') or '')
         self.cm_text.setPlainText(m.get('cm_activities', '') or '')
@@ -345,6 +400,85 @@ class MonthlyReportsPage(QWidget):
         r = self.pm_table.currentRow()
         if r < 0: return
         rw.delete_pm_activity(int(self.pm_table.item(r, 0).text())); self._refresh_pm()
+
+    # ── Work reports (auto-pulled corrective maintenance) ─────────────────────
+    def _corrective_rows(self):
+        """Unified corrective-maintenance items for the month, from BOTH the
+        desktop Work Reports and mobile Field Log entries (which sync down)."""
+        import calendar
+        last = calendar.monthrange(self._year, self._month)[1]
+        start = f"{self._year:04d}-{self._month:02d}-01"
+        end = f"{self._year:04d}-{self._month:02d}-{last:02d}"
+        rows = []
+        for r in wls.get_work_logs_for_month(self._pid, self._year, self._month):
+            rows.append({'src': '🖥', 'date': r.get('date', '') or '',
+                         'block': r.get('block'), 'cont': r.get('container_num'),
+                         'fault': r.get('fault_description', '') or '',
+                         'action': r.get('work_performed', '') or '',
+                         'sap': r.get('sap_ticket', '') or '',
+                         'status': r.get('status', '') or ''})
+        try:
+            entries = get_worklog_entries(project_id=self._pid, date_from=start, date_to=end)
+        except Exception:
+            entries = []
+        for e in entries:
+            if (e.get('category') or '') not in CORRECTIVE_CATS:
+                continue
+            rows.append({'src': '📱', 'date': e.get('log_date', '') or '',
+                         'block': e.get('block_number'), 'cont': e.get('container_index'),
+                         'fault': e.get('fault_name', '') or '',
+                         'action': e.get('description', '') or '',
+                         'sap': e.get('sap_ticket', '') or '',
+                         'status': e.get('status', '') or ''})
+        rows.sort(key=lambda r: (r['date'] or ''))
+        return rows
+
+    def _refresh_work_reports(self):
+        if self._pid is None:
+            return
+        rows = self._corrective_rows()
+        self._wr_rows = rows
+        self.wr_table.setRowCount(0)
+        for r in rows:
+            row = self.wr_table.rowCount(); self.wr_table.insertRow(row)
+            fault = f"{r['src']} {r['fault']}".strip() if r.get('fault') else r['src']
+            vals = ['', r.get('date', '') or '', str(r.get('block') or ''),
+                    fault, r.get('action', '') or '', r.get('sap', '') or '',
+                    r.get('status', '') or '']
+            for c, v in enumerate(vals):
+                self.wr_table.setItem(row, c, QTableWidgetItem(str(v)))
+        n = len(rows); nmob = sum(1 for r in rows if r['src'] == '📱')
+        self.wr_count_lbl.setText(
+            f"{n} item(s) this month" + (f" · {nmob} from mobile 📱" if nmob else ""))
+
+    def _wr_as_cm_lines(self):
+        """Format the month's corrective items (desktop + mobile) as report lines."""
+        out = []
+        for r in self._wr_rows:
+            blk = r.get('block'); cnum = r.get('cont')
+            fault = (r.get('fault') or '').strip()
+            action = (r.get('action') or '').strip()
+            sap = (r.get('sap') or '').strip()
+            loc = f"Block {blk}" if blk not in (None, '') else ""
+            if cnum not in (None, ''):
+                loc += f"/C{cnum}"
+            line = f"{loc}: {fault}" if loc and fault else (loc or fault)
+            if action:
+                line += f" — {action}"
+            if sap:
+                line += f" [{sap}]"
+            if line.strip():
+                out.append(line)
+        return out
+
+    def _collect_cm_lines(self):
+        """Corrective-maintenance lines for the report: auto-pulled work reports
+        (when included) plus any additional free-text notes."""
+        lines = []
+        if getattr(self, 'cm_include', None) and self.cm_include.isChecked():
+            lines += self._wr_as_cm_lines()
+        lines += self._lines(self.cm_text.toPlainText())
+        return lines
 
     # ── Exclusion handlers ───────────────────────────────────────────────
     def _refresh_excl(self):
@@ -435,6 +569,61 @@ class MonthlyReportsPage(QWidget):
         av.delete_balancing_period(int(self.bal_table.item(r, 0).text())); self._refresh_bal()
 
     # ── Generate ─────────────────────────────────────────────────────────
+    def _parse_blocks(self, csv, nblk):
+        """Parse a block spec ('', 'all', '1,2,3', '1-5') into a list of ints.
+        Empty / 'all' → the whole plant (1..nblk)."""
+        csv = (csv or '').strip()
+        if not csv or csv.lower() in ('all', 'all blocks'):
+            return list(range(1, nblk + 1)) if nblk else []
+        out = []
+        for tok in csv.split(','):
+            tok = tok.strip()
+            if not tok:
+                continue
+            if '-' in tok:
+                try:
+                    a, z = (int(x) for x in tok.split('-', 1))
+                    out += list(range(min(a, z), max(a, z) + 1))
+                except ValueError:
+                    continue
+            else:
+                try:
+                    out.append(int(tok))
+                except ValueError:
+                    continue
+        return out
+
+    def _pm_as_unavailability(self):
+        """Turn the month's PM activities into downtime rows the report engine
+        counts against availability (one per affected block, whole-block scope)."""
+        out = []
+        proj = rw.get_project(self._pid) or {}
+        nblk = int(proj.get('num_blocks') or 0)
+        for r in rw.get_pm_activities(self._pid, self._year, self._month):
+            hours = float(r.get('hours') or 0)
+            if hours <= 0:
+                continue
+            df = r.get('date_from') or ''
+            dt = r.get('date_to') or df
+            desc = (r.get('description') or 'PM').strip()
+            for b in self._parse_blocks(r.get('affected_blocks') or '', nblk):
+                out.append({
+                    'block': b, 'lc': None,
+                    'date_from': df, 'date_to': dt,
+                    'downtime_h': hours,
+                    'cause': f"PM: {desc}" if desc else "PM",
+                    'subsystem': 'PM',
+                })
+        return out
+
+    def _all_unavailability(self):
+        """Downtime that counts against availability: operator-entered manual
+        rows + PM activities (PM always counts, per project setting)."""
+        rows = list(av.get_manual_unavailability(
+            project_id=self._pid, year=self._year, month=self._month) or [])
+        rows += self._pm_as_unavailability()
+        return rows
+
     def _pm_as_strings(self):
         out = []
         for r in rw.get_pm_activities(self._pid, self._year, self._month):
@@ -475,12 +664,12 @@ class MonthlyReportsPage(QWidget):
             reviewed_by=cfg.get('reviewed_by') or None,
             report_number=self.report_number.text().strip() or None,
             pm_activities=self._pm_as_strings() or None,
-            cm_activities=self._lines(self.cm_text.toPlainText()) or None,
+            cm_activities=self._collect_cm_lines() or None,
             site_visits=self._lines(self.site_visits.toPlainText()) or None,
             recommendations=self._lines(self.recommendations.toPlainText()) or None,
             planned_next_period=self._lines(self.planned_next.toPlainText()) or None,
             exclusions=av.get_exclusions(project_id=self._pid, year=self._year, month=self._month) or None,
-            manual_unavailability=av.get_manual_unavailability(project_id=self._pid, year=self._year, month=self._month) or None,
+            manual_unavailability=self._all_unavailability() or None,
             balancing_periods=av.get_balancing_periods(project_id=self._pid, year=self._year, month=self._month) or None,
         )
         if self._site_type == 'bukhara':

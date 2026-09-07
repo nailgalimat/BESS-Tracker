@@ -3,7 +3,7 @@
  * Strategy: Cache-first for app shell, network-first for API calls.
  */
 
-const CACHE  = 'bess-v5';
+const CACHE  = 'bess-v8';
 const SHELL  = [
   '/app/',
   '/app/css/app.css',
@@ -37,7 +37,7 @@ self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
 
   // API calls → network-only (no cache)
-  const isApi = ['/auth/', '/sync/', '/worklogs/', '/projects', '/health'].some(p => url.pathname.startsWith(p));
+  const isApi = ['/auth/', '/sync/', '/worklogs/', '/projects', '/stock', '/events', '/health'].some(p => url.pathname.startsWith(p));
   if (isApi) {
     e.respondWith(
       fetch(e.request).catch(() =>
