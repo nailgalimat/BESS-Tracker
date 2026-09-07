@@ -17,6 +17,10 @@ field_images/
 .env
 sync_config.json
 
+# Runtime logs + local dev artifacts (uvicorn log, dev uploads dir)
+backend/*.log
+backend/uploads_dev/
+
 # ── Python ──────────────────────────────────────────────────
 __pycache__/
 *.pyc
