@@ -1,0 +1,123 @@
+451 INFO: PyInstaller: 6.20.0, contrib hooks: 2026.4
+451 INFO: Python: 3.13.2
+505 INFO: Platform: Windows-11-10.0.26200-SP0
+506 INFO: Python environment: C:\Users\user1\AppData\Local\Programs\Python\Python313
+522 INFO: Removing temporary files and cleaning cache in C:\Users\user1\AppData\Local\pyinstaller
+539 INFO: Module search paths (PYTHONPATH):
+['C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Scripts\\pyinstaller.exe',
+ 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\python313.zip',
+ 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\DLLs',
+ 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib',
+ 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313',
+ 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages',
+ 'C:\\Users\\user1\\MVP']
+1393 INFO: Appending 'datas' from .spec
+1395 INFO: checking Analysis
+1395 INFO: Building Analysis because Analysis-00.toc is non existent
+1395 INFO: Looking for Python shared library...
+1395 INFO: Using Python shared library: C:\Users\user1\AppData\Local\Programs\Python\Python313\python313.dll
+1395 INFO: Running Analysis Analysis-00.toc
+1395 INFO: Target bytecode optimization level: 0
+1395 INFO: Initializing module dependency graph...
+1398 INFO: Initializing module graph hook caches...
+1491 INFO: Analyzing modules for base_library.zip ...
+3629 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+6032 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+7212 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+7869 INFO: Caching module dependency graph...
+7908 INFO: Analyzing C:\Users\user1\MVP\main.py
+7914 INFO: Processing standard module hook 'hook-PyQt5.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+9030 INFO: Processing standard module hook 'hook-PyQt5.QtWidgets.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+13205 INFO: Processing standard module hook 'hook-PyQt5.QtCore.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+18833 INFO: Processing standard module hook 'hook-PyQt5.QtGui.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+52650 INFO: Processing standard module hook 'hook-sqlite3.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+53440 INFO: Processing standard module hook 'hook-pandas.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+56571 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+56621 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+56694 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+56755 INFO: Processing standard module hook 'hook-numpy.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+58416 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+59021 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+59489 INFO: Processing standard module hook 'hook-xml.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+65647 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+65656 INFO: SetuptoolsInfo: initializing cached setuptools info...
+68844 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+70344 INFO: Processing standard module hook 'hook-zoneinfo.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+74637 INFO: Processing standard module hook 'hook-pandas.io.formats.style.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+78920 INFO: Processing standard module hook 'hook-pandas.plotting.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+79013 INFO: Processing standard module hook 'hook-matplotlib.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+79780 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+79913 INFO: Processing pre-safe-import-module hook 'hook-gi.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+80192 INFO: Processing standard module hook 'hook-matplotlib.backend_bases.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+80359 INFO: Processing standard module hook 'hook-PIL.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+80480 INFO: Processing standard module hook 'hook-PIL.Image.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+81261 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+81512 INFO: Processing standard module hook 'hook-PIL.ImageFilter.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+82671 INFO: Processing standard module hook 'hook-matplotlib.backends.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+82782 INFO: Processing standard module hook 'hook-matplotlib.pyplot.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+83899 INFO: Processing standard module hook 'hook-dateutil.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+84049 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+87559 INFO: Processing standard module hook 'hook-openpyxl.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+88195 INFO: Processing standard module hook 'hook-lxml.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+89084 INFO: Processing standard module hook 'hook-lxml.etree.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+91326 INFO: Processing standard module hook 'hook-pandas.io.clipboard.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+91510 INFO: Processing standard module hook 'hook-xml.dom.domreg.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+92281 INFO: Processing standard module hook 'hook-matplotlib.backends.backend_qtagg.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+92288 INFO: Processing standard module hook 'hook-matplotlib.backends.qt_compat.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+92289 INFO: hook-matplotlib.backends.qt_compat: selected 'PyQt5' as Qt bindings because hook for 'PyQt5' has been run before.
+92772 INFO: Processing standard module hook 'hook-reportlab.lib.utils.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+92888 INFO: Processing standard module hook 'hook-reportlab.pdfbase._fontdata.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+96710 INFO: Processing standard module hook 'hook-docx.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+98252 INFO: Analyzing hidden import 'matplotlib.backends.backend_pdf'
+102032 INFO: Analyzing hidden import 'pandas._libs.tslibs.base'
+102033 INFO: Processing module hooks (post-graph stage)...
+102333 INFO: Processing standard module hook 'hook-lxml.isoschematron.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+102390 INFO: Processing standard module hook 'hook-matplotlib.backends.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+102392 INFO: Matplotlib backend selection method: automatic discovery of used backends
+102415 INFO: Discovered Matplotlib backend(s) via `matplotlib.use()` call in module 'ui.analytics_view': ['Qt5Agg']
+102421 INFO: Discovered Matplotlib backend(s) via `matplotlib.use()` call in module 'services.scada_report_service': ['Agg']
+102431 INFO: Discovered Matplotlib backend(s) via `matplotlib.use()` call in module 'services.bukhara_report_service': ['Agg']
+102432 INFO: Discovered Matplotlib backend(s) via `matplotlib.use()` call in module 'services.docx_renderer': ['Agg']
+102440 INFO: Discovered Matplotlib backend(s) via `matplotlib.use()` call in module 'services.tashkent_report_service': ['Agg']
+102443 INFO: Discovered Matplotlib backend(s) via `matplotlib.use()` call in module 'ui.kpi_page': ['Qt5Agg']
+102443 INFO: The following Matplotlib backends were discovered by scanning for `matplotlib.use()` calls: ['Agg', 'Qt5Agg']. If your backend of choice is not in this list, either add a `matplotlib.use()` call to your code, or configure the backend collection via hook options (see: https://pyinstaller.org/en/stable/hooks-config.html#matplotlib-hooks).
+102443 INFO: Selected matplotlib backends: ['Agg', 'Qt5Agg']
+103131 INFO: Processing standard module hook 'hook-PIL.SpiderImagePlugin.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+103217 INFO: Processing standard module hook 'hook-lxml.objectify.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+103221 INFO: Processing standard module hook 'hook-tzdata.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+105122 INFO: Performing binary vs. data reclassification (948 entries)
+105936 INFO: Looking for ctypes DLLs
+106054 INFO: Analyzing run-time hooks ...
+106061 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+106065 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+106072 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+106076 INFO: Including run-time hook 'pyi_rth_pyqt5.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+106079 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+106089 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks'
+106094 INFO: Including run-time hook 'pyi_rth_mplconfig.py' from 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+106160 INFO: Creating base_library.zip...
+106193 INFO: Looking for dynamic libraries
+110831 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyQt5\\Qt5\\bin', 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\numpy.libs', 'C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\pandas.libs']
+110831 INFO: Extra DLL search directories (PATH): ['C:\\Users\\user1\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyQt5\\Qt5\\bin']
+114917 INFO: Warnings written to C:\Users\user1\MVP\build\BESS Tracker\warn-BESS Tracker.txt
+115083 INFO: Graph cross-reference written to C:\Users\user1\MVP\build\BESS Tracker\xref-BESS Tracker.html
+115179 INFO: checking PYZ
+115180 INFO: Building PYZ because PYZ-00.toc is non existent
+115180 INFO: Building PYZ (ZlibArchive) C:\Users\user1\MVP\build\BESS Tracker\PYZ-00.pyz
+117398 INFO: Building PYZ (ZlibArchive) C:\Users\user1\MVP\build\BESS Tracker\PYZ-00.pyz completed successfully.
+117513 INFO: checking PKG
+117514 INFO: Building PKG because PKG-00.toc is non existent
+117514 INFO: Building PKG (CArchive) BESS Tracker.pkg
+144143 INFO: Building PKG (CArchive) BESS Tracker.pkg completed successfully.
+144167 INFO: Bootloader C:\Users\user1\AppData\Local\Programs\Python\Python313\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+144167 INFO: checking EXE
+144168 INFO: Building EXE because EXE-00.toc is non existent
+144168 INFO: Building EXE from EXE-00.toc
+144180 INFO: Copying bootloader EXE to C:\Users\user1\MVP\dist\BESS Tracker.exe
+144263 INFO: Copying icon to EXE
+144345 INFO: Copying 0 resources to EXE
+144345 INFO: Embedding manifest in EXE
+144442 INFO: Appending PKG archive to EXE
+144565 INFO: Fixing EXE headers
+145639 INFO: Building EXE from EXE-00.toc completed successfully.
+145677 INFO: Build complete! The results are available in: C:\Users\user1\MVP\dist

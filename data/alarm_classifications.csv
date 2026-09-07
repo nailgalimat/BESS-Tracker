@@ -1,0 +1,102 @@
+trigger_pattern,subsystem,reason,severity,resolution_hint
+"INVERTER IN KEY STOP",PCS,Manual Stop,Info,No action required (manual operator command)
+"INVERTER IN FAULT STATE",PCS,Inverter Fault,Warning,Self-clear or reboot PCS
+"INVERTER IN ALARM STATE",PCS,Inverter Alarm,Warning,Self-clear or investigate
+"PCS AC SWITCH FAULT",PCS,AC Switch Fault,Fault,Reboot PCS from web-HMI
+"AC SWITCH FAULT",PCS,AC Switch Fault,Fault,Reboot PCS from web-HMI
+"SOFT START FAULT",PCS,Soft Start (DC switch) Fault,Fault,Self-reset on next charge/discharge
+"SOFT START (DC SWITCH) FAULT",PCS,Soft Start (DC switch) Fault,Fault,Self-reset on next charge/discharge
+"PCS SOFT START FAULT",PCS,Soft Start (DC switch) Fault,Fault,Self-reset on next charge/discharge
+"PCS ISLAND PROTECTION",PCS,Island Protection,Fault,Grid sync check required
+"PCS AC OVER VOLTAGE",PCS,AC Over-voltage,Fault,Grid voltage check
+"PCS OVER VOLTAGE",PCS,Over-voltage,Fault,Grid voltage check
+"PCS UNDER VOLTAGE",PCS,Under-voltage,Fault,Grid voltage check
+"PCS OVER FREQUENCY",PCS,Over-frequency,Fault,Grid frequency check
+"PCS UNDER FREQUENCY",PCS,Under-frequency,Fault,Grid frequency check
+"PCS LCD-DSP COMM",PCS,PCS LCD-DSP Comm,Fault,Restart PCS HMI
+"PCS SCU-DSP COMMUNICATION",PCS,PCS SCU-DSP Comm,Fault,Restart PCS controller
+"PCS UNIT FAULT",PCS,PCS Unit Fault,Fault,Investigate PCS logs
+"PCS FAN",PCS,PCS Cooling Fan,Warning,Replace fan / check airflow
+"PCS FAULT",PCS,PCS Fault (general),Fault,Investigate PCS logs
+"BSC UNIT FAULT",BESS,BSC Unit Fault,Fault,Restart BSC; check BMS comm
+"BSC FSS FAULT",BESS,FSS Fault,Fault,Fire Safety System check required
+"BSC NODE FAULT",BESS,Node Fault,Fault,BMS module reset
+"BSC UNIT ALARM",BESS,BSC Unit Alarm,Warning,Investigate BMS logs
+"BSC UINT ALARM",BESS,BSC Unit Alarm (typo),Warning,Investigate BSC logs
+"BSC LCU ALARM",BESS,LCU Alarm,Warning,Investigate LCU logs
+"LC - SYSTEM FAULT STATUS",System,LC System Fault,Fault,Restart LC; check downstream comm
+"LC - SYSTEM ALARM STATUS",System,LC System Alarm,Warning,Investigate LC alarm logs
+"LC-PCS COMM FAULT",SCC+PCS,LC-PCS Communication,Fault,Check ethernet between LC and PCS
+"LC-PCS COMM",SCC+PCS,LC-PCS Communication,Warning,Check ethernet between LC and PCS
+"LC-BSC FAULT",SCC+BESS,LC-BSC Communication,Fault,Check ethernet between LC and BSC
+"LC-BSC COMM FAULT",SCC+BESS,LC-BSC Communication,Fault,Check ethernet between LC and BSC
+"LC-BSC COMM",SCC+BESS,LC-BSC Communication,Warning,Check ethernet between LC and BSC
+"LC-SYSTEM NOT READY",System,LC Not Ready,Fault,Restart LC; check ready conditions
+"BSC LCU COMMUNICATION ALARM",BESS,LCU Communication,Warning,Check LCU comm cabling
+"BSC HUMITURE METER COMMUNICATION ALARM",BESS,Humiture Sensor Comm,Warning,Replace/reseat humiture sensor
+"BSC AUXILIARY SUB-DEVICE ALARM",BESS,Auxiliary Sub-Device,Warning,Investigate sub-device (HVAC/fire/etc)
+"BSC DEHUMIDIFIER COMMUNICATION ALARM",BESS,Dehumidifier Comm,Warning,Check dehumidifier comm
+"BSC COMBUSTIBLE GAS DETECTING DEVICE COMMUNICATION ALARM",BESS,Gas Detector Comm,Warning,Replace/reseat gas detector
+"BSC COMBUSTIBLE GAS",BESS,Combustible Gas Alarm,Critical,Activate emergency response
+"BSC SMOKE DETECTOR",BESS,Smoke Detector,Critical,Investigate immediately
+"BSC FIRE FIGHTING DEVICE",BESS,Fire Fighting Device,Critical,Fire system inspection
+"BSC FIRE SUPPRESSION COMMUNICATION ALARM",BESS,Fire Suppression Comm,Warning,Fire system inspection required
+"BSC EMERGENCY STOP",BESS,Emergency Stop,Fault,Investigate and reset e-stop
+"BATTERY IN FAULT STATE",BESS,Battery Fault,Warning,Investigate battery BMS logs
+"BATTERY IN ALARM STATE",BESS,Battery Alarm,Warning,Investigate battery BMS logs
+"BATTERY OVER TEMPERATURE",BESS,Battery Over-temperature,Fault,Check HVAC and cooling
+"BATTERY UNDER TEMPERATURE",BESS,Battery Under-temperature,Warning,Check HVAC heating
+"BATTERY OVER VOLTAGE",BESS,Battery Over-voltage,Fault,Check BMS voltage limits
+"BATTERY UNDER VOLTAGE",BESS,Battery Under-voltage,Fault,Check SOC management
+"BATTERY OVER CURRENT",BESS,Battery Over-current,Fault,Check PCS current limits
+"BATTERY SOC HIGH",BESS,SOC High,Warning,Reduce charge command
+"BATTERY SOC LOW",BESS,SOC Low,Warning,Schedule charge
+"BATTERY CELL VOLTAGE DIFF",BESS,Cell Imbalance,Warning,Cell balancing routine
+"BATTERY CELL TEMP DIFF",BESS,Cell Temperature Spread,Warning,HVAC uniformity check
+"SCC COMM FAULT",SCC,SCC Communication,Fault,Check SCC network
+"SCC UPS FAULT",SCC,UPS Fault,Fault,Replace UPS battery / inspect
+"AUXILIARY POWER OUTAGE",Auxiliary,Aux Power Outage,Critical,Restore site aux supply
+"AUXILIARY POWER LOSS",Auxiliary,Aux Power Loss,Critical,Restore site aux supply
+"DG START",Auxiliary,Diesel Generator Started,Info,External event (DG running)
+"GRID OUTAGE",Grid,Grid Outage,Critical,Grid restoration required
+"SAFETY VALVE OPEN",BESS,Safety Valve,Critical,Immediate inspection required
+"FIRE ALARM",BESS,Fire Alarm,Critical,Activate emergency response
+"PCS DC FUSE",PCS,DC Fuse,Fault,Replace DC fuse
+"PCS OVER LOAD",PCS,Overload,Warning,Reduce power setpoint
+"CMU - CMU FAULT",BESS,CMU Fault,Fault,Check cell monitoring unit
+"CMU FAULT: CELL OVERVOLTAGE",BESS,Cell Over-voltage,Fault,Check BMS voltage; balance cells
+"CMU FAULT: CELL UNDERVOLTAGE",BESS,Cell Under-voltage,Fault,Check BMS voltage; cell health
+"CELL OVERVOLTAGE",BESS,Cell Over-voltage,Fault,Check BMS voltage; balance cells
+"CELL UNDERVOLTAGE",BESS,Cell Under-voltage,Fault,Check BMS voltage; cell health
+"DCDC - FAULT STATUS",PCS,DC-DC Converter Fault,Fault,Restart DC-DC; investigate insulation
+"DCDC FAULT",PCS,DC-DC Converter Fault,Fault,Restart DC-DC converter
+"LOW BATTERY INSULATION IMPEDANCE",BESS,Insulation Impedance Low,Fault,Insulation resistance test required
+"INSULATION IMPEDANCE",BESS,Insulation Impedance,Warning,Insulation resistance test required
+"BSC - SYSTEM FAULT STATUS: INPUT DRY NODE",BESS,Dry Node Input Fault,Fault,Check field signal wiring (BMS input)
+"INPUT DRY NODE FAULT",BESS,Dry Node Input Fault,Fault,Check field signal wiring (BMS input)
+"FIREFIGHTING SYSTEM FIRE ALARM",BESS,Fire Alarm (Firefighting),Critical,Activate emergency response
+"FIRE ALARM",BESS,Fire Alarm,Critical,Activate emergency response
+"BSC-PCS COMM FAULT",SCC+PCS,BSC-PCS Communication,Fault,Check ethernet/CAN between BSC and PCS
+"BSC-PCS",SCC+PCS,BSC-PCS Communication,Warning,Check ethernet/CAN between BSC and PCS
+"LC - FAULT STATUS",System,LC Fault Status,Fault,Restart LC; check downstream comm
+"LC - SYSTEM ALARM STATE",System,LC System Alarm State,Warning,Investigate LC bitmask alarm states
+"BSC - SYSTEM ALARM STATUS",BESS,BSC System Alarm,Warning,Investigate BSC alarm logs
+"BSC LCU - ALARM CODE",BESS,LCU Alarm Code,Warning,Decode LCU alarm code
+"BSC LCU - OTHER ALARM",BESS,LCU Other Alarm,Warning,Investigate LCU logs
+"PPC",PPC,PPC Event,Warning,Check Power Plant Controller status
+"GENERAL CONTROL WITHOUT COMMUNICATION",SCC,General Control Comm Loss,Fault,Restore comm to general control
+"LC WITHOUT COMMUNICATION",SCC,LC Communication Loss,Fault,Check ethernet to LC
+"WITHOUT COMMUNICATION",SCC,Device Communication Loss,Fault,Check device communication
+"FIREFIGHTING SYSTEM FAULT",BESS,Firefighting System Fault,Fault,Inspect firefighting system
+"VOLTAGE SAMPLE FAULT",BESS,Voltage Sample Fault,Fault,Replace voltage sensor; check wiring
+"CMU FAULT",BESS,CMU Fault,Fault,Check cell monitoring unit
+"CELL UNDER VOLTAGE PROTECTION",BESS,Cell Under-voltage Protection,Fault,Check SOC management
+"ISLANDING PROTECTION",PCS,Islanding Protection,Fault,Grid sync check required
+"CONVERTER UNIT 1 ALARM RUNNING STATUS",PCS,Converter Unit Alarm Running,Warning,Investigate converter alarm code
+"CONVERTER UNIT 2 ALARM RUNNING STATUS",PCS,Converter Unit Alarm Running,Warning,Investigate converter alarm code
+"CONVERTER UNIT 1 FAULT STATUS",PCS,Converter Unit Fault Status,Fault,Investigate converter fault code
+"CONVERTER UNIT 2 FAULT STATUS",PCS,Converter Unit Fault Status,Fault,Investigate converter fault code
+"SCU-DSP COMM EXCEPTION",PCS,SCU-DSP Communication,Fault,Restart PCS controller
+"INPUT DRY NODE ALARM",BESS,Dry Node Input Alarm,Warning,Check field signal wiring
+"DC OVER VOLTAGE",PCS,DC Over-voltage,Fault,Investigate DC bus voltage
+"DC UNDER VOLTAGE",PCS,DC Under-voltage,Fault,Investigate DC bus voltage

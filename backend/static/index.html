@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Field Log" />
+  <meta name="theme-color" content="#1A2B45" />
+  <title>BESS Field Log</title>
+  <link rel="manifest" href="/app/manifest.json" />
+  <link rel="apple-touch-icon" href="/app/icons/icon-192.png" />
+  <link rel="stylesheet" href="/app/css/app.css" />
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════
+     SCREENS  (only one visible at a time via JS)
+═══════════════════════════════════════════════════════════ -->
+
+<!-- LOGIN -->
+<div id="screen-login" class="screen active">
+  <div class="login-wrap">
+    <div class="login-logo">⚡</div>
+    <h1 class="login-title">BESS Field Log</h1>
+    <p class="login-sub">Field Service Portal</p>
+
+    <div class="card" style="margin-top:32px">
+      <div class="form-group">
+        <label>Server URL</label>
+        <input id="login-url" type="url" placeholder="http://192.168.1.10:8000" autocomplete="off" />
+      </div>
+      <div class="form-group">
+        <label>Username</label>
+        <input id="login-user" type="text" placeholder="engineer1" autocomplete="username" />
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input id="login-pass" type="password" autocomplete="current-password" />
+      </div>
+      <div id="login-error" class="error-msg" style="display:none"></div>
+      <button id="login-btn" class="btn btn-primary btn-block" onclick="App.login()">
+        Log In
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- HOME — timeline -->
+<div id="screen-home" class="screen">
+  <header class="topbar">
+    <span class="topbar-title">📋 Field Log</span>
+    <div class="topbar-actions">
+      <button class="icon-btn" onclick="App.syncNow()" title="Sync">🔄</button>
+      <button class="icon-btn" onclick="App.goSettings()" title="Settings">⚙️</button>
+    </div>
+  </header>
+
+  <div class="sync-bar" id="sync-bar" style="display:none"></div>
+
+  <!-- Filter pills -->
+  <div class="filter-row">
+    <button class="pill active" data-cat="" onclick="App.filterCat(this, '')">All</button>
+    <button class="pill" data-cat="maintenance" onclick="App.filterCat(this,'maintenance')">🔧 Maint</button>
+    <button class="pill" data-cat="fault"       onclick="App.filterCat(this,'fault')">⚡ Fault</button>
+    <button class="pill" data-cat="inspection"  onclick="App.filterCat(this,'inspection')">🔍 Inspect</button>
+    <button class="pill" data-cat="repair"      onclick="App.filterCat(this,'repair')">🛠 Repair</button>
+  </div>
+
+  <div id="timeline" class="timeline"></div>
+
+  <button class="fab" onclick="App.goCreate()">＋</button>
+</div>
+
+<!-- CREATE LOG -->
+<div id="screen-create" class="screen">
+  <header class="topbar">
+    <button class="icon-btn" onclick="App.goHome()">‹</button>
+    <span class="topbar-title">New Field Log</span>
+    <button id="save-btn" class="topbar-save" onclick="App.saveEntry()">Save</button>
+  </header>
+
+  <div class="screen-body">
+    <div class="form-group">
+      <label>Project</label>
+      <select id="f-proj">
+        <option value="">— No project —</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Date *</label>
+      <input id="f-date" type="date" />
+    </div>
+    <div class="form-group">
+      <label>Category *</label>
+      <select id="f-cat">
+        <option value="maintenance">🔧 Maintenance</option>
+        <option value="fault">⚡ Fault</option>
+        <option value="inspection">🔍 Inspection</option>
+        <option value="commissioning">🚀 Commissioning</option>
+        <option value="repair">🛠 Repair</option>
+        <option value="other">📝 Other</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Fault (optional)</label>
+      <input id="f-fault" type="text" list="fault-list" placeholder="fault / problem — pick or type" />
+      <datalist id="fault-list">
+        <option value="BSC-PCS Communication"></option>
+        <option value="LC-PCS Communication"></option>
+        <option value="LC-BSC Communication"></option>
+        <option value="PCS Fault"></option>
+        <option value="Converter Unit Fault"></option>
+        <option value="Islanding Protection"></option>
+        <option value="DC-DC Converter Fault"></option>
+        <option value="DC Over-voltage"></option>
+        <option value="DC Under-voltage"></option>
+        <option value="Battery Over-temperature"></option>
+        <option value="Battery Under-temperature"></option>
+        <option value="Cell Over-voltage"></option>
+        <option value="Cell Under-voltage"></option>
+        <option value="Cell Imbalance"></option>
+        <option value="Insulation Impedance Low"></option>
+        <option value="Dry Node Input Fault"></option>
+        <option value="CMU Fault"></option>
+        <option value="Fan Fault"></option>
+        <option value="SCU-DSP Communication"></option>
+        <option value="System Not Ready"></option>
+        <option value="Grid Outage"></option>
+        <option value="Auxiliary Power Loss"></option>
+        <option value="Fire / Smoke Alarm"></option>
+      </datalist>
+    </div>
+    <div class="form-group">
+      <label>Location / Site</label>
+      <input id="f-loc" type="text" placeholder="e.g. Block 5 · LC Cabinet" />
+    </div>
+    <div class="form-group">
+      <label>Equipment Serial</label>
+      <input id="f-serial" type="text" placeholder="optional" />
+    </div>
+    <div class="form-group">
+      <label>Description *</label>
+      <textarea id="f-desc" rows="4" placeholder="Describe the work or observation…"></textarea>
+    </div>
+    <div class="form-group">
+      <label>Status (optional)</label>
+      <select id="f-status">
+        <option value="">— unspecified —</option>
+        <option value="open">🔵 Open</option>
+        <option value="done">✅ Done</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>SAP Ticket (optional)</label>
+      <input id="f-sap" type="text" placeholder="ticket / request no." />
+    </div>
+    <div class="form-group">
+      <label>Spare Parts (optional)</label>
+      <input id="f-parts" type="text" placeholder="parts used" />
+    </div>
+    <div class="form-group">
+      <label>Tags</label>
+      <input id="f-tags" type="text" placeholder="b12, alarm, pcs (comma-separated)" />
+    </div>
+
+    <!-- Photos -->
+    <div class="form-group">
+      <label>Photos</label>
+      <div class="photo-area">
+        <button type="button" class="photo-add-btn" onclick="document.getElementById('photo-input').click()">
+          📷 Add Photos
+        </button>
+        <input id="photo-input" type="file" accept="image/*" multiple
+               style="display:none" onchange="App.addPhotos(this)" />
+        <div id="photo-preview" class="photo-grid"></div>
+      </div>
+    </div>
+
+    <div id="create-error" class="error-msg" style="display:none"></div>
+  </div>
+</div>
+
+<!-- DETAIL -->
+<div id="screen-detail" class="screen">
+  <header class="topbar">
+    <button class="icon-btn" onclick="App.goHome()">‹</button>
+    <span class="topbar-title" id="detail-title">Log Detail</span>
+    <button class="icon-btn danger" onclick="App.deleteEntry()" title="Delete">🗑</button>
+  </header>
+  <div id="detail-body" class="screen-body"></div>
+</div>
+
+<!-- SETTINGS -->
+<div id="screen-settings" class="screen">
+  <header class="topbar">
+    <button class="icon-btn" onclick="App.goHome()">‹</button>
+    <span class="topbar-title">Settings</span>
+  </header>
+  <div class="screen-body">
+    <div class="card">
+      <div class="settings-row">
+        <span>Logged in as</span>
+        <strong id="s-user">—</strong>
+      </div>
+      <div class="settings-row">
+        <span>Server</span>
+        <span id="s-server" style="font-size:12px;color:#888;word-break:break-all">—</span>
+      </div>
+      <div class="settings-row">
+        <span>Last sync</span>
+        <span id="s-lastsync">—</span>
+      </div>
+      <div class="settings-row">
+        <span>Pending upload</span>
+        <span id="s-pending">—</span>
+      </div>
+    </div>
+
+    <button class="btn btn-primary btn-block" style="margin-top:16px" onclick="App.syncNow()">
+      🔄 Sync Now
+    </button>
+    <button class="btn btn-outline btn-block danger" style="margin-top:12px" onclick="App.logout()">
+      🚪 Log Out
+    </button>
+    <p style="text-align:center;color:#888;font-size:12px;margin-top:24px">
+      BESS Field Log v1.0
+    </p>
+  </div>
+</div>
+
+<!-- LIGHTBOX -->
+<div id="lightbox" class="lightbox" onclick="this.style.display='none'">
+  <img id="lightbox-img" src="" alt="" />
+</div>
+
+<script src="/app/js/db.js"></script>
+<script src="/app/js/api.js"></script>
+<script src="/app/js/app.js"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/app/sw.js').catch(() => {});
+  }
+</script>
+</body>
+</html>

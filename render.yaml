@@ -1,0 +1,35 @@
+# Render Blueprint for the BESS Tracker sync backend.
+# One web service + a persistent disk. The SQLite database AND photo uploads
+# both live on the disk (mountPath /var/data) so they survive redeploys.
+#
+# Deploy: push this repo to GitHub → Render → New → Blueprint → pick the repo.
+# After the first deploy, set FIRST_ADMIN_PASSWORD in the service's Environment
+# tab to a strong value (it is intentionally not stored in this file).
+#
+# To move to managed Postgres later, add a `databases:` block and change
+# DATABASE_URL to fromDatabase — config.py already normalizes the URL.
+services:
+  - type: web
+    name: bess-tracker-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: starter                 # always-on; ~1GB RAM
+    healthCheckPath: /healthz
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true       # Render generates a strong secret once
+      - key: FIRST_ADMIN_USERNAME
+        value: admin
+      - key: FIRST_ADMIN_PASSWORD
+        sync: false               # set manually in the dashboard (secret)
+      - key: DATABASE_URL
+        value: sqlite:////var/data/backend.db
+      - key: UPLOAD_DIR
+        value: /var/data/uploads
+      - key: CORS_ORIGINS
+        value: "*"
+    disk:
+      name: bess-data
+      mountPath: /var/data
+      sizeGB: 1

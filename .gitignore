@@ -1,0 +1,42 @@
+# ── Build artifacts / binaries ──────────────────────────────
+dist/
+build/
+installer/*.exe
+*.spec.bak
+
+# ── Databases & data (never commit real data) ───────────────
+*.db
+*.db-shm
+*.db-wal
+db_backups/
+data/monthly_history*.json
+backend/uploads/
+field_images/
+
+# ── Secrets / local config ──────────────────────────────────
+.env
+sync_config.json
+
+# ── Python ──────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# ── Android build ───────────────────────────────────────────
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+
+# ── OS / editor ─────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+~$*
+
+# ── stray test artifacts ────────────────────────────────────
+*_smoke.png
+.heatmap_smoke.png
+
