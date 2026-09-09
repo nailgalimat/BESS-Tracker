@@ -35,3 +35,44 @@ class Settings:
 
 
 settings = Settings()
+
+
+# ── Deployment health ─────────────────────────────────────────────────────────
+
+def storage_report() -> dict:
+    """Is this deployment's state actually persistent?
+
+    Two defaults are safe on a laptop and quietly destructive in the cloud:
+
+      * DATABASE_URL falls back to `sqlite:///./backend.db` — a path *inside*
+        the container. Every deploy replaces the container, so the whole
+        database (users, work logs, stock, field events) is wiped and the
+        startup bootstrap recreates a lone admin. It looks exactly like
+        "everyone's accounts vanished".
+      * SECRET_KEY falls back to a fresh random value per process, so every
+        restart invalidates every access and refresh token and forces
+        everyone to log in again.
+
+    Reports which of those are in force. No paths or secrets are returned —
+    only whether each one is configured.
+    """
+    url = settings.DATABASE_URL
+    sqlite_path = ''
+    if url.startswith('sqlite'):
+        sqlite_path = url.split('///', 1)[-1] if '///' in url else ''
+
+    # A relative sqlite path lives in the container's working directory.
+    # Judge with both path flavours: the server runs on Linux, but this is
+    # also read from a Windows desktop, where os.path.isabs('/var/data/x')
+    # is False and would mislabel a perfectly good deployment.
+    import ntpath
+    import posixpath
+    is_abs = posixpath.isabs(sqlite_path) or ntpath.isabs(sqlite_path)
+    db_ephemeral = bool(sqlite_path) and not is_abs
+
+    return {
+        'database': 'ephemeral' if db_ephemeral else 'persistent',
+        'database_env_set': bool(os.getenv('DATABASE_URL')),
+        'uploads_env_set': bool(os.getenv('UPLOAD_DIR')),
+        'secret_key_env_set': bool(os.getenv('SECRET_KEY')),
+    }

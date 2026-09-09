@@ -81,6 +81,35 @@ async def lifespan(app: FastAPI):
             "Set SECRET_KEY env var to a strong random value."
         )
 
+    # ── Is this deployment's state actually persistent? ───────────────────────
+    # Both of these fail silently and destructively in the cloud, so say so
+    # loudly at every boot rather than letting a deploy quietly eat the data.
+    from config import storage_report
+    _st = storage_report()
+    if _st["database"] == "ephemeral":
+        log.error(
+            "startup.database_is_ephemeral: the database file sits inside the "
+            "container (DATABASE_URL is unset, or points at a relative path), "
+            "so EVERY DEPLOY WIPES IT — users, work logs, stock and field "
+            "events included, leaving only the bootstrap admin. On Render set "
+            "DATABASE_URL=sqlite:////var/data/backend.db (four slashes) with a "
+            "disk mounted at /var/data. Fine for local development."
+        )
+    if not _st["secret_key_env_set"]:
+        log.error(
+            "startup.secret_key_not_set: SECRET_KEY is not set, so a new one "
+            "is generated on every boot and every access/refresh token is "
+            "invalidated on restart — everyone is logged out. Set SECRET_KEY "
+            "to a fixed random value."
+        )
+    if not _st["uploads_env_set"]:
+        log.warning(
+            "startup.upload_dir_not_set: UPLOAD_DIR is not set — photos are "
+            "written inside the container and lost on the next deploy."
+        )
+    if _st["database"] == "persistent" and _st["secret_key_env_set"]:
+        log.info("startup.storage_ok: database and secret key are persistent.")
+
     # ── Create all tables + indexes ───────────────────────────────────────────
     Base.metadata.create_all(bind=engine)
 
@@ -168,8 +197,22 @@ app.include_router(events.router)
 
 @app.get("/healthz", tags=["ops"])
 def healthz():
-    """Liveness probe for the host (Render health check)."""
-    return {"ok": True}
+    """Liveness probe for the host (Render health check).
+
+    Also reports whether this deployment's state survives a redeploy. A
+    misconfigured server answers "ok" perfectly well while silently losing
+    every account on each deploy, so the answer has to be visible without
+    logging in — the accounts may be the thing that just disappeared.
+    Configuration booleans only: no paths, no secrets, no counts.
+    """
+    from config import storage_report
+    st = storage_report()
+    return {
+        "ok": True,
+        "storage": st,
+        "persistent": (st["database"] == "persistent"
+                       and st["secret_key_env_set"]),
+    }
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
