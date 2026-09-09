@@ -178,6 +178,7 @@ const App = {
   async _loadTimeline() {
     const tl = document.getElementById('timeline');
     tl.innerHTML = '<div class="loading">Loading…</div>';
+    this._refreshPendingBadge();   // every path here can change the count
     try {
       const projects = await DB.getMeta('projects', []);
       _PROJECT_NAMES = {};
@@ -753,14 +754,64 @@ const App = {
       }
       await this._loadTimeline();
       await this._fillSettingsStatus();
+      await this._refreshPendingBadge();
     } catch (e) {
       bar.textContent = `❌ ${e.message}`;
       setTimeout(() => { bar.style.display = 'none'; }, 5000);
     }
   },
 
+  /** Connectivity came back, or the app returned to the foreground. */
+  async _syncOnReconnect() {
+    if (!navigator.onLine) return;
+    if (!localStorage.getItem('access_token')) return;   // not logged in
+    if (this._reconnecting) return;                      // both events can fire
+    this._reconnecting = true;
+    try {
+      const pending = await this._pendingCount();
+      if (pending) await this._syncQuiet();
+      await this._refreshPendingBadge();
+    } catch (_) {
+    } finally {
+      this._reconnecting = false;
+    }
+  },
+
+  async _pendingCount() {
+    try {
+      return (await DB.getPendingEntries()).length
+           + (await DB.getPendingWriteoffs()).length
+           + (await DB.getPendingFieldEvents()).length;
+    } catch (_) {
+      return 0;
+    }
+  },
+
+  /** A standing reminder on the home screen while anything is unsent. */
+  async _refreshPendingBadge() {
+    const bar = document.getElementById('sync-bar');
+    if (!bar) return;
+    const n = await this._pendingCount();
+    if (!n) {
+      if (bar.dataset.pending === '1') {
+        bar.dataset.pending = '';
+        bar.style.display = 'none';
+        bar.className = '';
+        bar.textContent = '';      // don't let a stale count flash later
+      }
+      return;
+    }
+    bar.dataset.pending = '1';
+    bar.className = 'sync-bar-warn';
+    bar.textContent = navigator.onLine
+      ? `⏳ ${n} record(s) not sent yet — tap 🔄`
+      : `📴 offline · ${n} record(s) waiting to send`;
+    bar.style.display = 'block';
+  },
+
   async _syncQuiet() {
     try { await this._doSync(); await this._loadTimeline(); } catch (_) {}
+    await this._refreshPendingBadge();
   },
 
   async _doSync() {
@@ -958,4 +1009,15 @@ function _showErr(el, msg) {
 }
 
 // ── Boot ────────────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => App.init());
+document.addEventListener('DOMContentLoaded', () => {
+  App.init();
+
+  // Work recorded on site sits on the phone until something pushes it. Until
+  // now that only happened on app start, on login, and right after saving —
+  // so an engineer who wrote a report underground and kept the app open was
+  // still carrying the only copy hours later. A lost phone took it with it.
+  window.addEventListener('online', () => App._syncOnReconnect());
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) App._syncOnReconnect();
+  });
+});
