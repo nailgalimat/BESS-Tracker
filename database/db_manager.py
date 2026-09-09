@@ -17,6 +17,16 @@ import sys
 
 
 def _get_db_path() -> str:
+    """Where the database lives.
+
+    The packaged exe keeps it next to itself (dist\\pv_bess_tracker.db); a
+    source run would otherwise use a *different* file in the project root,
+    so trying a new feature from source silently works on an empty database
+    while the real data sits in dist. Set BESS_DB to point both at one file.
+    """
+    override = os.getenv('BESS_DB')
+    if override:
+        return os.path.abspath(override)
     if getattr(sys, 'frozen', False):
         base_dir = os.path.dirname(sys.executable)
     else:
@@ -191,6 +201,29 @@ def initialize_database():
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_wla_alarm "
                   "ON work_log_alarms(alarm_event_id)")
+
+        # ── Stamp legacy downtime rows with their report month ─────────────
+        # manual_unavailability rows entered from the old Block Performance
+        # page carry no year/month. The Monthly Reports page asks for one
+        # month's rows, and a NULL stamp matches no month at all — so 24 August
+        # PM entries were invisible there, and regenerating August would have
+        # dropped 96 h of downtime and overstated availability.
+        #
+        # Filling the stamp in from date_from is the fix, NOT "treat NULL as
+        # any month" (which is right for availability_exclusions, where the
+        # window's own dates bound it). These rows carry hours, so matching
+        # every month would count the same downtime over and over.
+        try:
+            c.execute("""
+                UPDATE manual_unavailability
+                   SET year  = CAST(substr(date_from, 1, 4) AS INTEGER),
+                       month = CAST(substr(date_from, 6, 2) AS INTEGER)
+                 WHERE (year IS NULL OR month IS NULL)
+                   AND date_from IS NOT NULL
+                   AND length(date_from) >= 7
+            """)
+        except sqlite3.Error:
+            pass          # table not created yet on a fresh database
 
         # ── WORK-REPORT MATERIALS (parts consumed on a work log) ───────────
         # One row per material used on a work_log. On save an OUT stock

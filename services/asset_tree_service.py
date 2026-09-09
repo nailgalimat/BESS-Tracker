@@ -261,6 +261,55 @@ IMPORT_CATEGORIES = {
 }
 
 
+def find_alarm_exports(root: str) -> List[str]:
+    """Every SCADA alarm export under a folder tree, deepest-first.
+
+    The monthly folders are not named consistently — "Alarm report.XLSX" in
+    one month, "Alarms report.XLSX" in another, and Excel leaves `~$` lock
+    files behind — so match on the word rather than an exact name.
+    """
+    import os
+    out = []
+    for dirpath, _dirs, files in os.walk(root or ''):
+        for f in files:
+            low = f.lower()
+            if f.startswith('~') or low.startswith('.'):
+                continue                      # Excel lock / temp files
+            if not low.endswith(('.xlsx', '.xls')):
+                continue
+            if 'alarm' not in low:
+                continue
+            out.append(os.path.join(dirpath, f))
+    return sorted(out)
+
+
+def detect_alarm_period(alarms: dict):
+    """(year, month) a set of alarms belongs to, taken from the data.
+
+    Folder names lie — "June 2026", "August", "LC data march" — while the
+    Activated timestamps do not. Uses the most common month among production
+    alarms, so a handful of events spilling over a month boundary cannot
+    misfile the whole export.
+    """
+    best = None
+    for key in ('production_dedup', 'production', 'warning_persistent'):
+        df = (alarms or {}).get(key)
+        if df is None or not hasattr(df, 'empty') or df.empty:
+            continue
+        if 'Activated' not in df.columns:
+            continue
+        ts = pd.to_datetime(df['Activated'], errors='coerce').dropna()
+        if ts.empty:
+            continue
+        counts = ts.dt.to_period('M').value_counts()
+        if counts.empty:
+            continue
+        top = counts.index[0]
+        best = (int(top.year), int(top.month), int(counts.iloc[0]))
+        break
+    return best
+
+
 def import_alarm_events(project_id: int, year: int, month: int,
                         alarms: dict, log=print) -> dict:
     """Persist a month of classified SCADA alarms.
@@ -656,6 +705,155 @@ def flag_incidents_near_exclusions(project_id: int, incidents: List[dict],
         if best:
             inc['near_exclusion'] = best[1]
     return incidents
+
+
+def reapply_exclusions(project_id: int, year: int = None, month: int = None,
+                       log=print) -> dict:
+    """Recompute is_excluded / excluded_by on alarms already stored.
+
+    The flags are written once, at import. Anything that changes the
+    exclusion list afterwards — correcting a window's start time, adding a
+    grid outage nobody had recorded — would otherwise leave the history
+    frozen at what was known on the day it was imported, and re-importing
+    fixes nothing because the import is idempotent.
+    """
+    from services.availability_service import get_exclusions, _exclusion_windows
+    wins = _exclusion_windows(get_exclusions(project_id=project_id) or [])
+
+    where = ["project_id=?"]
+    params = [project_id]
+    if year is not None:
+        where.append("year=?"); params.append(int(year))
+    if month is not None:
+        where.append("month=?"); params.append(int(month))
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"SELECT id, block, activated, is_excluded, excluded_by "
+            f"FROM alarm_events WHERE {' AND '.join(where)}", params).fetchall()
+        ts = pd.to_datetime([r['activated'] for r in rows], errors='coerce')
+
+        updates = []
+        for r, t in zip(rows, ts):
+            hit_type = ''
+            if t is not None and not pd.isna(t):
+                blk = r['block']
+                for start, end, blocks, exc in wins:
+                    if not (start <= t <= end):
+                        continue
+                    if blocks is not None:
+                        if blk is None or int(blk) not in blocks:
+                            continue
+                    hit_type = exc.get('exclusion_type', '') or ''
+                    break
+            was = (bool(r['is_excluded']), r['excluded_by'] or '')
+            now = (bool(hit_type), hit_type)
+            if was != now:
+                updates.append((1 if hit_type else 0, hit_type, r['id']))
+
+        if updates:
+            conn.executemany(
+                "UPDATE alarm_events SET is_excluded=?, excluded_by=? WHERE id=?",
+                updates)
+            conn.commit()
+    finally:
+        conn.close()
+
+    log(f"Exclusions reapplied: {len(updates)} alarm(s) changed.")
+    return {'checked': len(rows), 'changed': len(updates)}
+
+
+def suggest_exclusion_windows(project_id: int, year: int = None,
+                              month: int = None, min_blocks: int = 20,
+                              pad_min: int = 5) -> List[dict]:
+    """Grid outages the alarm history can prove, for the operator to confirm.
+
+    When most of the plant trips within the same minute, that is the grid
+    going away, not seventy simultaneous equipment failures. Such events are
+    already visible in the data; what is usually missing is the exclusion
+    record, without which the whole outage is charged to the equipment. Five
+    of the six imported months have no exclusions at all.
+
+    Each suggestion carries the window the *equipment* actually saw — first
+    trip to last recovery — which is what makes it useful even for months
+    that do have records: in August 2026 the operator logged 23:00 while 32
+    units had already tripped at 22:45.
+
+    Nothing is written. Returns candidates: date_from/time_from,
+    date_to/time_to, blocks, units, events, hours, trigger, covered.
+    """
+    where = ["project_id=?", "category='production'", "is_excluded=0",
+             "block IS NOT NULL"]
+    params = [project_id]
+    if year is not None:
+        where.append("year=?"); params.append(int(year))
+    if month is not None:
+        where.append("month=?"); params.append(int(month))
+
+    conn = get_connection()
+    try:
+        rows = [dict(r) for r in conn.execute(f"""
+            SELECT id, asset_code, block, trigger_name, activated, deactivated,
+                   ROUND(duration_min/60.0, 2) AS hours
+            FROM alarm_events WHERE {' AND '.join(where)}
+        """, params)]
+    finally:
+        conn.close()
+
+    out = []
+    for inc in group_faults_into_incidents(rows):
+        if len(inc['blocks']) < min_blocks:
+            continue
+        ends = [x.get('deactivated') for x in
+                [r for r in rows if r['id'] in set(inc['ids'])]
+                if x.get('deactivated')]
+        start = pd.to_datetime(inc['activated'], errors='coerce')
+        end = pd.to_datetime(max(ends), errors='coerce') if ends else None
+        if start is None or pd.isna(start):
+            continue
+        if end is None or pd.isna(end) or end < start:
+            end = start
+        # A couple of minutes either side: the first unit to notice is rarely
+        # the first to be affected.
+        start = start - pd.Timedelta(minutes=pad_min)
+        end = end + pd.Timedelta(minutes=pad_min)
+        out.append({'start': start, 'end': end,
+                    'blocks': set(inc['blocks']), 'units': inc['units'],
+                    'ids': list(inc['ids']), 'hours': float(inc['total_hours']),
+                    'triggers': [inc['trigger_name']]})
+
+    # One outage shows up under several trigger names — a DC/DC hardware
+    # fault, a bus-voltage alarm and a comm fault are all the same grid event.
+    # Merge overlapping windows so the operator confirms one outage, not four.
+    out.sort(key=lambda w: w['start'])
+    merged = []
+    for w in out:
+        if merged and w['start'] <= merged[-1]['end']:
+            m = merged[-1]
+            m['end'] = max(m['end'], w['end'])
+            m['blocks'] |= w['blocks']
+            m['units'] += w['units']
+            m['ids'] += w['ids']
+            m['hours'] += w['hours']
+            for t in w['triggers']:
+                if t not in m['triggers']:
+                    m['triggers'].append(t)
+        else:
+            merged.append(dict(w))
+
+    return [{
+        'date_from': m['start'].strftime('%Y-%m-%d'),
+        'time_from': m['start'].strftime('%H:%M'),
+        'date_to':   m['end'].strftime('%Y-%m-%d'),
+        'time_to':   m['end'].strftime('%H:%M'),
+        'blocks':    sorted(m['blocks']),
+        'units':     m['units'],
+        'events':    len(set(m['ids'])),
+        'hours':     round(m['hours'], 2),
+        'trigger':   ' · '.join(t for t in m['triggers'][:3] if t),
+        'ids':       sorted(set(m['ids'])),
+    } for m in merged]
 
 
 def get_alarm_event(project_id: int, event_id: int) -> Optional[dict]:

@@ -28,6 +28,7 @@ from PyQt5.QtGui import QColor, QFont
 from ui.components import (PageHeader, PrimaryButton, SecondaryButton,
                            make_table, HSeparator)
 from services.project_service import get_all_projects
+from services.availability_service import EXCLUSION_TYPES
 import services.asset_tree_service as ats
 
 MONTH_NAMES = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -62,6 +63,13 @@ def _fmt_blocks(blocks):
     runs.append((start, prev))
     out = ', '.join(str(a) if a == b else f'{a}-{b}' for a, b in runs)
     return out if len(out) <= 34 else out[:31] + '…'
+
+
+def _wrap_row(layout):
+    """A layout as a widget, so a whole row can be shown or hidden at once."""
+    w = QWidget()
+    w.setLayout(layout)
+    return w
 
 
 class _Stat(QFrame):
@@ -100,12 +108,18 @@ class _ImportDialog(QDialog):
         lay.setSpacing(10)
 
         intro = QLabel(
-            'Load a SCADA "Alarms report" export so its month becomes part of '
+            'Load SCADA "Alarms report" exports so their months become part of '
             'the equipment history. Re-importing a month you already have '
             'changes nothing, so this is always safe to run.')
         intro.setWordWrap(True)
         intro.setStyleSheet('color:#6B7A8D;')
         lay.addWidget(intro)
+
+        self.mode = QComboBox()
+        self.mode.addItem('One export file', 'file')
+        self.mode.addItem('Every month in a folder (backfill)', 'folder')
+        self.mode.currentIndexChanged.connect(self._on_mode)
+        lay.addWidget(self.mode)
 
         row = QHBoxLayout()
         self.path = QLineEdit()
@@ -115,6 +129,12 @@ class _ImportDialog(QDialog):
         browse.clicked.connect(self._browse)
         row.addWidget(browse)
         lay.addLayout(row)
+
+        self.found_lbl = QLabel('')
+        self.found_lbl.setWordWrap(True)
+        self.found_lbl.setStyleSheet('color:#33465E;font-size:11px;')
+        self.found_lbl.setVisible(False)
+        lay.addWidget(self.found_lbl)
 
         today = datetime.date.today()
         prev = (today.replace(day=1) - datetime.timedelta(days=1))
@@ -131,10 +151,11 @@ class _ImportDialog(QDialog):
         self.year.setValue(prev.year)
         my.addWidget(self.year)
         my.addStretch()
-        lay.addLayout(my)
+        self.month_row = _wrap_row(my)
+        lay.addWidget(self.month_row)
 
         note = QLabel(
-            'Availability exclusions recorded for that month are applied, so '
+            'Availability exclusions recorded for a month are applied to it, so '
             'grid outages and PM are not charged to the equipment.')
         note.setWordWrap(True)
         note.setStyleSheet('color:#6B7A8D;font-size:11px;')
@@ -145,15 +166,129 @@ class _ImportDialog(QDialog):
         box.rejected.connect(self.reject)
         lay.addWidget(box)
 
+    def _on_mode(self):
+        folder = self.mode.currentData() == 'folder'
+        # In folder mode the month is read from each file's own timestamps —
+        # the folder names ("June 2026", "August", "LC data march") are not
+        # something to trust.
+        self.month_row.setVisible(not folder)
+        self.found_lbl.setVisible(folder)
+        self.path.setPlaceholderText(
+            'Folder holding the monthly export folders' if folder
+            else 'Alarms report.XLSX')
+        self.path.clear()
+        self.found_lbl.setText('')
+
     def _browse(self):
+        if self.mode.currentData() == 'folder':
+            d = QFileDialog.getExistingDirectory(
+                self, 'Folder with the monthly exports')
+            if d:
+                self.path.setText(d)
+                self._scan(d)
+            return
         f, _ = QFileDialog.getOpenFileName(
             self, 'Alarms report', '', 'Excel (*.xlsx *.XLSX *.xls)')
         if f:
             self.path.setText(f)
 
+    def _scan(self, folder):
+        found = ats.find_alarm_exports(folder)
+        if not found:
+            self.found_lbl.setText(
+                '⚠ No alarm exports found under that folder.')
+            return
+        names = '\n'.join('   • ' + os.path.relpath(f, folder) for f in found[:12])
+        more = f'\n   … and {len(found) - 12} more' if len(found) > 12 else ''
+        self.found_lbl.setText(
+            f'{len(found)} export(s) found — the month of each is read from its '
+            f'own timestamps:\n{names}{more}')
+
     def values(self):
         return (self.path.text().strip(), int(self.year.value()),
-                int(self.month.currentData()))
+                int(self.month.currentData()), self.mode.currentData())
+
+
+class _SuggestDialog(QDialog):
+    """Grid outages found in the alarm history, for the operator to confirm."""
+
+    def __init__(self, project_id, suggestions, parent=None):
+        super().__init__(parent)
+        self._pid = project_id
+        self._rows = suggestions
+        self.setWindowTitle('Grid outages found in the history')
+        self.setMinimumSize(860, 460)
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+
+        intro = QLabel(
+            'When most of the plant trips within the same minute, that is the '
+            'grid going away — not seventy simultaneous equipment failures. '
+            'These windows are visible in the alarm history but have no '
+            'exclusion recorded, so right now the whole outage is charged to '
+            'the equipment. Times are what the equipment actually saw: first '
+            'trip to last recovery, which is usually a little wider than what '
+            'gets written down by hand.')
+        intro.setWordWrap(True)
+        intro.setStyleSheet('color:#6B7A8D;')
+        lay.addWidget(intro)
+
+        self.tbl = QTableWidget(0, 7)
+        self.tbl.setHorizontalHeaderLabels(
+            ['Use', 'From', 'To', 'Blocks', 'Units', 'Alarms', 'What tripped'])
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl.horizontalHeader().setStretchLastSection(True)
+        for r in suggestions:
+            i = self.tbl.rowCount()
+            self.tbl.insertRow(i)
+            chk = QTableWidgetItem()
+            chk.setFlags(chk.flags() | Qt.ItemIsUserCheckable)
+            chk.setCheckState(Qt.Checked)
+            self.tbl.setItem(i, 0, chk)
+            vals = [f"{r['date_from']} {r['time_from']}",
+                    f"{r['date_to']} {r['time_to']}",
+                    _fmt_blocks(r['blocks']),
+                    str(r['units']), str(r['events']),
+                    str(r['trigger'] or '')]
+            for c, v in enumerate(vals, start=1):
+                self.tbl.setItem(i, c, QTableWidgetItem(v))
+        self.tbl.resizeColumnsToContents()
+        lay.addWidget(self.tbl, 1)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Record as:'))
+        self.kind = QComboBox()
+        for t in EXCLUSION_TYPES:
+            self.kind.addItem(t, t)
+        i = self.kind.findData('Grid Outage')
+        if i >= 0:
+            self.kind.setCurrentIndex(i)
+        row.addWidget(self.kind)
+        row.addStretch()
+        lay.addLayout(row)
+
+        note = QLabel(
+            'Confirming writes an availability exclusion for each ticked row '
+            'and re-marks the alarms it covers, so those hours stop counting '
+            'against the equipment. Untick anything that really was an '
+            'equipment failure.')
+        note.setWordWrap(True)
+        note.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        lay.addWidget(note)
+
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.button(QDialogButtonBox.Ok).setText('Record these')
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        lay.addWidget(box)
+
+    def chosen(self):
+        out = []
+        for i, r in enumerate(self._rows):
+            if self.tbl.item(i, 0).checkState() == Qt.Checked:
+                out.append(r)
+        return out, self.kind.currentData()
 
 
 class _ImportWorker(QThread):
@@ -164,37 +299,78 @@ class _ImportWorker(QThread):
     done = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, project_id, path, year, month, parent=None):
+    def __init__(self, project_id, path, year=None, month=None,
+                 mode='file', parent=None):
         super().__init__(parent)
         self.project_id, self.path = project_id, path
-        self.year, self.month = year, month
+        self.year, self.month, self.mode = year, month, mode
 
     def run(self):
         try:
-            from services.bukhara_report_service import (
-                load_alarms, load_alarm_classifications,
-                apply_alarm_classifications, tag_alarms_with_exclusions)
-            from services import availability_service as av
+            if self.mode == 'folder':
+                files = ats.find_alarm_exports(self.path)
+                if not files:
+                    self.failed.emit('No alarm exports found under that folder.')
+                    return
+            else:
+                files = [self.path]
 
-            self.progress.emit('Reading alarms…')
-            alarms = load_alarms(self.path)
-            self.progress.emit('Classifying…')
-            # None → the packaged data/alarm_classifications.csv, resolved
-            # relative to the install root rather than the working directory
-            alarms = apply_alarm_classifications(
-                alarms, load_alarm_classifications(None))
-            self.progress.emit('Applying exclusions…')
-            exc = av.get_exclusions(project_id=self.project_id,
-                                    year=self.year, month=self.month) or []
-            alarms = tag_alarms_with_exclusions(alarms, exc)
-            self.progress.emit('Storing history…')
-            stats = ats.import_alarm_events(
-                self.project_id, self.year, self.month, alarms,
-                log=lambda m: self.progress.emit(m))
-            stats['exclusions'] = len(exc)
-            self.done.emit(stats)
+            total = {'inserted': 0, 'unparsed': 0, 'skipped': 0,
+                     'exclusions': 0, 'files': len(files),
+                     'months': [], 'problems': []}
+            for i, f in enumerate(files, 1):
+                head = f'[{i}/{len(files)}] {os.path.basename(f)}: '
+                try:
+                    st = self._one(f, head)
+                except Exception as e:               # noqa: BLE001
+                    # One unreadable export must not abandon the rest.
+                    total['problems'].append(f'{os.path.basename(f)} — {e}')
+                    continue
+                if st is None:
+                    total['problems'].append(
+                        f'{os.path.basename(f)} — no dated alarms in it')
+                    continue
+                for k in ('inserted', 'unparsed', 'skipped'):
+                    total[k] += st[k]
+                total['exclusions'] += st['exclusions']
+                total['months'].append(st['period'] + (st['inserted'],))
+            self.done.emit(total)
         except Exception as e:                       # noqa: BLE001
             self.failed.emit(str(e))
+
+    def _one(self, path, head=''):
+        from services.bukhara_report_service import (
+            load_alarms, load_alarm_classifications,
+            apply_alarm_classifications, tag_alarms_with_exclusions)
+        from services import availability_service as av
+
+        self.progress.emit(head + 'reading…')
+        alarms = load_alarms(path)
+        self.progress.emit(head + 'classifying…')
+        # None → the packaged data/alarm_classifications.csv, resolved
+        # relative to the install root rather than the working directory
+        alarms = apply_alarm_classifications(
+            alarms, load_alarm_classifications(None))
+
+        if self.mode == 'folder':
+            period = ats.detect_alarm_period(alarms)
+            if not period:
+                return None
+            year, month = period[0], period[1]
+        else:
+            year, month = self.year, self.month
+
+        self.progress.emit(
+            head + f'{MONTH_NAMES[month]} {year} — applying exclusions…')
+        exc = av.get_exclusions(project_id=self.project_id,
+                                year=year, month=month) or []
+        alarms = tag_alarms_with_exclusions(alarms, exc)
+        self.progress.emit(head + f'{MONTH_NAMES[month]} {year} — storing…')
+        st = ats.import_alarm_events(self.project_id, year, month, alarms,
+                                     log=lambda m: None)
+        st['exclusions'] = len(exc)
+        st['period'] = (year, month)
+        return st
 
 
 class EquipmentPage(QWidget):
@@ -452,6 +628,12 @@ class EquipmentPage(QWidget):
         lay.addWidget(self.gap_tbl, 1)
 
         row = QHBoxLayout()
+        grid_btn = SecondaryButton('⚡  Find grid outages in the history…')
+        grid_btn.setToolTip(
+            'Most of the plant tripping at once is the grid, not the '
+            'equipment. Finds those windows so they stop counting as faults.')
+        grid_btn.clicked.connect(self._suggest_exclusions)
+        row.addWidget(grid_btn)
         row.addStretch()
         btn = PrimaryButton('🔧  Raise work report from this alarm')
         btn.clicked.connect(lambda: self._raise_report(self.gap_tbl))
@@ -878,6 +1060,61 @@ class EquipmentPage(QWidget):
                     i, f'Needs a report ({n})' if n else 'Needs a report')
                 return
 
+    def _suggest_exclusions(self):
+        """Find grid outages the history can prove, and record the confirmed ones."""
+        if not self._project_id:
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            sug = ats.suggest_exclusion_windows(self._project_id)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if not sug:
+            QMessageBox.information(
+                self, 'Nothing found',
+                'No plant-wide events without an exclusion.\n\n'
+                'Every alarm left in the list looks like a genuine equipment '
+                'fault rather than the grid going down.')
+            return
+
+        dlg = _SuggestDialog(self._project_id, sug, self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        chosen, kind = dlg.chosen()
+        if not chosen:
+            return
+
+        from services import availability_service as av
+        made = 0
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            for w in chosen:
+                y, m = int(w['date_from'][:4]), int(w['date_from'][5:7])
+                av.add_exclusion(
+                    exclusion_type=kind,
+                    date_from=w['date_from'], date_to=w['date_to'],
+                    time_from=w['time_from'], time_to=w['time_to'],
+                    affected_blocks=','.join(str(b) for b in w['blocks']),
+                    description=f"Plant-wide event, {w['units']} units — "
+                                f"found in the alarm history",
+                    project_id=self._project_id, year=y, month=m)
+                made += 1
+            # Stored alarms carry their exclusion flag from import time, so
+            # the new windows mean nothing until the flags are recomputed.
+            st = ats.reapply_exclusions(self._project_id, log=lambda m: None)
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        self._load_tree()
+        self._load_gaps()
+        if self._current_code:
+            self.show_asset(self._current_code)
+        QMessageBox.information(
+            self, 'Recorded',
+            f"{made} exclusion window(s) recorded.\n"
+            f"{st['changed']:,} alarm(s) no longer count against the "
+            f"equipment.")
+
     def _raise_report(self, table):
         """One tap from an alarm to a pre-filled Work Report."""
         rows = (table.selectionModel().selectedRows()
@@ -996,16 +1233,19 @@ class EquipmentPage(QWidget):
         dlg = _ImportDialog(self)
         if dlg.exec_() != QDialog.Accepted:
             return
-        path, year, month = dlg.values()
+        path, year, month, mode = dlg.values()
         if not path or not os.path.exists(path):
-            QMessageBox.warning(self, 'No file',
-                                'Choose an Alarms report export first.')
+            QMessageBox.warning(
+                self, 'Nothing chosen',
+                'Choose a folder first.' if mode == 'folder'
+                else 'Choose an Alarms report export first.')
             return
         self.import_btn.setEnabled(False)
         self.rebuild_btn.setEnabled(False)
         self.import_status.setVisible(True)
         self.import_status.setText('Starting…')
-        self._worker = _ImportWorker(self._project_id, path, year, month, self)
+        self._worker = _ImportWorker(self._project_id, path, year, month,
+                                     mode, self)
         self._worker.progress.connect(self.import_status.setText)
         self._worker.done.connect(self._on_import_done)
         self._worker.failed.connect(self._on_import_failed)
@@ -1016,12 +1256,27 @@ class EquipmentPage(QWidget):
         self.rebuild_btn.setEnabled(True)
         self.import_status.setVisible(False)
         self._rebuild(quiet=True)
-        QMessageBox.information(
-            self, 'Alarm history imported',
-            "{inserted:,} new event(s) stored.\n"
-            "{unparsed:,} plant-level tag(s) had no asset code and were "
-            "skipped.\n{exclusions} availability exclusion(s) applied.".format(
-                **stats))
+
+        lines = ["{inserted:,} new event(s) stored from {files} file(s)."
+                 .format(**stats)]
+        months = stats.get('months') or []
+        if months:
+            lines.append('')
+            for y, m, n in sorted(months):
+                lines.append(f'   {MONTH_NAMES[m]} {y}: {n:,} new'
+                             + ('  (already had it)' if not n else ''))
+        lines.append('')
+        lines.append("{unparsed:,} plant-level tag(s) had no asset code."
+                     .format(**stats))
+        lines.append("{exclusions} availability exclusion(s) applied."
+                     .format(**stats))
+        problems = stats.get('problems') or []
+        if problems:
+            lines.append('')
+            lines.append(f'{len(problems)} file(s) could not be read:')
+            lines += ['   • ' + p for p in problems[:6]]
+        QMessageBox.information(self, 'Alarm history imported',
+                                '\n'.join(lines))
 
     def _on_import_failed(self, msg):
         self.import_btn.setEnabled(True)
