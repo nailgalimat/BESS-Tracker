@@ -3,7 +3,7 @@
  * Strategy: Cache-first for app shell, network-first for API calls.
  */
 
-const CACHE  = 'bess-v8';
+const CACHE  = 'bess-v9';
 const SHELL  = [
   '/app/',
   '/app/css/app.css',

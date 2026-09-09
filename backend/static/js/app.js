@@ -609,13 +609,106 @@ const App = {
       description: desc, created_at: new Date().toISOString(), sync_status: 'local',
     };
     await DB.saveFieldEvent(ev);
-    if (navigator.onLine) this._syncEvents();
-    this._show('screen-home');
-    await this._loadTimeline();
+    // Go to the records list, not home — the engineer must be able to see the
+    // record land and whether it reached the server.
+    await this.goEvents();
+    if (navigator.onLine) {
+      this._eventsBanner('🔄 Sending…', '');
+      const r = await this._syncEvents();
+      if (r.failed) this._eventsBanner('⚠ Not sent: ' + r.error + ' — kept on the phone, will retry.', 'err');
+      else          this._eventsBanner('✓ Sent to the server.', 'ok');
+    } else {
+      this._eventsBanner('📴 Offline — saved on the phone, will send on the next sync.', 'warn');
+    }
+    await this._renderEvents();
   },
 
+  // ── PM / downtime records ───────────────────────────────────────────────────
+  async goEvents() {
+    this._show('screen-events');
+    this._eventsBanner('', '');
+    await this._renderEvents();
+  },
+
+  _eventsBanner(text, kind) {
+    const b = document.getElementById('ev-banner');
+    if (!b) return;
+    b.textContent = text || '';
+    b.className = 'sync-bar' + (kind === 'err' ? ' sync-bar-conflict'
+                              : kind === 'warn' ? ' sync-bar-warn' : '');
+    b.style.display = text ? 'block' : 'none';
+  },
+
+  async _renderEvents() {
+    const list = document.getElementById('ev-list');
+    if (!list) return;
+    const rows = await DB.getAllFieldEvents();
+    const projects = await DB.getMeta('projects', []);
+    const names = {};
+    for (const p of (projects || [])) names[p.id] = p.name;
+
+    const nPend = rows.filter(r => r.sync_status !== 'synced').length;
+    const retry = document.getElementById('ev-retry');
+    if (retry) retry.style.display = nPend ? 'block' : 'none';
+
+    if (!rows.length) {
+      list.innerHTML = '<div class="empty">No PM or downtime records yet.<br>'
+                     + 'Tap ＋ on the home screen → “PM / downtime”.</div>';
+      return;
+    }
+
+    const KIND = {
+      pm:       { icon: '🧰', label: 'Preventive maintenance' },
+      counts:   { icon: '⛔', label: 'Downtime — counts' },
+      excluded: { icon: '➖', label: 'Excluded' },
+    };
+    let html = '';
+    for (const r of rows) {
+      const k = KIND[r.kind] || { icon: '•', label: r.kind || '' };
+      const synced = r.sync_status === 'synced';
+      const badge = synced
+        ? '<span class="ev-badge ev-ok">✓ sent</span>'
+        : (r.sync_status === 'error'
+            ? '<span class="ev-badge ev-err">⚠ not sent</span>'
+            : '<span class="ev-badge ev-pend">⏳ pending</span>');
+      const when = r.date_from + (r.date_to && r.date_to !== r.date_from ? ' → ' + r.date_to : '');
+      const bits = [];
+      if (r.blocks) bits.push('Block(s) ' + _esc(r.blocks));
+      else if (r.kind === 'pm') bits.push('whole plant');
+      if (r.hours > 0) bits.push(r.hours + ' h');
+      if (r.exclusion_type) bits.push(_esc(r.exclusion_type));
+      html += `<div class="ev-card">
+          <div class="ev-card-top">
+            <span class="ev-kind">${k.icon} ${_esc(k.label)}</span>${badge}
+          </div>
+          <div class="ev-when">${_esc(when)} · ${_esc(names[r.project_id] || ('project ' + r.project_id))}</div>
+          <div class="ev-meta">${bits.join(' · ')}</div>
+          ${r.description ? `<div class="ev-desc">${_esc(r.description)}</div>` : ''}
+          ${(!synced && r.last_error) ? `<div class="ev-error">${_esc(r.last_error)}</div>` : ''}
+        </div>`;
+    }
+    list.innerHTML = html;
+  },
+
+  async retryEvents() {
+    if (!navigator.onLine) {
+      this._eventsBanner('📴 Still offline.', 'warn');
+      return;
+    }
+    this._eventsBanner('🔄 Retrying…', '');
+    const r = await this._syncEvents();
+    if (r.failed) this._eventsBanner(`⚠ ${r.failed} still not sent: ${r.error}`, 'err');
+    else if (r.sent) this._eventsBanner(`✓ ${r.sent} record(s) sent.`, 'ok');
+    else this._eventsBanner('Nothing pending.', '');
+    await this._renderEvents();
+  },
+
+  // Returns { sent, failed, error } so the caller can actually say what
+  // happened. Records are marked synced, never deleted — the phone keeps the
+  // history of what was reported.
   async _syncEvents() {
     const pend = await DB.getPendingFieldEvents();
+    let sent = 0, failed = 0, error = '';
     for (const e of pend) {
       try {
         await API.postEvent({
@@ -623,9 +716,19 @@ const App = {
           date_from: e.date_from, date_to: e.date_to, hours: e.hours,
           exclusion_type: e.exclusion_type, description: e.description, created_at: e.created_at,
         });
-        await DB.deleteFieldEvent(e.id);
-      } catch (_) { /* keep pending, retry next sync */ }
+        await DB.updateFieldEvent(e.id, {
+          sync_status: 'synced', synced_at: new Date().toISOString(), last_error: '',
+        });
+        sent++;
+      } catch (err) {
+        failed++;
+        error = error || (err && err.message) || 'Upload failed';
+        await DB.updateFieldEvent(e.id, {
+          sync_status: 'error', last_error: error,
+        });
+      }
     }
+    return { sent, failed, error };
   },
 
   // ── Sync ───────────────────────────────────────────────────────────────────
@@ -640,6 +743,10 @@ const App = {
         bar.className   = 'sync-bar-conflict';
         bar.textContent = `⚠️ ${r.conflicts} conflict${r.conflicts > 1 ? 's' : ''} — server version kept. ↑${r.pushed} ↓${r.pulled}`;
         setTimeout(() => { bar.style.display = 'none'; bar.className = ''; }, 8000);
+      } else if (r.evError) {
+        bar.className   = 'sync-bar-conflict';
+        bar.textContent = `⚠️ ${r.evError}`;
+        setTimeout(() => { bar.style.display = 'none'; bar.className = ''; }, 9000);
       } else {
         bar.textContent = `✅ Done — ↑${r.pushed} uploaded · ↓${r.pulled} received`;
         setTimeout(() => { bar.style.display = 'none'; }, 3500);
@@ -667,8 +774,14 @@ const App = {
     } catch (_) { /* offline or old server — picker uses cached list */ }
 
     // ── Push pending material write-offs + field events (non-fatal) ───────────
+    // Non-fatal, but not silent: a PM record that never reaches the server
+    // must say so, or it is invisibly lost.
+    let evError = '';
     try { await this._syncWriteoffs(); } catch (_) {}
-    try { await this._syncEvents(); } catch (_) {}
+    try {
+      const r = await this._syncEvents();
+      if (r.failed) evError = `${r.failed} PM/downtime record(s) not sent: ${r.error}`;
+    } catch (e) { evError = 'PM/downtime records not sent: ' + (e.message || e); }
 
     // ── Push pending entries ──────────────────────────────────────────────────
     const pending = await DB.getPendingEntries();
@@ -757,7 +870,7 @@ const App = {
     if (cursor) await DB.setMeta('last_cursor', cursor);
     await DB.setMeta('last_sync_at', new Date().toISOString());
 
-    return { pushed, pulled, conflicts };
+    return { pushed, pulled, conflicts, evError };
   },
 };
 

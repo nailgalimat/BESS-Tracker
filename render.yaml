@@ -29,6 +29,12 @@ services:
         value: /var/data/uploads
       - key: CORS_ORIGINS
         value: "*"
+      - key: REFRESH_TOKEN_EXPIRE_DAYS
+        # Keep the desktop/phone signed in long-term. The refresh token rotates
+        # on every use, so a client that syncs at least once a year never has to
+        # log in again. Default in config.py is 7 days, which logged people out
+        # after a short holiday.
+        value: "365"
     disk:
       name: bess-data
       mountPath: /var/data

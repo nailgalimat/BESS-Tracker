@@ -176,18 +176,40 @@ const DB = (() => {
   }
 
   async function getPendingFieldEvents() {
+    const all = await getAllFieldEvents();
+    return all.filter(e => e.sync_status !== 'synced');
+  }
+
+  // Every event ever recorded on this phone, newest first. Sent events are
+  // KEPT — a PM record that vanishes the moment it uploads leaves the
+  // engineer with no way to see what they reported.
+  async function getAllFieldEvents() {
     const s = await store('events');
     return new Promise((res, rej) => {
       const results = [];
       const req = s.openCursor();
       req.onsuccess = e => {
         const cur = e.target.result;
-        if (!cur) { res(results); return; }
-        if (cur.value.sync_status !== 'synced') results.push(cur.value);
+        if (!cur) {
+          results.sort((a, b) => String(b.created_at || '')
+                                  .localeCompare(String(a.created_at || '')));
+          res(results);
+          return;
+        }
+        results.push(cur.value);
         cur.continue();
       };
       req.onerror = e => rej(e.target.error);
     });
+  }
+
+  async function updateFieldEvent(id, patch) {
+    const s = await store('events', 'readwrite');
+    const rec = await wrap(s.get(id));
+    if (!rec) return null;
+    const next = Object.assign({}, rec, patch);
+    await wrap((await store('events', 'readwrite')).put(next));
+    return next;
   }
 
   async function deleteFieldEvent(id) {
@@ -212,7 +234,8 @@ const DB = (() => {
     saveImage, getImagesForEntry, deleteImage,
     deleteImagesForEntry, getPendingImages,
     saveWriteoff, getPendingWriteoffs, deleteWriteoff,
-    saveFieldEvent, getPendingFieldEvents, deleteFieldEvent,
+    saveFieldEvent, getPendingFieldEvents, getAllFieldEvents,
+    updateFieldEvent, deleteFieldEvent,
     getMeta, setMeta,
   };
 })();

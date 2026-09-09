@@ -10,7 +10,7 @@
   <title>BESS Field Log</title>
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="apple-touch-icon" href="/app/icons/icon-192.png" />
-  <link rel="stylesheet" href="/app/css/app.css?v=8" />
+  <link rel="stylesheet" href="/app/css/app.css?v=9" />
 </head>
 <body>
 
@@ -51,6 +51,7 @@
   <header class="topbar">
     <span class="topbar-title">📋 Field Log</span>
     <div class="topbar-actions">
+      <button class="icon-btn" onclick="App.goEvents()" title="PM / downtime records">🧰</button>
       <button class="icon-btn" onclick="App.goStock()" title="Spare parts">📦</button>
       <button class="icon-btn" onclick="App.syncNow()" title="Sync">🔄</button>
       <button class="icon-btn" onclick="App.goSettings()" title="Settings">⚙️</button>
@@ -275,7 +276,7 @@
 <!-- REPORT EVENT — PM / downtime / exclusion -->
 <div id="screen-event" class="screen">
   <header class="topbar">
-    <button class="icon-btn" onclick="App.goHome()">‹</button>
+    <button class="icon-btn" onclick="App.goEvents()">‹</button>
     <span class="topbar-title">Report Event</span>
     <button id="ev-save" class="topbar-save" onclick="App.saveEvent()">Save</button>
   </header>
@@ -330,6 +331,26 @@
   </div>
 </div>
 
+<!-- PM / DOWNTIME RECORDS -->
+<div id="screen-events" class="screen">
+  <header class="topbar">
+    <button class="icon-btn" onclick="App.goHome()">‹</button>
+    <span class="topbar-title">🧰 PM / downtime</span>
+    <div class="topbar-actions">
+      <button class="icon-btn" onclick="App.goEvent()" title="New record">＋</button>
+    </div>
+  </header>
+  <div class="sync-bar" id="ev-banner" style="display:none"></div>
+  <div class="screen-body">
+    <button id="ev-retry" class="btn btn-outline btn-block" style="display:none"
+            onclick="App.retryEvents()">↻&nbsp; Retry sending pending records</button>
+    <div id="ev-list" class="ev-list"></div>
+    <p class="ev-hint">These records reach the desktop on the next sync, where
+      PM becomes a maintenance activity and downtime feeds the monthly
+      availability figure.</p>
+  </div>
+</div>
+
 <!-- ADD SHEET — choose what to create -->
 <div id="add-sheet" class="modal" style="display:none" onclick="if(event.target===this)App.closeAddSheet()">
   <div class="modal-card">
@@ -337,6 +358,7 @@
     <button class="btn btn-outline btn-block sheet-btn" onclick="App.closeAddSheet(); App.goCreate();">📋&nbsp; Field Log entry</button>
     <button class="btn btn-outline btn-block sheet-btn" onclick="App.closeAddSheet(); App.goEvent();">🛠️&nbsp; PM / downtime</button>
     <button class="btn btn-outline btn-block sheet-btn" onclick="App.closeAddSheet(); App.goStock();">📦&nbsp; Write off material</button>
+    <button class="btn btn-outline btn-block sheet-btn" onclick="App.closeAddSheet(); App.goEvents();">🧾&nbsp; See PM / downtime records</button>
     <button class="btn btn-primary btn-block" style="margin-top:10px" onclick="App.closeAddSheet()">Cancel</button>
   </div>
 </div>
@@ -346,9 +368,9 @@
   <img id="lightbox-img" src="" alt="" />
 </div>
 
-<script src="/app/js/db.js?v=8"></script>
-<script src="/app/js/api.js?v=8"></script>
-<script src="/app/js/app.js?v=8"></script>
+<script src="/app/js/db.js?v=9"></script>
+<script src="/app/js/api.js?v=9"></script>
+<script src="/app/js/app.js?v=9"></script>
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/app/sw.js').catch(() => {});
