@@ -135,6 +135,67 @@ def get_blocks_for_zone(project_id: int, zone_number: int) -> List[int]:
     return [r["block_number"] for r in rows]
 
 
+# ── Plant-wide vs per-zone block numbering ───────────────────────────────────
+# SCADA, the monthly reports, availability exclusions and the asset tree all
+# number blocks 1..N across the whole plant ("BSC 57.02.01" = plant block 57).
+# The containers table numbers them *within a zone* (Tashkent: 9 zones of 8/7
+# blocks, each starting again at 1), and work_logs inherited that from the
+# entry form. Without a translation the two halves of the app never meet: a
+# report about plant block 57 finds no containers and no work logs.
+#
+# The mapping is derived from the data — zones in order, blocks in order
+# within each zone, numbered cumulatively. On this project that puts plant
+# blocks 24-31 in zone 4 and 63-70 in zone 9, which matches the two zones that
+# islanded together in April.
+
+_BLOCK_MAP_CACHE = {}
+
+
+def get_block_map(project_id: int, refresh: bool = False) -> dict:
+    """{'to_local': {plant_block: (zone, block)}, 'to_plant': {(zone, block): plant_block}}
+
+    Returns identity-style mappings when the project already numbers its
+    blocks plant-wide (single zone, or local numbers that already run to the
+    plant total).
+    """
+    if not refresh and project_id in _BLOCK_MAP_CACHE:
+        return _BLOCK_MAP_CACHE[project_id]
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT DISTINCT zone_number, block_number FROM containers
+            WHERE project_id = ? ORDER BY zone_number, block_number
+        """, (project_id,)).fetchall()
+    finally:
+        conn.close()
+
+    pairs = [(r["zone_number"], r["block_number"]) for r in rows]
+    local_max = max((b for _, b in pairs), default=0)
+    if local_max >= len(pairs):
+        # Already plant-wide (or a single zone) — keep the numbers as they are.
+        to_local = {b: (z, b) for z, b in pairs}
+    else:
+        to_local = {i: zb for i, zb in enumerate(pairs, start=1)}
+    out = {'to_local': to_local,
+           'to_plant': {zb: g for g, zb in to_local.items()}}
+    _BLOCK_MAP_CACHE[project_id] = out
+    return out
+
+
+def plant_block_to_zone(project_id: int, plant_block: int):
+    """(zone, local block) for a plant-wide block number, or (None, None)."""
+    return get_block_map(project_id)['to_local'].get(int(plant_block),
+                                                     (None, None))
+
+
+def zone_block_to_plant(project_id: int, zone_number, block_number):
+    """Plant-wide block number for a (zone, local block) pair, or None."""
+    if zone_number is None or block_number is None:
+        return None
+    return get_block_map(project_id)['to_plant'].get(
+        (int(zone_number), int(block_number)))
+
+
 def get_containers_for_block(project_id: int, zone_number: int, block_number: int) -> List[Container]:
     """Returns all containers within a specific zone/block."""
     conn = get_connection()

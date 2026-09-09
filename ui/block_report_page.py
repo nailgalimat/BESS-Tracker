@@ -111,6 +111,8 @@ class BlockReportWorker(QThread):
                     breakdown_incidents = self.params.get('breakdown_incidents') or None,
                     manual_unavailability = self.params.get('manual_unavailability') or None,
                     balancing_periods = self.params.get('balancing_periods') or None,
+                    # when set, the month's alarms are kept as equipment history
+                    project_id        = self.params.get('project_id'),
                     progress_callback = cb,
                 )
             self.finished.emit(out)

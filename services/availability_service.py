@@ -42,10 +42,16 @@ def get_exclusions(project_id: Optional[int] = None,
         if project_id is not None:
             query += " AND (project_id=? OR project_id IS NULL)"
             params.append(project_id)
+        # An unstamped (NULL) year/month means "not tied to a report month" —
+        # rows entered from the legacy Block Performance page carry no stamp.
+        # Treat those as applying to any month, exactly as a NULL project_id
+        # already applies to any project. Without this they silently vanish
+        # from reports generated on the Monthly Reports page, and availability
+        # jumps back up as if the grid had never gone down.
         if year is not None:
-            query += " AND year=?"; params.append(year)
+            query += " AND (year=? OR year IS NULL)"; params.append(year)
         if month is not None:
-            query += " AND month=?"; params.append(month)
+            query += " AND (month=? OR month IS NULL)"; params.append(month)
         if date_from:
             query += " AND date_to >= ?"
             params.append(date_from)
@@ -153,10 +159,12 @@ def get_balancing_periods(project_id: Optional[int] = None,
         if project_id is not None:
             query += " AND (project_id=? OR project_id IS NULL)"
             params.append(project_id)
+        # See get_exclusions: NULL year/month = unstamped legacy row, applies
+        # to any month. The report narrows by actual dates anyway.
         if year is not None:
-            query += " AND year=?"; params.append(year)
+            query += " AND (year=? OR year IS NULL)"; params.append(year)
         if month is not None:
-            query += " AND month=?"; params.append(month)
+            query += " AND (month=? OR month IS NULL)"; params.append(month)
         if date_from:
             query += " AND date_to >= ?"
             params.append(date_from)
@@ -444,6 +452,72 @@ def calculate_excluded_hours(exclusions: List[dict],
     }
 
 
+_EXC_WINDOW_CACHE = {}
+
+
+def _exclusion_windows(exclusions: List[dict]):
+    """Parse each exclusion's window and block list once.
+
+    `match_alarm_to_exclusions` is called once per alarm — around 20 000 times
+    for a monthly report. Re-parsing the same two dozen dates on every one of
+    those calls cost more than the rest of the report put together, so the
+    parsed form is cached against the exclusions' own values.
+
+    Returns [(start_ts, end_ts, blocks_set_or_None, exc), ...]; a None block
+    set means plant-wide.
+    """
+    key = tuple((e.get("date_from"), e.get("time_from"), e.get("date_to"),
+                 e.get("time_to"), e.get("affected_blocks"))
+                for e in exclusions or [])
+    hit = _EXC_WINDOW_CACHE.get(key)
+    if hit is not None:
+        return hit
+
+    out = []
+    for exc in exclusions or []:
+        try:
+            d_from = pd.to_datetime(exc["date_from"])
+            d_to   = pd.to_datetime(exc["date_to"])
+        except Exception:
+            continue
+        t_from = exc.get("time_from") or "00:00"
+        t_to   = exc.get("time_to")   or "23:59"
+        try:
+            hf, mf = map(int, t_from.split(":")[:2])
+            ht, mt = map(int, t_to.split(":")[:2])
+        except ValueError:
+            hf = mf = 0
+            ht, mt = 23, 59
+        start_dt = d_from.normalize() + pd.Timedelta(hours=hf, minutes=mf)
+        end_dt   = d_to.normalize()   + pd.Timedelta(hours=ht, minutes=mt)
+
+        affected_str = (exc.get("affected_blocks") or "").strip()
+        if not affected_str or affected_str.lower() in ("all", "all blocks"):
+            blocks = None                      # plant-wide
+        else:
+            blocks = set()
+            for tok in affected_str.split(","):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                try:
+                    if "-" in tok:             # "24-31" style range
+                        a, z = (int(x) for x in tok.split("-", 1))
+                        blocks.update(range(min(a, z), max(a, z) + 1))
+                    else:
+                        blocks.add(int(tok))
+                except ValueError:
+                    continue
+            if not blocks:                     # unparseable spec — skip, as before
+                continue
+        out.append((start_dt, end_dt, blocks, exc))
+
+    if len(_EXC_WINDOW_CACHE) > 64:
+        _EXC_WINDOW_CACHE.clear()
+    _EXC_WINDOW_CACHE[key] = out
+    return out
+
+
 def match_alarm_to_exclusions(activated_dt,
                                 block_id,
                                 exclusions: List[dict]) -> Optional[dict]:
@@ -479,39 +553,14 @@ def match_alarm_to_exclusions(activated_dt,
         except (TypeError, ValueError):
             block_id_int = None
 
-    for exc in exclusions or []:
-        try:
-            d_from = pd.to_datetime(exc["date_from"])
-            d_to   = pd.to_datetime(exc["date_to"])
-        except Exception:
-            continue
-        t_from = exc.get("time_from") or "00:00"
-        t_to   = exc.get("time_to")   or "23:59"
-        try:
-            hf, mf = map(int, t_from.split(":"))
-            ht, mt = map(int, t_to.split(":"))
-        except ValueError:
-            hf = mf = 0
-            ht, mt = 23, 59
-
-        start_dt = d_from.normalize() + pd.Timedelta(hours=hf, minutes=mf)
-        end_dt   = d_to.normalize()   + pd.Timedelta(hours=ht, minutes=mt)
-
+    for start_dt, end_dt, blocks, exc in _exclusion_windows(exclusions):
         if not (start_dt <= activated_ts <= end_dt):
             continue
-
-        affected_str = (exc.get("affected_blocks") or "").strip()
-        if not affected_str or affected_str.lower() in ("all", "all blocks"):
-            return exc
-
+        if blocks is None:
+            return exc                 # plant-wide covers everything
         if block_id_int is None:
             continue   # per-block exclusion can't cover an unattributable alarm
-        try:
-            affected_ids = {int(b.strip()) for b in affected_str.split(",")
-                              if b.strip()}
-        except ValueError:
-            continue
-        if block_id_int in affected_ids:
+        if block_id_int in blocks:
             return exc
 
     return None

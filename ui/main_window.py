@@ -29,6 +29,7 @@ from ui.checklist_page    import ChecklistPage
 from ui.stock_page        import StockPage
 from ui.kpi_page          import KpiPage
 from ui.asset_page           import AssetPage
+from ui.equipment_page       import EquipmentPage
 from ui.worklog_entry_form   import FieldLogEntryPage, FieldLogRecordsPage
 from ui.project_launcher      import ProjectLauncher
 from ui.sync_settings_dialog import SyncSettingsDialog
@@ -62,6 +63,7 @@ PAGE_FIELD_RECS = 15
 PAGE_PROJECTS   = 16
 PAGE_MONTHLY    = 17
 PAGE_LAUNCHER   = 18
+PAGE_EQUIPMENT  = 19
 
 PAGE_NAMES = {
     PAGE_DASHBOARD: "Dashboard",
@@ -83,12 +85,13 @@ PAGE_NAMES = {
     PAGE_PROJECTS:  "Project Setup",
     PAGE_MONTHLY:   "Monthly Reports",
     PAGE_LAUNCHER:  "Select Project",
+    PAGE_EQUIPMENT: "Equipment",
 }
 
 # Pages that can be scoped to the shell's "current project". Each such page
 # exposes set_current_project(project_id); the shell calls it when a project
 # is opened. Pages without the method are simply skipped (still self-scoped).
-PROJECT_SCOPED_PAGES = ("projects_page", "monthly_page")
+PROJECT_SCOPED_PAGES = ("projects_page", "monthly_page", "equipment_page")
 
 
 class NavButton(QPushButton):
@@ -192,6 +195,7 @@ class MainWindow(QMainWindow):
         self._add_nav(mn, "🗂", "Field Records",  PAGE_FIELD_RECS)
 
         self._add_section(mn, "MAINTAIN")
+        self._add_nav(mn, "🧩", "Equipment",       PAGE_EQUIPMENT)
         self._add_nav(mn, "✅", "Checklists / PM", PAGE_CHECKLIST)
         self._add_nav(mn, "🏷", "Asset Register",  PAGE_ASSETS)
         self._add_nav(mn, "📦", "Spare Parts",     PAGE_STOCK)
@@ -292,6 +296,11 @@ class MainWindow(QMainWindow):
         self.projects_page        = ProjectsPage()           # 16
         self.monthly_page         = MonthlyReportsPage()     # 17
         self.launcher             = ProjectLauncher()        # 18
+        self.equipment_page       = EquipmentPage()          # 19
+        # One tap from an alarm to a pre-filled Work Report, and straight back
+        # to the list afterwards so the next one is one tap away too.
+        self.equipment_page.work_report_requested.connect(self._report_from_alarm)
+        self.work_log_form.alarm_report_saved.connect(self._back_to_equipment)
         self.launcher.project_selected.connect(self._open_project)
         self.launcher.new_project_requested.connect(self._new_project)
         # New entries → refresh the records timeline so it's current when opened
@@ -318,6 +327,7 @@ class MainWindow(QMainWindow):
             self.projects_page,    # 16  (Projects)
             self.monthly_page,     # 17  (Monthly Reports)
             self.launcher,         # 18  (Project launcher — front door)
+            self.equipment_page,   # 19  (Equipment — asset tree + history)
         ]:
             self.stack.addWidget(page)
 
@@ -412,6 +422,24 @@ class MainWindow(QMainWindow):
 
     def _switch_project(self):
         self._show_launcher()
+
+    def _report_from_alarm(self, event: dict):
+        """Equipment page → Work Report, pre-filled from the SCADA alarm."""
+        self._navigate(PAGE_WORK_LOG)
+        try:
+            self.work_log_form.prefill_from_alarm(event)
+        except Exception as e:                       # noqa: BLE001
+            self.status_bar.showMessage(f"  Could not prefill: {e}", 6000)
+
+    def _back_to_equipment(self, work_log_id: int):
+        """Report written — return to the list it was raised from."""
+        self._navigate(PAGE_EQUIPMENT)
+        try:
+            self.equipment_page.refresh_after_report()
+        except Exception:                            # noqa: BLE001
+            pass
+        self.status_bar.showMessage(
+            f"  Work report #{work_log_id} saved — next one?", 6000)
 
     def _push_current_project(self):
         """Tell project-scoped pages which project is now active."""

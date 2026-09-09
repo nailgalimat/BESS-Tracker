@@ -26,6 +26,30 @@ from services.sync_config import sync_config
 from services.image_service import get_images_for_log
 
 TIMEOUT = 15   # seconds per request
+RETRIES = 3    # attempts for transient TLS / connection drops
+RETRY_WAIT = 1.5
+
+
+def _with_retry(fn):
+    """Run a request, retrying transient TLS/connection drops.
+
+    Render's edge occasionally resets a TLS connection mid-handshake, which
+    surfaces as SSLEOFError ('UNEXPECTED_EOF_WHILE_READING') even though the
+    server is healthy. A browser retries silently; requests does not, so a
+    perfectly good login looked like a hard failure. Only connection-level
+    errors are retried — an HTTP error response is returned as-is.
+    """
+    import time
+    from requests.exceptions import SSLError, ConnectionError as _ConnErr, Timeout
+    last = None
+    for attempt in range(RETRIES):
+        try:
+            return fn()
+        except (SSLError, _ConnErr, Timeout) as ex:
+            last = ex
+            if attempt < RETRIES - 1:
+                time.sleep(RETRY_WAIT * (attempt + 1))
+    raise last
 
 SyncResult = namedtuple("SyncResult", [
     "pushed", "pulled", "conflicts", "errors", "skipped"
@@ -54,12 +78,12 @@ def login(server_url: str, username: str, password: str) -> dict:
     # the static mount and returns 405 — so strip a trailing /app here.
     if url.endswith("/app"):
         url = url[:-4].rstrip("/")
-    resp = requests.post(
+    resp = _with_retry(lambda: requests.post(
         f"{url}/auth/login",
         json={"username": username, "password": password,
               "device_id": sync_config.device_id},
         timeout=TIMEOUT,
-    )
+    ))
     resp.raise_for_status()
     data = resp.json()
 
@@ -104,10 +128,13 @@ def _request(method: str, path: str, extra_headers: Optional[dict] = None, **kwa
         if extra_headers:
             h.update(extra_headers)
         return h
-    resp = getattr(requests, method)(url, headers=_hdrs(), timeout=TIMEOUT, **kwargs)
+    resp = _with_retry(
+        lambda: getattr(requests, method)(url, headers=_hdrs(), timeout=TIMEOUT, **kwargs))
     if resp.status_code == 401:
         if refresh_access_token():
-            resp = getattr(requests, method)(url, headers=_hdrs(), timeout=TIMEOUT, **kwargs)
+            resp = _with_retry(
+                lambda: getattr(requests, method)(url, headers=_hdrs(),
+                                                  timeout=TIMEOUT, **kwargs))
     return resp
 
 
@@ -329,7 +356,7 @@ def pull_writeoffs() -> dict:
     only applied once (dedup on reference 'MOB-<id>')."""
     from services.stock_service import get_project_warehouse_id, record_transaction
     stats = {"applied": 0, "errors": 0}
-    cursor = sync_config.stock_cursor
+    cursor = str(sync_config.stock_cursor or "0")   # never None — see below
 
     while True:
         try:
@@ -436,7 +463,9 @@ def pull_field_events() -> dict:
         add_manual_unavailability, add_exclusion, EXCLUSION_TYPES)
     from services.report_workflow_service import add_pm_activity
     stats = {"applied": 0, "errors": 0}
-    cursor = sync_config.field_cursor
+    # Always a string: a missing/None cursor would blow up the comparison
+    # below and take the whole sync with it.
+    cursor = str(sync_config.field_cursor or "0")
 
     while True:
         try:

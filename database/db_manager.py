@@ -164,9 +164,33 @@ def initialize_database():
             ("unavailability_id",    "INTEGER"),
             ("availability_impact",  "TEXT DEFAULT 'none'"),  # none|counts|excluded
             ("exclusion_id",         "INTEGER"),
+            # The SCADA alarm this report answers, when it was raised from the
+            # Equipment page. Lets the app tell which faults are still
+            # unreported instead of trusting memory.
+            ("alarm_event_id",       "INTEGER"),
         ]:
             if _col not in _wl_cols:
                 c.execute(f"ALTER TABLE work_logs ADD COLUMN {_col} {_decl}")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_work_logs_alarm "
+                  "ON work_logs(alarm_event_id)")
+
+        # ── WORK REPORT ↔ ALARM LINKS ──────────────────────────────────────
+        # One fault often trips many units at once — a BSC-PCS comm fault hit
+        # 25 units in the same minute in August 2026. That is one incident and
+        # one work report, not 25. work_logs.alarm_event_id keeps the alarm the
+        # report was raised from; this table covers every alarm it answers, so
+        # the "needs a report" list clears all of them together.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS work_log_alarms (
+                work_log_id    INTEGER NOT NULL,
+                alarm_event_id INTEGER NOT NULL,
+                created_at     TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (work_log_id, alarm_event_id),
+                FOREIGN KEY (work_log_id) REFERENCES work_logs(id) ON DELETE CASCADE
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_wla_alarm "
+                  "ON work_log_alarms(alarm_event_id)")
 
         # ── WORK-REPORT MATERIALS (parts consumed on a work log) ───────────
         # One row per material used on a work_log. On save an OUT stock
@@ -520,6 +544,75 @@ def initialize_database():
             )
         """)
 
+        # ── ASSET TREE (block → LC → PCS unit → module) ───────────────────
+        # The real equipment hierarchy, generated automatically from the codes
+        # SCADA already puts in the alarm `Element` field ("BSC 32.01.02" →
+        # block 32, LC 1, unit 2). Blocks/LCs/units are first-class rows;
+        # DC/DC and CMU modules are only materialised when something actually
+        # references them (a fault or a replacement), so the tree stays a live
+        # record instead of thousands of empty placeholders.
+        #   code: '32' | '32.01' | '32.01.02' | '32.01.02.07'
+        #   level: block | lc | unit | module
+        # `legacy_container_id` links an LC row to the older `containers` table
+        # so existing screens keep working while new ones use this tree.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS assets (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id          INTEGER NOT NULL,
+                parent_id           INTEGER,
+                level               TEXT    NOT NULL,
+                code                TEXT    NOT NULL,
+                name                TEXT    DEFAULT '',
+                equipment_type      TEXT    DEFAULT '',
+                serial_number       TEXT    DEFAULT '',
+                capacity_kwh        REAL,
+                legacy_container_id INTEGER,
+                notes               TEXT    DEFAULT '',
+                created_at          TEXT    DEFAULT (datetime('now')),
+                UNIQUE(project_id, code),
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (parent_id)  REFERENCES assets(id)   ON DELETE CASCADE
+            )
+        """)
+
+        # ── ALARM EVENT HISTORY ───────────────────────────────────────────
+        # SCADA alarms were previously read from Excel at report time and then
+        # thrown away, so no screen could answer "what has happened to this
+        # unit before?". Persisting them per (project, month) makes equipment
+        # history, repeat-failure lookup and report/SCADA reconciliation
+        # possible. The UNIQUE key makes re-importing the same month a no-op.
+        #   asset_code = most specific code ('49.01.02.07')
+        #   unit_code  = its PCS-unit ancestor ('49.01.02') for roll-ups
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS alarm_events (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id     INTEGER NOT NULL,
+                element        TEXT    NOT NULL,
+                asset_code     TEXT    DEFAULT '',
+                unit_code      TEXT    DEFAULT '',
+                block          INTEGER,
+                lc             INTEGER,
+                unit           INTEGER,
+                sub            INTEGER,
+                equipment_type TEXT    DEFAULT '',
+                category       TEXT    DEFAULT '',
+                trigger_name   TEXT    DEFAULT '',
+                cls_reason     TEXT    DEFAULT '',
+                cls_subsystem  TEXT    DEFAULT '',
+                cls_severity   TEXT    DEFAULT '',
+                activated      TEXT,
+                deactivated    TEXT,
+                duration_min   REAL    DEFAULT 0,
+                is_excluded    INTEGER DEFAULT 0,
+                excluded_by    TEXT    DEFAULT '',
+                year           INTEGER,
+                month          INTEGER,
+                imported_at    TEXT    DEFAULT (datetime('now')),
+                UNIQUE(project_id, element, trigger_name, activated),
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            )
+        """)
+
         # ── SYNCED FIELD EVENTS (dedupe log for mobile PM/downtime pull) ─────
         # Records which phone-captured field_events have already been applied
         # into pm_activities / manual_unavailability / availability_exclusions,
@@ -569,6 +662,15 @@ def initialize_database():
             "CREATE INDEX IF NOT EXISTS idx_wlt_worklog               ON work_log_tags(work_log_id)",
             "CREATE INDEX IF NOT EXISTS idx_wlsp_worklog              ON worklog_spare_parts(work_log_id)",
             "CREATE INDEX IF NOT EXISTS idx_wlm_worklog               ON work_log_materials(work_log_id)",
+            "CREATE INDEX IF NOT EXISTS idx_assets_project            ON assets(project_id)",
+            "CREATE INDEX IF NOT EXISTS idx_assets_parent             ON assets(parent_id)",
+            "CREATE INDEX IF NOT EXISTS idx_assets_code               ON assets(project_id, code)",
+            "CREATE INDEX IF NOT EXISTS idx_assets_level              ON assets(project_id, level)",
+            "CREATE INDEX IF NOT EXISTS idx_alarm_ev_unit             ON alarm_events(project_id, unit_code)",
+            "CREATE INDEX IF NOT EXISTS idx_alarm_ev_asset            ON alarm_events(project_id, asset_code)",
+            "CREATE INDEX IF NOT EXISTS idx_alarm_ev_month            ON alarm_events(project_id, year, month)",
+            "CREATE INDEX IF NOT EXISTS idx_alarm_ev_block            ON alarm_events(project_id, block)",
+            "CREATE INDEX IF NOT EXISTS idx_alarm_ev_trigger          ON alarm_events(trigger_name)",
         ]
         for idx in indexes:
             c.execute(idx)

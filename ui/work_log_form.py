@@ -22,17 +22,19 @@ from PyQt5.QtWidgets import (
     QMenu, QAction, QDialog, QDialogButtonBox,
     QCheckBox, QDoubleSpinBox, QTimeEdit, QScrollArea, QFrame,
 )
-from PyQt5.QtCore import Qt, QDate
+from PyQt5.QtCore import Qt, QDate, QTime, pyqtSignal
 from PyQt5.QtGui import QFont, QColor
 
 from services.project_service import (
     get_all_projects, get_zones_for_project,
     get_blocks_for_zone, get_containers_for_block,
+    plant_block_to_zone,
 )
 from services.work_log_service import (
     save_work_log, get_work_logs, delete_work_log,
     update_work_log, STATUS_OPTIONS, STATUS_COLORS,
     add_work_log_material, set_work_log_unavailability, set_work_log_exclusion,
+    link_work_log_alarms,
 )
 from services.stock_service import (
     get_project_warehouse_id, get_stock, record_transaction,
@@ -69,12 +71,19 @@ COL_HEADERS = [c[1] for c in TABLE_COLUMNS]
 class WorkLogForm(QWidget):
     """Work Log module: add entries + view/filter/edit existing ones."""
 
+    # Emitted after saving a report that was raised from an alarm, so the
+    # shell can take the engineer back to the list they came from.
+    alarm_report_saved = pyqtSignal(int)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._containers = []   # containers in selected block
         self._all_rows   = []   # raw dicts from last DB query
         self._materials  = []   # parts staged for this work report
         self._wh_id      = None # project warehouse id (materials source)
+        self._alarm_event_id = None  # set when raised from the Equipment page
+        self._alarm_ids  = []   # every alarm this report answers (one incident)
+        self._precedents = []   # earlier reports about the same fault
         self._build_ui()
         self._load_projects()
 
@@ -100,6 +109,16 @@ class WorkLogForm(QWidget):
         form_widget = QWidget()
         form_layout = QVBoxLayout(form_widget)
         form_layout.setSpacing(6)
+
+        # Shown only when this report was raised from an alarm on the
+        # Equipment page, so it is obvious what the report is answering.
+        self.alarm_banner = QLabel("")
+        self.alarm_banner.setWordWrap(True)
+        self.alarm_banner.setStyleSheet(
+            "background:#EAF3FF;border:1px solid #B9D6F7;border-radius:6px;"
+            "padding:8px 10px;color:#14508C;font-size:11px;")
+        self.alarm_banner.setVisible(False)
+        form_layout.addWidget(self.alarm_banner)
 
         # Asset group — pick the asset, serial + type auto-fill
         loc_group = QGroupBox("Asset")
@@ -145,6 +164,9 @@ class WorkLogForm(QWidget):
         self.fault_input = QTextEdit()
         self.fault_input.setMaximumHeight(56)
         self.fault_input.setPlaceholderText("Describe the fault or error observed...")
+        # Look for earlier reports as soon as the engineer stops typing the
+        # fault — the precedent is most useful before writing the fix, not after
+        self.fault_input.installEventFilter(self)
         work_form.addRow("Fault / Error *:", self.fault_input)
 
         self.root_cause_input = QTextEdit()
@@ -216,6 +238,41 @@ class WorkLogForm(QWidget):
         rm_mat_btn.clicked.connect(self._remove_material)
         mat_l.addWidget(rm_mat_btn)
         form_layout.addWidget(mat_group)
+
+        # "Seen before?" — what was done about this same fault last time.
+        self.prec_group = QGroupBox("Seen before")
+        pl = QVBoxLayout(self.prec_group)
+        pl.setSpacing(4)
+        self.prec_hint = QLabel("No earlier report for this fault.")
+        self.prec_hint.setStyleSheet("color:#6B7A8D;font-size:11px;")
+        self.prec_hint.setWordWrap(True)
+        pl.addWidget(self.prec_hint)
+        self.prec_list = QTableWidget(0, 4)
+        self.prec_list.setHorizontalHeaderLabels(
+            ["Date", "Block", "What was done", "Result"])
+        self.prec_list.setMaximumHeight(120)
+        self.prec_list.horizontalHeader().setStretchLastSection(True)
+        self.prec_list.setColumnWidth(0, 76)
+        self.prec_list.setColumnWidth(1, 44)
+        self.prec_list.setColumnWidth(2, 210)
+        self.prec_list.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.prec_list.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.prec_list.verticalHeader().setVisible(False)
+        self.prec_list.itemSelectionChanged.connect(self._show_precedent)
+        pl.addWidget(self.prec_list)
+        self.prec_detail = QLabel("")
+        self.prec_detail.setWordWrap(True)
+        self.prec_detail.setStyleSheet(
+            "background:#F5F8FC;border:1px solid #DDE6F0;border-radius:5px;"
+            "padding:6px 8px;color:#33465E;font-size:11px;")
+        self.prec_detail.setVisible(False)
+        pl.addWidget(self.prec_detail)
+        self.prec_copy = QPushButton("↧  Copy this fix into the form")
+        self.prec_copy.clicked.connect(self._copy_precedent)
+        self.prec_copy.setEnabled(False)
+        pl.addWidget(self.prec_copy)
+        self.prec_group.setVisible(False)
+        form_layout.addWidget(self.prec_group)
 
         # Availability impact — classify how this event affects availability
         av_group = QGroupBox("Availability Impact")
@@ -411,6 +468,248 @@ class WorkLogForm(QWidget):
             self.serial_label.setText(c.serial_number or "N/A")
             self.type_label.setText(c.container_type)
 
+    # ── Raised from an alarm ────────────────────────────────────────────────
+
+    def prefill_from_alarm(self, ev: dict):
+        """Open this form already filled in from a SCADA alarm.
+
+        `ev` is a row from asset_tree_service (alarm_events). Everything the
+        alarm already knows — where, what, when, how long, and whether the
+        downtime counts — is filled in, so the engineer only writes what was
+        actually done.
+        """
+        self._alarm_event_id = ev.get('id')
+        # A grouped incident carries every alarm it covers; a single alarm is
+        # just a group of one.
+        self._alarm_ids = [int(i) for i in (ev.get('ids') or [ev.get('id')]) if i]
+
+        pid = ev.get('project_id')
+        if pid is not None:
+            idx = self.proj_combo.findData(pid)
+            if idx >= 0:
+                self.proj_combo.setCurrentIndex(idx)
+
+        block = ev.get('block')
+        if block is not None:
+            self._select_block(int(block))
+        lc = ev.get('lc')
+        self._select_container_for(ev)
+
+        act = str(ev.get('activated') or '')
+        de = str(ev.get('deactivated') or '')
+        if len(act) >= 10:
+            d = QDate.fromString(act[:10], 'yyyy-MM-dd')
+            if d.isValid():
+                self.date_edit.setDate(d)
+        if len(act) >= 16:
+            t = QTime.fromString(act[11:16], 'HH:mm')
+            if t.isValid():
+                self.start_time.setTime(t)
+        # The form records one day's work. An alarm that ran past midnight
+        # would otherwise read as "15:26 → 17:31" on the start date, i.e. two
+        # hours instead of five weeks — so only fill the end time when the
+        # alarm actually cleared the same day, and spell the real window out
+        # in the comments either way.
+        same_day = len(de) >= 10 and de[:10] == act[:10]
+        if same_day and len(de) >= 16:
+            t = QTime.fromString(de[11:16], 'HH:mm')
+            if t.isValid():
+                self.end_time.setTime(t)
+        elif de:
+            self.comments_input.setPlainText(
+                f"Alarm window {act[:16]} → {de[:16]} "
+                f"({float(ev.get('hours') or 0):.2f} h, spans several days).")
+
+        parts = [str(ev.get('trigger_name') or '').strip()]
+        assets = ev.get('assets') or []
+        if len(self._alarm_ids) > 1 and assets:
+            shown = ', '.join(assets[:8])
+            more = f" +{len(assets) - 8} more" if len(assets) > 8 else ''
+            parts.append(f"[{len(assets)} units: {shown}{more}]")
+        elif ev.get('element'):
+            parts.append(f"[{ev['element']}]")
+        self.fault_input.setPlainText(' '.join(p for p in parts if p))
+        reason = str(ev.get('cls_reason') or '').strip()
+        if reason and reason.lower() != 'unclassified':
+            self.root_cause_input.setPlainText(reason)
+
+        # Availability impact stays "none" on purpose. This downtime is
+        # already in the availability figure — it came from SCADA. Adding a
+        # manual_unavailability row for the same alarm would charge the plant
+        # twice; the same goes for an exclusion when the alarm already fell
+        # inside an exclusion window. Only override this when SCADA missed
+        # downtime that the alarm does not cover.
+        hours = float(ev.get('hours') or 0)
+        self._set_impact('none')
+        i = self.lc_combo.findData(int(lc) if lc is not None else None)
+        if i >= 0:
+            self.lc_combo.setCurrentIndex(i)
+        self.av_hint.setText(
+            'Left at "no impact": this alarm is already counted in the '
+            'availability figure from SCADA. Change it only for downtime the '
+            'alarm does not already cover.')
+
+        state = ('inside an exclusion window (' + str(ev.get('excluded_by') or '')
+                 + ')') if ev.get('is_excluded') else 'counted against availability'
+        n = len(self._alarm_ids)
+        if n > 1:
+            assets = ev.get('assets') or []
+            where = ', '.join(assets[:6]) + ('…' if len(assets) > 6 else '')
+            self.alarm_banner.setText(
+                f"⚡ One incident, {n} units — {ev.get('trigger_name','')} · "
+                f"from {act[:16]} · worst {hours:.2f} h "
+                f"({float(ev.get('total_hours') or 0):.2f} h in total). "
+                f"Units: {where}. Saving covers all {n} alarms.")
+        else:
+            self.alarm_banner.setText(
+                f"⚡ Raised from alarm #{ev.get('id')} — {ev.get('element','')} · "
+                f"{act[:16]} · {hours:.2f} h · {state}. "
+                f"Saving links the report to it.")
+        self.alarm_banner.setVisible(True)
+        self._load_precedents(str(ev.get('trigger_name') or ''))
+        self.work_input.setFocus()
+
+    def _select_block(self, plant_block: int):
+        """Select the zone/block pair for a plant-wide block number.
+
+        The alarm says "plant block 57"; the form's dropdowns are per zone,
+        where that is zone 8, block 2. See project_service.get_block_map.
+        """
+        pid = self.proj_combo.currentData()
+        if not pid:
+            return None, None
+        zone, local = plant_block_to_zone(pid, plant_block)
+        if zone is None:
+            return None, None
+        zi = self.zone_combo.findData(zone)
+        if zi < 0:
+            return None, None
+        self.zone_combo.setCurrentIndex(zi)
+        bi = self.block_combo.findData(local)
+        if bi >= 0:
+            self.block_combo.setCurrentIndex(bi)
+        return zone, local
+
+    # SCADA element type → the kind of container that houses it. The
+    # container inventory is coarser than the SCADA hierarchy (one "LC
+    # Cabinet" row per block, where SCADA sees two LCs), so this picks the
+    # right *kind* of asset; the exact unit stays in the fault text.
+    _EQ_TO_CONTAINER = (
+        ('DC/DC', 'battery'), ('CMU', 'battery'), ('BMS', 'battery'),
+        ('BSC', 'pcs'), ('PCS', 'pcs'),
+        ('LC', 'lc'),
+    )
+
+    def _select_container_for(self, ev: dict):
+        eq = str(ev.get('equipment_type') or '').upper()
+        want = next((kind for prefix, kind in self._EQ_TO_CONTAINER
+                     if eq.startswith(prefix)), None)
+        if want is None:
+            return
+        for i in range(self.container_combo.count()):
+            cid = self.container_combo.itemData(i)
+            c = next((x for x in self._containers if x.id == cid), None)
+            if c and want in str(c.container_type or '').lower():
+                self.container_combo.setCurrentIndex(i)
+                return
+
+    # ── "Seen before?" ─────────────────────────────────────────────────────
+
+    def eventFilter(self, obj, event):
+        from PyQt5.QtCore import QEvent
+        if (obj is self.fault_input and event.type() == QEvent.FocusOut
+                and not self._alarm_event_id):
+            if len(self.fault_input.toPlainText().strip()) >= 6:
+                self._load_precedents()
+        return super().eventFilter(obj, event)
+
+    def _load_precedents(self, trigger_name: str = ''):
+        """Show what was done about this same fault before."""
+        import services.asset_tree_service as ats
+        pid = self.proj_combo.currentData()
+        self._precedents = []
+        self.prec_list.setRowCount(0)
+        self.prec_detail.setVisible(False)
+        self.prec_copy.setEnabled(False)
+        if not pid:
+            self.prec_group.setVisible(False)
+            return
+        try:
+            self._precedents = ats.find_precedents(
+                pid, trigger_name=trigger_name,
+                fault_text=self.fault_input.toPlainText().strip())
+        except Exception:                            # noqa: BLE001
+            self._precedents = []
+        self.prec_group.setVisible(True)
+        if not self._precedents:
+            self.prec_hint.setText(
+                "No earlier report for this fault — this is the first one.")
+            return
+        exact = sum(1 for p in self._precedents if p['match'] == 'same alarm')
+        self.prec_hint.setText(
+            f"{len(self._precedents)} earlier report(s)"
+            + (f", {exact} on the same alarm" if exact else ", matched on text")
+            + ". Pick one to see what was done.")
+        for p in self._precedents:
+            r = self.prec_list.rowCount()
+            self.prec_list.insertRow(r)
+            blk = ''
+            if p.get('block_number') is not None:
+                from services.project_service import zone_block_to_plant
+                blk = str(zone_block_to_plant(pid, p.get('zone_number'),
+                                              p.get('block_number'))
+                          or p.get('block_number'))
+            for c, v in enumerate([str(p.get('date') or ''), blk,
+                                   str(p.get('work_performed') or '')[:90],
+                                   str(p.get('status') or '')]):
+                self.prec_list.setItem(r, c, QTableWidgetItem(v))
+
+    def _show_precedent(self):
+        r = self.prec_list.currentRow()
+        if not (0 <= r < len(self._precedents)):
+            return
+        p = self._precedents[r]
+        bits = [f"<b>{p.get('date','')}</b> — {p.get('fault_description','')}"]
+        if p.get('root_cause'):
+            bits.append(f"Root cause: {p['root_cause']}")
+        if p.get('work_performed'):
+            bits.append(f"Fix: {p['work_performed']}")
+        if p.get('materials'):
+            bits.append("Parts: " + ", ".join(p['materials']))
+        tail = " · ".join(x for x in [p.get('engineer'), p.get('status'),
+                                      p.get('sap_ticket')] if x)
+        if tail:
+            bits.append(tail)
+        self.prec_detail.setText("<br>".join(bits))
+        self.prec_detail.setVisible(True)
+        self.prec_copy.setEnabled(bool(p.get('work_performed')))
+
+    def _copy_precedent(self):
+        r = self.prec_list.currentRow()
+        if not (0 <= r < len(self._precedents)):
+            return
+        p = self._precedents[r]
+        if p.get('work_performed'):
+            self.work_input.setPlainText(str(p['work_performed']))
+        if p.get('root_cause') and not self.root_cause_input.toPlainText().strip():
+            self.root_cause_input.setPlainText(str(p['root_cause']))
+        self.work_input.setFocus()
+
+    def _set_impact(self, mode: str):
+        i = self.impact_combo.findData(mode)
+        if i >= 0:
+            self.impact_combo.setCurrentIndex(i)
+
+    def _clear_alarm_link(self):
+        self._alarm_event_id = None
+        self._alarm_ids = []
+        self.alarm_banner.setVisible(False)
+        self._precedents = []
+        self.prec_list.setRowCount(0)
+        self.prec_detail.setVisible(False)
+        self.prec_copy.setEnabled(False)
+        self.prec_group.setVisible(False)
+
     # ── Materials & availability ────────────────────────────────────────────
 
     def _reload_materials_combo(self):
@@ -539,6 +838,7 @@ class WorkLogForm(QWidget):
             end_time         = self.end_time.time().toString("HH:mm"),
             affects_availability = 1 if impact in ("counts", "excluded") else 0,
             availability_impact  = impact,
+            alarm_event_id       = self._alarm_event_id,
         )
 
         # ── Fan-out 1: material consumption → OUT stock transactions ─────────
@@ -598,6 +898,13 @@ class WorkLogForm(QWidget):
                 QMessageBox.warning(self, "Availability",
                     f"Work report saved, but the exclusion failed:\n{e}")
 
+        if self._alarm_ids:
+            link_work_log_alarms(entry_id, self._alarm_ids)
+            n = len(self._alarm_ids)
+            extras.append(f"linked to {n} alarm(s)" if n > 1
+                          else f"linked to alarm #{self._alarm_event_id}")
+
+        from_alarm = bool(self._alarm_ids)
         msg = f"Work report #{entry_id} saved."
         if extras:
             msg += "\n\n• " + "\n• ".join(extras)
@@ -605,8 +912,11 @@ class WorkLogForm(QWidget):
         self._clear_work_fields()
         self._reload_materials_combo()   # refresh stock quantities in the picker
         self._load_table()
+        if from_alarm:
+            self.alarm_report_saved.emit(entry_id)
 
     def _clear_work_fields(self):
+        self._clear_alarm_link()
         self.fault_input.clear()
         self.root_cause_input.clear()
         self.work_input.clear()

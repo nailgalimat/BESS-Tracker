@@ -62,6 +62,7 @@ from services.bukhara_report_service import (
     build_container_day_status,
     build_unavailability_reasons,
     build_faults_summary,
+    build_event_type_table,
     build_breakdown_candidates,
     mark_planned_stop_events,
     NOISE_TRIGGER_PATTERNS,
@@ -1291,6 +1292,7 @@ def generate_tashkent_report(
     output_format='pdf',
     exclusions=None,               # list of dicts from availability_service.get_exclusions()
     balancing_periods=None,        # list of dicts from availability_service.get_balancing_periods()
+    project_id=None,               # when set, this month's alarms become equipment history
 ):
     def log(msg):
         if progress_callback: progress_callback(msg)
@@ -1548,6 +1550,17 @@ def generate_tashkent_report(
     excluded_hours_value = (excl_result['excluded_hours']
                              if excl_result else 0.0)
 
+    # "Scheduled unavailability (PM)" row: derive from the Scheduled
+    # Maintenance exclusions when the caller didn't supply a figure, instead of
+    # always printing 0.0 h. Uses the same plant-weighted hours as the
+    # exclusion breakdown, so maintenance done one block at a time is reported
+    # as its share of the plant clock — 28 windows of ~3.8 h on single blocks
+    # is 1.5 plant-hours, not 106 — which is what this row is compared against
+    # ('Scheduled hours'). An explicit argument still wins.
+    if not scheduled_unavail_hours and excl_result:
+        scheduled_unavail_hours = float(
+            (excl_result.get('breakdown') or {}).get('Scheduled Maintenance', 0.0) or 0.0)
+
     # Build the container-level daily availability frame used by the new
     # categorical heatmap. Mean of (working_status in AVAILABLE_STATES) per
     # (date, block, container) — independent of the block-level metric in
@@ -1744,6 +1757,25 @@ def generate_tashkent_report(
     period_str = f"{dates[0].strftime('%d %B %Y')} — {dates[-1].strftime('%d %B %Y')}"
     report_month = dates[0].strftime('%B %Y')
     n_blocks = daily_kpi['block'].nunique()
+
+    # Equipment history: keep this month's alarms instead of discarding them
+    # once the report is written. Idempotent, so re-running the report for the
+    # same month changes nothing. Never let it break report generation.
+    if project_id:
+        try:
+            from services.asset_tree_service import (import_alarm_events,
+                                                     rebuild_asset_tree)
+            log("Storing alarms as equipment history...")
+            import_alarm_events(project_id, int(dates[0].year),
+                                int(dates[0].month), alarms, log=log)
+            # A block is 2 LCs of 2 PCS units each — 4 units per block.
+            blk_kwh = float(per_block_capacity_mw or 0) * 1000.0
+            rebuild_asset_tree(
+                project_id,
+                unit_capacity_kwh=(blk_kwh / 4.0) if blk_kwh else None,
+                lc_capacity_kwh=(blk_kwh / 2.0) if blk_kwh else None)
+        except Exception as e:                       # noqa: BLE001
+            log(f"  ⚠  equipment history not updated: {e}")
 
     # Projection factor for "Projected Cycles for the Month": scale the cycles
     # accrued so far by (days in the calendar month / days of data present).
@@ -2550,40 +2582,44 @@ def generate_tashkent_report(
         story.append(Paragraph(
             'No critical events during the reporting period.', STYLE_BODY))
     else:
+        # One row per fault TYPE (not per event): simultaneous faults on
+        # several units of a block no longer repeat, and every distinct fault
+        # is represented instead of 40 copies of the dominant one.
+        et = build_event_type_table(important, top_n=50)
         rows = []
-        any_planned = False
-        for i, (_, r) in enumerate(important.head(40).iterrows(), start=1):
-            blk = '' if pd.isna(r.get('_blk')) else str(int(r['_blk']))
-            if blk and bool(r.get('on_planned_stop')):
-                blk += '*'; any_planned = True
-            try:
-                d = pd.to_datetime(r.get('Activated'))
-                date_str = d.strftime('%d.%m.%Y') if pd.notna(d) else ''
-            except Exception:
-                date_str = ''
+        any_planned = '*' in ''.join(et['blocks'].astype(str)) if not et.empty else False
+        any_active = int(et['active'].sum()) if not et.empty else 0
+        for i, (_, r) in enumerate(et.iterrows(), start=1):
+            name = str(r['trigger'])[:40] + (' ⚠' if r['active'] else '')
+            worst = (f"{r['worst_when']} · {r['worst_h']:.1f} h"
+                     if r['worst_when'] else f"{r['worst_h']:.1f} h")
             rows.append([
                 str(i),
-                str(r.get('Trigger name', ''))[:42],
-                blk,
-                str(r.get('cls_subsystem', '') or ''),
-                str(r.get('cls_reason', '') or ''),
-                date_str,
-                str(r.get('cls_resolution', '') or '—')[:40],
+                name,
+                str(r['subsystem'] or ''),
+                str(r['blocks'] or ''),
+                str(int(r['events'])),
+                f"{r['total_h']:,.1f}",
+                worst,
+                str(r['resolution'] or '—')[:38],
             ])
         story.append(_styled_table(
-            ['No.', 'Fault Name', 'Block #', 'Equipment',
-             'Reason', 'Date / Period', 'Resolution'],
+            ['No.', 'Fault Name', 'Equipment', 'Blocks affected',
+             'Events', 'Total h', 'Worst single', 'Resolution'],
             rows,
-            col_widths=[10*mm, 38*mm, 14*mm, 22*mm, 32*mm, 22*mm, 32*mm]
+            col_widths=[8*mm, 38*mm, 18*mm, 26*mm, 12*mm, 13*mm, 23*mm, 32*mm]
         ))
+        note = ('<i>One row per fault type — the same fault occurring on '
+                'several units of a block is counted, not repeated. '
+                '"Events" is the number of occurrences in the month; '
+                '"Worst single" is the longest individual occurrence.</i>')
         if any_planned:
-            story.append(Paragraph(
-                '<i>* block was under a planned or manual stop at the time of '
-                'the event.</i>', STYLE_SMALL))
-        if len(important) > 40:
-            story.append(Paragraph(
-                f'<i>Showing first 40 of {len(important)} important events.</i>',
-                STYLE_SMALL))
+            note += ('<i> * block was under a planned or manual stop at the '
+                     'time of the event.</i>')
+        if any_active:
+            note += ('<i> ⚠ alarm was still active at the end of the '
+                     'reporting period.</i>')
+        story.append(Paragraph(note, STYLE_SMALL))
     story.append(Spacer(1, 3*mm))
 
     # Alarms table (persistent warnings) — same layout minus Date column
@@ -2592,26 +2628,30 @@ def generate_tashkent_report(
         story.append(Paragraph('No standing warnings of note during the month.',
                                 STYLE_BODY))
     else:
+        wt = build_event_type_table(warn_detail, top_n=50)
         rows = []
-        any_planned = False
-        for i, (_, r) in enumerate(warn_detail.head(25).iterrows(), start=1):
-            blk = '' if pd.isna(r.get('_blk')) else str(int(r['_blk']))
-            if blk and bool(r.get('on_planned_stop')):
-                blk += '*'; any_planned = True
+        any_planned = '*' in ''.join(wt['blocks'].astype(str)) if not wt.empty else False
+        any_active = int(wt['active'].sum()) if not wt.empty else 0
+        for i, (_, r) in enumerate(wt.iterrows(), start=1):
             rows.append([
                 str(i),
-                str(r.get('Trigger name', ''))[:42],
-                blk,
-                str(r.get('cls_subsystem', '') or ''),
-                str(r.get('cls_reason', '') or ''),
-                str(r.get('cls_resolution', '') or '—')[:40],
+                str(r['trigger'])[:42] + (' ⚠' if r['active'] else ''),
+                str(r['subsystem'] or ''),
+                str(r['blocks'] or ''),
+                str(int(r['events'])),
+                f"{r['total_h']:,.1f}",
+                str(r['resolution'] or '—')[:40],
             ])
         story.append(_styled_table(
-            ['No.', 'Fault Name', 'Block #', 'Equipment',
-             'Reason', 'Resolution'],
+            ['No.', 'Warning', 'Equipment', 'Blocks affected',
+             'Events', 'Total h', 'Resolution'],
             rows,
-            col_widths=[10*mm, 42*mm, 14*mm, 24*mm, 36*mm, 44*mm]
+            col_widths=[8*mm, 42*mm, 18*mm, 26*mm, 12*mm, 14*mm, 40*mm]
         ))
+        if any_active:
+            story.append(Paragraph(
+                '<i>⚠ warning was still active at the end of the reporting '
+                'period.</i>', STYLE_SMALL))
         if any_planned:
             story.append(Paragraph(
                 '<i>* block was under a planned or manual stop at the time of '
@@ -3400,36 +3440,38 @@ def _build_tashkent_docx(output_path, _ctx):
     if important is None or important.empty:
         add_paragraph(doc, 'No critical events during the reporting period.')
     else:
+        # One row per fault TYPE — see the PDF builder for the rationale.
+        et = build_event_type_table(important, top_n=50)
         rows = []
-        any_planned = False
-        for i, (_, r) in enumerate(important.head(40).iterrows(), start=1):
-            blk = '' if _pd.isna(r.get('_blk')) else str(int(r['_blk']))
-            if blk and bool(r.get('on_planned_stop')):
-                blk += '*'; any_planned = True
-            try:
-                d = _pd.to_datetime(r.get('Activated'))
-                date_str = d.strftime('%d.%m.%Y') if _pd.notna(d) else ''
-            except Exception:
-                date_str = ''
+        any_planned = '*' in ''.join(et['blocks'].astype(str)) if not et.empty else False
+        any_active = int(et['active'].sum()) if not et.empty else 0
+        for i, (_, r) in enumerate(et.iterrows(), start=1):
+            worst = (f"{r['worst_when']} · {r['worst_h']:.1f} h"
+                     if r['worst_when'] else f"{r['worst_h']:.1f} h")
             rows.append([
                 str(i),
-                str(r.get('Trigger name', ''))[:42],
-                blk,
-                str(r.get('cls_subsystem', '') or ''),
-                str(r.get('cls_reason', '') or ''),
-                date_str,
-                str(r.get('cls_resolution', '') or '—')[:40],
+                str(r['trigger'])[:40] + (' ⚠' if r['active'] else ''),
+                str(r['subsystem'] or ''),
+                str(r['blocks'] or ''),
+                str(int(r['events'])),
+                f"{r['total_h']:,.1f}",
+                worst,
+                str(r['resolution'] or '—')[:38],
             ])
         add_styled_table(doc,
-            ['No.', 'Fault Name', 'Block #', 'Equipment',
-             'Reason', 'Date / Period', 'Resolution'], rows)
+            ['No.', 'Fault Name', 'Equipment', 'Blocks affected',
+             'Events', 'Total h', 'Worst single', 'Resolution'], rows)
+        add_caption(doc,
+            'One row per fault type — the same fault occurring on several '
+            'units of a block is counted, not repeated. "Events" is the number '
+            'of occurrences in the month; "Worst single" is the longest '
+            'individual occurrence.')
         if any_planned:
             add_caption(doc, '* block was under a planned or manual stop at '
                              'the time of the event.')
-        if len(important) > 40:
-            add_paragraph(doc,
-                f'Showing first 40 of {len(important)} important events.',
-                italic=True)
+        if any_active:
+            add_caption(doc, '⚠ alarm was still active at the end of the '
+                             'reporting period.')
 
     # Alarms table — persistent warnings, same columns minus Date
     add_paragraph(doc, 'Warnings', bold=True)
@@ -3437,26 +3479,29 @@ def _build_tashkent_docx(output_path, _ctx):
     if warn_detail is None or warn_detail.empty:
         add_paragraph(doc, 'No standing warnings of note during the month.')
     else:
+        wt = build_event_type_table(warn_detail, top_n=50)
         rows = []
-        any_planned = False
-        for i, (_, r) in enumerate(warn_detail.head(25).iterrows(), start=1):
-            blk = '' if _pd.isna(r.get('_blk')) else str(int(r['_blk']))
-            if blk and bool(r.get('on_planned_stop')):
-                blk += '*'; any_planned = True
+        any_planned = '*' in ''.join(wt['blocks'].astype(str)) if not wt.empty else False
+        any_active = int(wt['active'].sum()) if not wt.empty else 0
+        for i, (_, r) in enumerate(wt.iterrows(), start=1):
             rows.append([
                 str(i),
-                str(r.get('Trigger name', ''))[:42],
-                blk,
-                str(r.get('cls_subsystem', '') or ''),
-                str(r.get('cls_reason', '') or ''),
-                str(r.get('cls_resolution', '') or '—')[:40],
+                str(r['trigger'])[:42] + (' ⚠' if r['active'] else ''),
+                str(r['subsystem'] or ''),
+                str(r['blocks'] or ''),
+                str(int(r['events'])),
+                f"{r['total_h']:,.1f}",
+                str(r['resolution'] or '—')[:40],
             ])
         add_styled_table(doc,
-            ['No.', 'Fault Name', 'Block #', 'Equipment',
-             'Reason', 'Resolution'], rows)
+            ['No.', 'Warning', 'Equipment', 'Blocks affected',
+             'Events', 'Total h', 'Resolution'], rows)
         if any_planned:
             add_caption(doc, '* block was under a planned or manual stop at '
                              'the time of the event.')
+        if any_active:
+            add_caption(doc, '⚠ warning was still active at the end of the '
+                             'reporting period.')
 
     add_heading(doc, '5.2  Major Incidents and Breakdowns', level=3)
     add_paragraph(doc, 'Summary of breakdowns, incidents and their weight '

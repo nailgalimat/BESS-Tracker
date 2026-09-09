@@ -187,6 +187,15 @@ class MonthlyReportsPage(QWidget):
                          "marked on the desktop also feeds the Unavailability tab.")
         wr_hint.setStyleSheet("color:#6B7A8D;font-size:11px;"); wr_hint.setWordWrap(True)
         wrl.addWidget(wr_hint)
+
+        # Month-end reconciliation: faults SCADA saw that nobody wrote up.
+        self.gap_lbl = QLabel("")
+        self.gap_lbl.setWordWrap(True)
+        self.gap_lbl.setVisible(False)
+        self.gap_lbl.setStyleSheet(
+            "background:#FFF4F4;border:1px solid #F3C9C9;border-radius:6px;"
+            "padding:8px 10px;color:#9B2C2C;font-size:11px;")
+        wrl.addWidget(self.gap_lbl)
         l.addWidget(wrg)
 
         cmg = QGroupBox("Additional corrective notes (one per line)")
@@ -409,10 +418,19 @@ class MonthlyReportsPage(QWidget):
         last = calendar.monthrange(self._year, self._month)[1]
         start = f"{self._year:04d}-{self._month:02d}-01"
         end = f"{self._year:04d}-{self._month:02d}-{last:02d}"
+        # Both sources number blocks per zone (Zone 8 / Block 2); the report
+        # and the customer speak plant-wide (Block 57). Translate once here.
+        from services.project_service import zone_block_to_plant
+
+        def _plant(zone, block):
+            return zone_block_to_plant(self._pid, zone, block) or block
+
         rows = []
         for r in wls.get_work_logs_for_month(self._pid, self._year, self._month):
             rows.append({'src': '🖥', 'date': r.get('date', '') or '',
-                         'block': r.get('block'), 'cont': r.get('container_num'),
+                         'block': _plant(r.get('zone'), r.get('block')),
+                         'zone': r.get('zone'), 'local_block': r.get('block'),
+                         'cont': r.get('container_num'),
                          'fault': r.get('fault_description', '') or '',
                          'action': r.get('work_performed', '') or '',
                          'sap': r.get('sap_ticket', '') or '',
@@ -425,7 +443,11 @@ class MonthlyReportsPage(QWidget):
             if (e.get('category') or '') not in CORRECTIVE_CATS:
                 continue
             rows.append({'src': '📱', 'date': e.get('log_date', '') or '',
-                         'block': e.get('block_number'), 'cont': e.get('container_index'),
+                         'block': _plant(e.get('zone_number'),
+                                         e.get('block_number')),
+                         'zone': e.get('zone_number'),
+                         'local_block': e.get('block_number'),
+                         'cont': e.get('container_index'),
                          'fault': e.get('fault_name', '') or '',
                          'action': e.get('description', '') or '',
                          'sap': e.get('sap_ticket', '') or '',
@@ -450,6 +472,43 @@ class MonthlyReportsPage(QWidget):
         n = len(rows); nmob = sum(1 for r in rows if r['src'] == '📱')
         self.wr_count_lbl.setText(
             f"{n} item(s) this month" + (f" · {nmob} from mobile 📱" if nmob else ""))
+        self._refresh_gap_notice()
+
+    def _refresh_gap_notice(self):
+        """Faults in this month's imported SCADA alarms with no work report."""
+        self.gap_lbl.setVisible(False)
+        if self._pid is None:
+            return
+        try:
+            import services.asset_tree_service as ats
+            gaps = ats.get_unreported_faults(self._pid, self._year, self._month,
+                                             min_hours=1.0)
+            inc = ats.flag_incidents_near_exclusions(
+                self._pid, ats.group_faults_into_incidents(gaps))
+        except Exception:
+            return
+        if not inc:
+            return
+        # One fault across many units is one incident — count those, not
+        # alarms, or the number is meaningless.
+        near = [g for g in inc if g.get('near_exclusion')]
+        real = [g for g in inc if not g.get('near_exclusion')]
+        hrs = sum(float(g.get('total_hours') or 0) for g in real)
+        worst = ', '.join(
+            f"{g['trigger_name'][:38]} ({g['units']}×, {g['total_hours']:g} h)"
+            for g in real[:2]) or '—'
+        txt = (f"⚠  {len(real)} incident(s) this month — "
+               f"{sum(g['units'] for g in real)} alarm(s), {hrs:,.1f} "
+               f"equipment-hours — have no work report. Worst: {worst}.")
+        if near:
+            txt += (f"  A further {len(near)} incident(s) "
+                    f"({sum(g['units'] for g in near)} alarms) started just "
+                    f"outside a grid-outage / PM window — those are probably "
+                    f"the outage itself, not equipment faults; check the "
+                    f"window times rather than writing reports.")
+        txt += "  Open Equipment → “Needs a report”."
+        self.gap_lbl.setText(txt)
+        self.gap_lbl.setVisible(True)
 
     def _wr_as_cm_lines(self):
         """Format the month's corrective items (desktop + mobile) as report lines."""
@@ -682,6 +741,8 @@ class MonthlyReportsPage(QWidget):
             if miss:
                 QMessageBox.warning(self, "Missing SCADA", "Attach: " + ", ".join(miss)); return
             params = dict(common, **{k: v.path() for k, v in self.tk.items() if v.path()})
+            # Keep the month's alarms as equipment history (Equipment page)
+            params['project_id'] = self._pid
 
         self.log.clear(); self.progress.setVisible(True); self.gen_btn.setEnabled(False)
         self._worker = BlockReportWorker(self._site_type, params)

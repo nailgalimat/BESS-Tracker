@@ -1158,6 +1158,108 @@ def _fmt_blocks_with_planned(blocks, planned_set, max_show=12):
     return s
 
 
+def build_event_type_table(events_df, top_n=40, period_end=None):
+    """
+    Collapse an event-level alarm frame into ONE ROW PER FAULT TYPE for the
+    report's event tables.
+
+    Fixes three defects of the previous `events.head(N)` rendering:
+
+      1. The same fault firing simultaneously on several units of a block
+         produced several visually identical rows, because the table shows the
+         block but not the unit (e.g. BSC 32.01.01 and BSC 32.01.02 both read
+         as "block 32"). Units are now counted, not repeated.
+      2. Ranking individual events by duration let one dominant family crowd
+         out everything else — 34 of 40 rows could be the same trigger, so fire
+         and gas alarms never reached the report. One row per type guarantees
+         every distinct fault appears.
+      3. Still-active alarms (no Deactivation) had no duration, so they were
+         silently dropped from duration-ranked tables. They are now measured to
+         `period_end` and flagged — an unresolved alarm is the most important
+         kind.
+
+    Returns DataFrame[trigger, subsystem, reason, resolution, events, units,
+    total_h, blocks, worst_block, worst_when, worst_h, active] sorted by
+    total_h desc and capped at `top_n`. `resolution` is taken from the largest
+    sub-group, so one reason carrying two different hint texts no longer splits
+    into two rows.
+    """
+    if events_df is None or events_df.empty:
+        return pd.DataFrame()
+
+    df = events_df.copy()
+    act = pd.to_datetime(df.get('Activated'), errors='coerce')
+    deact = pd.to_datetime(df.get('Deactivation'), errors='coerce')
+    if period_end is None:
+        period_end = pd.concat([act, deact]).max()
+    period_end = pd.to_datetime(period_end, errors='coerce')
+
+    df['_active'] = deact.isna() & act.notna()
+    end_eff = deact.fillna(period_end)
+    dur_h = (end_eff - act).dt.total_seconds() / 3600.0
+    if 'duration_min' in df.columns:
+        known = pd.to_numeric(df['duration_min'], errors='coerce') / 60.0
+        dur_h = known.where(~df['_active'] & known.notna(), dur_h)
+    df['_dur_h'] = dur_h.clip(lower=0).fillna(0.0)
+    df['_act_dt'] = act
+
+    if '_blk' in df.columns:
+        blk = pd.to_numeric(df['_blk'], errors='coerce')
+    else:
+        blk = pd.to_numeric(
+            df.get('Element', pd.Series('', index=df.index))
+              .astype(str).str.extract(r'(\d+)\.')[0], errors='coerce')
+    df['_blk_n'] = blk
+    df['_elem'] = df.get('Element', pd.Series('', index=df.index)).astype(str)
+
+    keys = ['Trigger name']
+    for c in ('cls_subsystem', 'cls_reason'):
+        if c in df.columns:
+            keys.append(c)
+
+    rows = []
+    for kv, g in df.groupby(keys, dropna=False):
+        kv = kv if isinstance(kv, tuple) else (kv,)
+        trig = str(kv[0])
+        sub = str(kv[1]) if len(kv) > 1 else ''
+        reason = str(kv[2]) if len(kv) > 2 else ''
+        # resolution from the largest sub-group — avoids splitting one reason
+        res = ''
+        if 'cls_resolution' in g.columns:
+            vc = g['cls_resolution'].astype(str).replace('', pd.NA).dropna().value_counts()
+            res = str(vc.index[0]) if len(vc) else ''
+        blocks = sorted({int(b) for b in g['_blk_n'].dropna().unique()})
+        planned = set()
+        if 'on_planned_stop' in g.columns:
+            planned = {int(b) for b in
+                       g.loc[g['on_planned_stop'].astype(bool), '_blk_n'].dropna().unique()}
+        worst = g.loc[g['_dur_h'].idxmax()] if len(g) else None
+        rows.append({
+            'trigger':    trig,
+            'subsystem':  sub,
+            'reason':     reason,
+            'resolution': res,
+            'events':     int(len(g)),
+            'units':      int(g['_elem'].nunique()),
+            'total_h':    float(g['_dur_h'].sum()),
+            'blocks':     _fmt_blocks_with_planned(blocks, planned),
+            'n_blocks':   len(blocks),
+            'worst_block': ('' if worst is None or pd.isna(worst['_blk_n'])
+                            else str(int(worst['_blk_n']))),
+            'worst_when': ('' if worst is None or pd.isna(worst['_act_dt'])
+                           else worst['_act_dt'].strftime('%d.%m %H:%M')),
+            'worst_h':    float(worst['_dur_h']) if worst is not None else 0.0,
+            'active':     int(g['_active'].sum()),
+        })
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    # Unresolved alarms first, then by total downtime
+    out = out.sort_values(['active', 'total_h'], ascending=[False, False])
+    return out.head(top_n).reset_index(drop=True)
+
+
 def build_faults_summary(events_df, ws_long=None, top_n=15, drop_planned=False):
     """
     Group classified alarm events by (subsystem, reason, resolution) and return
@@ -1183,7 +1285,11 @@ def build_faults_summary(events_df, ws_long=None, top_n=15, drop_planned=False):
         if df.empty:
             return pd.DataFrame()
     has_res = 'cls_resolution' in df.columns
-    keys = ['cls_subsystem', 'cls_reason'] + (['cls_resolution'] if has_res else [])
+    # Group by (subsystem, reason) ONLY — the resolution text must not be part
+    # of the key. Two classification entries mapping different SCADA triggers
+    # to the same reason but carrying different hint wording (e.g. the two
+    # DCDC patterns) otherwise split one fault into two identical-looking rows.
+    keys = ['cls_subsystem', 'cls_reason']
 
     rows = []
     for key_vals, g in df.groupby(keys):
@@ -1191,7 +1297,11 @@ def build_faults_summary(events_df, ws_long=None, top_n=15, drop_planned=False):
             key_vals = (key_vals,)
         sub    = key_vals[0]
         reason = key_vals[1]
-        res    = key_vals[2] if has_res and len(key_vals) > 2 else ''
+        # Resolution from the largest sub-group, so the dominant wording wins.
+        res = ''
+        if has_res:
+            _vc = g['cls_resolution'].astype(str).replace('', pd.NA).dropna().value_counts()
+            res = str(_vc.index[0]) if len(_vc) else ''
         blocks = sorted({int(b) for b in g['_blk'].dropna().unique()})
         planned = sorted({int(b) for b in
                           g.loc[g['on_planned_stop'], '_blk'].dropna().unique()})

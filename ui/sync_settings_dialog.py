@@ -41,6 +41,25 @@ class _LoginThread(QThread):
             self.failure.emit(str(ex))
 
 
+class _SyncThread(QThread):
+    """Runs a full sync off the UI thread.
+
+    Never call sync_now() inline from a slot: it performs a dozen network
+    requests (projects, stock, push, delta pull, write-offs, field events,
+    images) at 15 s timeout each, which freezes the window and Windows then
+    reports the app as 'Not responding'.
+    """
+    success = pyqtSignal(object)
+    failure = pyqtSignal(str)
+
+    def run(self):
+        try:
+            from services.sync_client import sync_now
+            self.success.emit(sync_now())
+        except Exception as ex:
+            self.failure.emit(str(ex))
+
+
 class _PingThread(QThread):
     result = pyqtSignal(bool, str)
 
@@ -256,15 +275,32 @@ class SyncSettingsDialog(QDialog):
         if mw and hasattr(mw, "sync_worker") and mw.sync_worker:
             mw.sync_worker.trigger_now()
             self._status_lbl.setText("Sync triggered…")
-        else:
-            # Fallback: run inline (blocks briefly)
-            from services.sync_client import sync_now
-            result = sync_now()
-            self._status_lbl.setText(
-                f"✅  Done: ↑{result.pushed} ↓{result.pulled}"
-                + (f"  ⚠{result.conflicts} conflicts" if result.conflicts else "")
-            )
-            self._populate()
+            return
+
+        # No background worker yet (e.g. just logged in — the main window only
+        # starts it after this dialog closes). Run in a thread, never inline:
+        # a full sync is a dozen network calls and would freeze the window.
+        if getattr(self, "_sync_thread", None) and self._sync_thread.isRunning():
+            return
+        self._status_lbl.setStyleSheet("color:#555;")
+        self._status_lbl.setText("Syncing… (this may take a moment)")
+        self._sync_thread = _SyncThread()
+        self._sync_thread.success.connect(self._on_sync_done)
+        self._sync_thread.failure.connect(self._on_sync_failed)
+        self._sync_thread.start()
+
+    def _on_sync_done(self, result):
+        self._status_lbl.setStyleSheet("color:#2E7D32;")
+        self._status_lbl.setText(
+            f"✅  Done: ↑{result.pushed} ↓{result.pulled}"
+            + (f"  ⚠{result.conflicts} conflicts" if result.conflicts else "")
+            + (f"  ({result.errors} errors)" if result.errors else "")
+        )
+        self._populate()
+
+    def _on_sync_failed(self, msg: str):
+        self._status_lbl.setStyleSheet("color:#C62828;")
+        self._status_lbl.setText(f"❌  {msg[:120]}")
 
     def _do_logout(self):
         sync_config.clear_tokens()

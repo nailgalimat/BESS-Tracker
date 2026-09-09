@@ -30,6 +30,7 @@ def save_work_log(
     root_cause="", engineer="", start_time="", end_time="",
     affects_availability=0, unavailability_id=None,
     availability_impact="none", exclusion_id=None,
+    alarm_event_id=None,
 ) -> int:
     conn = get_connection()
     try:
@@ -42,18 +43,46 @@ def save_work_log(
                 status, sap_ticket, comments,
                 root_cause, engineer, start_time, end_time,
                 affects_availability, unavailability_id,
-                availability_impact, exclusion_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                availability_impact, exclusion_id, alarm_event_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (project_id, container_id, date,
               zone_number, block_number, container_index,
               serial_number, fault_description, work_performed,
               status, sap_ticket, comments,
               root_cause, engineer, start_time, end_time,
               1 if affects_availability else 0, unavailability_id,
-              availability_impact, exclusion_id))
+              availability_impact, exclusion_id, alarm_event_id))
         entry_id = cur.lastrowid
         conn.commit()
         return entry_id
+    finally:
+        conn.close()
+
+
+# ── Work report ↔ alarms (one incident can span many units) ─────────────────
+
+def link_work_log_alarms(work_log_id: int, alarm_event_ids) -> int:
+    """Record every alarm this report answers. Returns how many were linked."""
+    ids = [int(a) for a in (alarm_event_ids or []) if a]
+    if not ids:
+        return 0
+    conn = get_connection()
+    try:
+        conn.executemany(
+            "INSERT OR IGNORE INTO work_log_alarms (work_log_id, alarm_event_id) "
+            "VALUES (?, ?)", [(int(work_log_id), a) for a in ids])
+        conn.commit()
+        return len(ids)
+    finally:
+        conn.close()
+
+
+def get_work_log_alarms(work_log_id: int) -> List[int]:
+    conn = get_connection()
+    try:
+        return [r[0] for r in conn.execute(
+            "SELECT alarm_event_id FROM work_log_alarms WHERE work_log_id=? "
+            "ORDER BY alarm_event_id", (work_log_id,))]
     finally:
         conn.close()
 
