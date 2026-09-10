@@ -100,3 +100,7 @@ trigger_pattern,subsystem,reason,severity,resolution_hint
 "INPUT DRY NODE ALARM",BESS,Dry Node Input Alarm,Warning,Check field signal wiring
 "DC OVER VOLTAGE",PCS,DC Over-voltage,Fault,Investigate DC bus voltage
 "DC UNDER VOLTAGE",PCS,DC Under-voltage,Fault,Investigate DC bus voltage
+"HIGH COMBUSTIBLE GAS CONCENTRATION",BESS,Combustible Gas Alarm,Critical,Activate emergency response
+"EMERGENCY STOP",BESS,Emergency Stop,Fault,Investigate and reset e-stop
+"BSC-LC COMM FAULT",BESS,BSC-LC Communication,Fault,Check ethernet/CAN between BSC and LC
+"LOW VOLTAGE POWER SUPPLY CIRCUIT FAULT",BESS,Control Power Supply Fault,Fault,Check the low-voltage control supply and its circuit breaker

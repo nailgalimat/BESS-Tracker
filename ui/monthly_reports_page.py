@@ -26,6 +26,15 @@ from services.report_workflow_service import MONTHS_EN
 
 # Field Log categories that count as corrective maintenance for the report
 CORRECTIVE_CATS = {'fault', 'repair', 'maintenance'}
+# Work still outstanding. Section 3.2 reports maintenance *performed*, so these
+# are held back — printed as plain bullets they read to the customer exactly
+# like completed work ("Antifreeze LOW LEVEL." among August's). Anything else,
+# including a blank status on a legacy entry, is treated as done as before.
+OPEN_STATUSES = {'open', 'pending', 'in progress', 'in_progress', 'in-progress'}
+
+
+def _is_open(row) -> bool:
+    return (row.get('status') or '').strip().lower() in OPEN_STATUSES
 
 from ui.scada_report_page import ExclusionDialog, BalancingDialog
 from ui.block_report_page import (
@@ -470,8 +479,11 @@ class MonthlyReportsPage(QWidget):
             for c, v in enumerate(vals):
                 self.wr_table.setItem(row, c, QTableWidgetItem(str(v)))
         n = len(rows); nmob = sum(1 for r in rows if r['src'] == '📱')
+        nopen = sum(1 for r in rows if _is_open(r))
         self.wr_count_lbl.setText(
-            f"{n} item(s) this month" + (f" · {nmob} from mobile 📱" if nmob else ""))
+            f"{n} item(s) this month"
+            + (f" · {nmob} from mobile 📱" if nmob else "")
+            + (f" · {nopen} still open, kept out of the report" if nopen else ""))
         self._refresh_gap_notice()
 
     def _refresh_gap_notice(self):
@@ -511,9 +523,16 @@ class MonthlyReportsPage(QWidget):
         self.gap_lbl.setVisible(True)
 
     def _wr_as_cm_lines(self):
-        """Format the month's corrective items (desktop + mobile) as report lines."""
+        """Format the month's corrective items (desktop + mobile) as report lines.
+
+        Only work that is finished. Outstanding items stay on the page above,
+        where the status column shows them, but do not go to the customer as
+        maintenance performed.
+        """
         out = []
         for r in self._wr_rows:
+            if _is_open(r):
+                continue
             blk = r.get('block'); cnum = r.get('cont')
             fault = (r.get('fault') or '').strip()
             action = (r.get('action') or '').strip()

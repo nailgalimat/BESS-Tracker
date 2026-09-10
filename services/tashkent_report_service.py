@@ -637,6 +637,16 @@ def build_unavailability_reasons_tashkent(ws_long, alarms=None, exclusions=None,
         pick = faults if not faults.empty else sub
         if pick.empty:
             return ('Unclassified', 'OTHER', '', 0)
+        # The dominant cause is ranked on total duration, and a status register
+        # runs for as long as the fault beside it — so "Dry Node Input Fault"
+        # would be named as the cause of the incident. Prefer a real condition;
+        # fall back to whatever there is if the window holds nothing else, since
+        # naming the register still beats naming nothing.
+        from services.asset_tree_service import is_umbrella_trigger
+        if 'Trigger name' in pick.columns:
+            _real = pick[~pick['Trigger name'].map(is_umbrella_trigger)]
+            if not _real.empty:
+                pick = _real
         ranked = (pick.groupby(['cls_reason', 'cls_subsystem'])
                       .agg(total=('duration_min', 'sum'), n=('duration_min', 'size'),
                            sev=('sev_rank', 'max')).reset_index()
@@ -1280,6 +1290,37 @@ def _general_sentence(general_table) -> str:
                             hours_key='total_h')
 
 
+def _drop_general_events(df, trigger_col='Trigger name'):
+    """Split an *event* frame into (real conditions, sentence about the rest).
+
+    `_split_general` does this for an already-built type table; this does it at
+    the event level, for the tables whose builders group or rank the events
+    themselves and so never see an `umbrella` column — 5.1's summaries, 5.2's
+    breakdown candidates, the longest-events listing, the exclusion-window
+    listing. Without it a status register competes on hours with real faults and
+    wins: June's breakdown table was 8 rows of "Dry Node Input Fault" out of 10.
+
+    The sentence is the same trigger-keyed one every other table uses.
+    """
+    from services.asset_tree_service import is_umbrella_trigger
+    if df is None or getattr(df, 'empty', True) or trigger_col not in df.columns:
+        return df, ''
+    umb = df[trigger_col].map(is_umbrella_trigger)
+    if not bool(umb.any()):
+        return df, ''
+    return df[~umb], _general_sentence(build_event_type_table(df[umb], top_n=50))
+
+
+def _xml(s) -> str:
+    """Escape text bound for a reportlab Paragraph, whose argument is markup.
+
+    Trigger names and classification wording are data — an '&' in one would
+    otherwise abort the PDF build.
+    """
+    return (str(s).replace('&', '&amp;')
+                  .replace('<', '&lt;').replace('>', '&gt;'))
+
+
 def generate_tashkent_report(
     working_status_path,
     pcs_cd_path,
@@ -1396,6 +1437,15 @@ def generate_tashkent_report(
 
     log("Summarising alarms...")
     alarm_sum = summarize_alarms(alarms)
+    # "Longest events" is ranked purely on duration, so the dry-node input —
+    # which runs for as long as the fault beside it — took the top rows and
+    # read as the month's worst events. Hold the status registers back and say
+    # so underneath, like every other table.
+    longest_general_note = ''
+    if isinstance(alarm_sum, dict) and not alarm_sum.get(
+            'longest', pd.DataFrame()).empty:
+        alarm_sum['longest'], longest_general_note = _drop_general_events(
+            alarm_sum['longest'])
 
     log("Computing daily block KPIs...")
     daily_kpi = calc_daily_block_kpis_tashkent(lc_daily, ws_long, soc_long)
@@ -1727,14 +1777,60 @@ def generate_tashkent_report(
         pcs_fault_long=pcs_unit_fault,
         manual_unavailability=manual_unavailability)
 
-    # Per-reason summary for the Services Provision section
-    p = alarms.get('production_dedup', pd.DataFrame())
-    if not p.empty and 'cls_reason' in p.columns:
-        cls_summary = (p.groupby(['cls_reason', 'cls_resolution'])
-                       .size().reset_index(name='n_events')
-                       .sort_values('n_events', ascending=False))
+    # Per-reason summary for the Services Provision section.
+    #
+    # Two defects fixed here. Grouping on (reason, resolution) split one fault
+    # across several rows whenever the classification table offered slightly
+    # different wording — "DC-DC Converter Fault" appeared twice, as
+    # "Restart DC-DC; investigate insulation" and "Restart DC-DC converter" —
+    # so the reader saw the same item listed as though it were two. The
+    # resolution now comes from the commonest variant within one reason.
+    #
+    # And general status alarms are taken out, as they are in every other
+    # table: "Dry Node Input Fault" headed this list with 1,108 occurrences
+    # while naming no fault at all.
+    # Third: events inside an agreed exclusion window are not corrective
+    # maintenance we performed — they are the grid going away, and 5.1 already
+    # drops them. Counted here, the two sections quoted different totals for one
+    # fault: BSC-PCS communication read 982 in August, of which 799 sat inside
+    # windows. 183 were ours.
+    from services.asset_tree_service import is_umbrella_trigger
+    _p_cm = alarms.get('production_dedup', pd.DataFrame())
+    if not _p_cm.empty and 'is_excluded' in _p_cm.columns:
+        p = _p_cm[~_p_cm['is_excluded'].fillna(False).astype(bool)]
     else:
-        cls_summary = pd.DataFrame()
+        p = _p_cm
+    cls_summary = pd.DataFrame()
+    cls_general_note = ''
+    if not p.empty and 'cls_reason' in p.columns:
+        trig = p['Trigger name'] if 'Trigger name' in p.columns else pd.Series(
+            [''] * len(p), index=p.index)
+        umb = trig.map(is_umbrella_trigger)
+
+        def _by_reason(frame):
+            if frame.empty:
+                return pd.DataFrame()
+            g = (frame.groupby('cls_reason')
+                 .agg(n_events=('cls_reason', 'size'),
+                      cls_resolution=('cls_resolution',
+                                      lambda s: (s.astype(str).replace('', pd.NA)
+                                                 .dropna().mode().iloc[0]
+                                                 if s.astype(str).replace('', pd.NA)
+                                                    .dropna().size else '')))
+                 .reset_index())
+            return g.sort_values('n_events', ascending=False)
+
+        cls_summary = _by_reason(p[~umb])
+        # The sentence names the *triggers* held back — never their reasons.
+        # Umbrella-ness is a property of the trigger, but the classification
+        # maps a controller echo and the device's own fault onto one reason:
+        # keying the sentence on reason printed "DC-DC Converter Fault (13)"
+        # underneath a table row reading "DC-DC Converter Fault 203", so the
+        # customer met one name twice and the preamble called it a status
+        # register. Same helper the other four tables use, so the wording and
+        # the counts-plus-hours form match them.
+        cls_general_note = _general_sentence(
+            build_event_type_table(p[umb], top_n=50))
 
     # ── 5.1 Faults / Alarms summaries with affected blocks + planned-stop flag ─
     # Drop exclusion-window events first (they're listed separately), then group.
@@ -1749,8 +1845,15 @@ def generate_tashkent_report(
     # not show its shutdown-related faults as if they affected production. The
     # filter is per-event, so the same fault type occurring outside a planned
     # stop still appears.
-    faults_summary = build_faults_summary(p_dedup, ws_long=ws_long, drop_planned=True)
-    warn_summary   = build_faults_summary(w_persistent, ws_long=ws_long, drop_planned=True)
+    # General status alarms come out of both summaries and are stated beneath
+    # them, as they are in every other table. Grouped by reason they otherwise
+    # head the list on hours while naming no condition: August's fault summary
+    # led with "Dry Node Input Fault", the warning summary with "LC System Alarm
+    # State" and "LCU Other Alarm".
+    p_real, faults_general_note = _drop_general_events(p_dedup)
+    w_real, warn_general_note   = _drop_general_events(w_persistent)
+    faults_summary = build_faults_summary(p_real, ws_long=ws_long, drop_planned=True)
+    warn_summary   = build_faults_summary(w_real, ws_long=ws_long, drop_planned=True)
 
     # Major faults (important events) + persistent-warning detail. Each is tagged
     # with the planned-stop flag, then events on planned/manual-stopped blocks
@@ -1776,7 +1879,10 @@ def generate_tashkent_report(
     # 5.2 — semi-automatic breakdowns. Operator-entered incidents win; otherwise
     # auto-pull candidates from the longest genuine faults (planned stops out),
     # leaving solution columns blank for the operator to complete.
-    breakdown_candidates = build_breakdown_candidates(p_dedup, ws_long=ws_long)
+    # Same frame without the status registers — see faults_summary above. In
+    # June 8 of the 10 "breakdown incidents" offered to the operator were the
+    # dry-node input, which describes no breakdown.
+    breakdown_candidates = build_breakdown_candidates(p_real, ws_long=ws_long)
     breakdown_rows    = breakdown_incidents if breakdown_incidents else breakdown_candidates
     breakdown_is_auto = (not breakdown_incidents) and bool(breakdown_candidates)
 
@@ -2010,9 +2116,17 @@ def generate_tashkent_report(
             ['Item', 'Occurrences', 'Resolution applied'],
             cm_rows, col_widths=[70*mm, 30*mm, 70*mm]
         ))
+        if cls_general_note:
+            story.append(Paragraph('<i>' + _xml(cls_general_note) + '</i>',
+                                   STYLE_SMALL))
     else:
         story.append(Paragraph('No corrective maintenance activities recorded.',
                                 STYLE_BODY))
+        # A month whose production alarms are all general still has something
+        # to say; the sentence must not be lost with the table.
+        if cls_general_note:
+            story.append(Paragraph('<i>' + _xml(cls_general_note) + '</i>',
+                                   STYLE_SMALL))
     story.append(_hr())
 
     # ── 4. PLANT PERFORMANCE ─────────────────────────────────────────────
@@ -2512,6 +2626,9 @@ def generate_tashkent_report(
                 '<i>* affected block was under a planned or manual stop '
                 '(STOPPED state, Manual/Key Stop, or exclusion window) during '
                 'the event — likely not a genuine fault.</i>', STYLE_SMALL))
+        if faults_general_note:
+            story.append(Paragraph('<i>' + _xml(faults_general_note) + '</i>',
+                                   STYLE_SMALL))
         story.append(Spacer(1, 4*mm))
 
     if not warn_summary.empty:
@@ -2542,6 +2659,9 @@ def generate_tashkent_report(
             story.append(Paragraph(
                 '<i>* affected block was under a planned or manual stop during '
                 'the event.</i>', STYLE_SMALL))
+        if warn_general_note:
+            story.append(Paragraph('<i>' + _xml(warn_general_note) + '</i>',
+                                   STYLE_SMALL))
         story.append(Spacer(1, 4*mm))
 
     # Events During Exclusion Windows (informational only)
@@ -2557,13 +2677,19 @@ def generate_tashkent_report(
             'of service.',
             STYLE_SMALL))
         story.append(Spacer(1, 1*mm))
-        excl_rows = []
+        excl_rows = []; excl_general_notes = []
         for src_key, label in (('production_dedup', 'Production'),
                                  ('warning_persistent', 'Warning')):
             src_df = alarms.get(src_key, pd.DataFrame())
             if src_df.empty or 'is_excluded' not in src_df.columns:
                 continue
             sub = src_df[src_df['is_excluded']]
+            # Only 25 rows are shown per class, and the dry-node input alone
+            # filled them — leaving no room for the evidence this listing
+            # exists to give. Status registers out, named underneath instead.
+            sub, _ex_gen = _drop_general_events(sub)
+            if _ex_gen:
+                excl_general_notes.append(_ex_gen)
             for _, r in sub.head(25).iterrows():
                 excl_rows.append([
                     label,
@@ -2581,6 +2707,8 @@ def generate_tashkent_report(
                 excl_rows,
                 col_widths=[18*mm, 28*mm, 22*mm, 60*mm, 18*mm, 32*mm]
             ))
+            for _n in excl_general_notes:
+                story.append(Paragraph('<i>' + _xml(_n) + '</i>', STYLE_SMALL))
             story.append(Spacer(1, 4*mm))
 
     story.append(_fig_to_image(_chart_alarm_by_class(alarm_sum), 170, 70))
@@ -2754,6 +2882,9 @@ def generate_tashkent_report(
                 ['Activated', 'Element', 'Trigger', 'Duration'], rows,
                 col_widths=[34*mm, 30*mm, 80*mm, 26*mm]
             ))
+            if longest_general_note:
+                story.append(Paragraph(
+                    '<i>' + _xml(longest_general_note) + '</i>', STYLE_SMALL))
     story.append(_hr())
 
     # ── 6. SITE OPERATION ────────────────────────────────────────────────
@@ -2970,6 +3101,14 @@ def _build_tashkent_docx(output_path, _ctx):
                      r['cls_resolution'] or '—']
                     for _, r in cls_summary.head(7).iterrows()]
         add_styled_table(doc, ['Item', 'Occurrences', 'Resolution applied'], cm_rows)
+        if g.get('cls_general_note'):
+            add_caption(doc, g['cls_general_note'])
+    else:
+        # Without this the section was a bare heading, and a month of purely
+        # general alarms lost its sentence along with the table.
+        add_paragraph(doc, 'No corrective maintenance activities recorded.')
+        if g.get('cls_general_note'):
+            add_caption(doc, g['cls_general_note'])
     add_hr(doc)
 
     # 4. Plant Performance
@@ -3407,6 +3546,8 @@ def _build_tashkent_docx(output_path, _ctx):
                 '* affected block was under a planned or manual stop (STOPPED '
                 'state, Manual/Key Stop, or exclusion window) during the event '
                 '— likely not a genuine fault.')
+        if g.get('faults_general_note'):
+            add_caption(doc, g['faults_general_note'])
     if warn_summary is not None and not warn_summary.empty:
         add_paragraph(doc, 'Standing warnings', bold=True)
         if n_warn_persistent_planned > 0:
@@ -3426,6 +3567,8 @@ def _build_tashkent_docx(output_path, _ctx):
             add_caption(doc,
                 '* affected block was under a planned or manual stop during '
                 'the event.')
+        if g.get('warn_general_note'):
+            add_caption(doc, g['warn_general_note'])
 
     # Events During Exclusion Windows (informational)
     if (n_prod_alarms_excluded + n_warn_persistent_excluded) > 0:
@@ -3438,13 +3581,19 @@ def _build_tashkent_docx(output_path, _ctx):
             'above, because the equipment was intentionally taken out of '
             'service.',
             italic=True)
-        excl_rows = []
+        excl_rows = []; excl_general_notes = []
         for src_key, label in (('production_dedup', 'Production'),
                                  ('warning_persistent', 'Warning')):
             src_df = alarms.get(src_key, _pd.DataFrame())
             if src_df.empty or 'is_excluded' not in src_df.columns:
                 continue
             sub = src_df[src_df['is_excluded']]
+            # Only 25 rows are shown per class, and the dry-node input alone
+            # filled them — leaving no room for the evidence this listing
+            # exists to give. Status registers out, named underneath instead.
+            sub, _ex_gen = _drop_general_events(sub)
+            if _ex_gen:
+                excl_general_notes.append(_ex_gen)
             for _, r in sub.head(25).iterrows():
                 excl_rows.append([
                     label,
@@ -3459,6 +3608,8 @@ def _build_tashkent_docx(output_path, _ctx):
             add_styled_table(doc,
                 ['Class', 'Activated', 'Element', 'Trigger', 'Duration', 'During'],
                 excl_rows)
+            for _n in excl_general_notes:
+                add_caption(doc, _n)
 
     add_image_from_fig(doc, _chart_alarm_by_class(alarm_sum))
     add_caption(doc, 'Graph 6: Number of faults and total downtime by type of equipment')
@@ -3593,6 +3744,8 @@ def _build_tashkent_docx(output_path, _ctx):
                                  if _pd.notna(r['duration_min']) else '—')])
             add_styled_table(doc,
                 ['Activated', 'Element', 'Trigger', 'Duration'], rows)
+            if g.get('longest_general_note'):
+                add_caption(doc, g['longest_general_note'])
     add_hr(doc)
 
     # 6. Site Operation
