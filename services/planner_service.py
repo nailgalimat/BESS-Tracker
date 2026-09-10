@@ -188,11 +188,18 @@ def get_items(project_id: int, date_from: str = None, date_to: str = None,
               block: int = None, include_undated: bool = False) -> List[dict]:
     """Jobs, newest date first. The month view, the day view and a plan's
     contents are all this one query with different bounds."""
-    q = ["SELECT i.*, t.label AS type_label, t.counts_as_downtime, p.title AS plan_title",
+    # The type is looked up with scalar subqueries, not a join. A join here
+    # multiplies the row for every matching type — one builtin plus one
+    # project-specific entry of the same code, or any stray duplicate, and
+    # every job appears twice. Ordering by project_id DESC makes a
+    # project-specific type shadow the builtin, which is the intent.
+    _t = ("(SELECT t.{} FROM plan_item_types t WHERE t.code = i.type_code"
+          "   AND (t.project_id IS NULL OR t.project_id = i.project_id)"
+          " ORDER BY t.project_id DESC LIMIT 1)")
+    q = [f"SELECT i.*, {_t.format('label')} AS type_label,",
+         f"       {_t.format('counts_as_downtime')} AS counts_as_downtime,",
+         "       (SELECT p.title FROM work_plans p WHERE p.id = i.plan_id) AS plan_title",
          "FROM plan_items i",
-         "LEFT JOIN plan_item_types t ON t.code = i.type_code",
-         "  AND (t.project_id IS NULL OR t.project_id = i.project_id)",
-         "LEFT JOIN work_plans p ON p.id = i.plan_id",
          "WHERE i.project_id = ?"]
     params = [project_id]
     if date_from and date_to:

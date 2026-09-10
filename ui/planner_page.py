@@ -176,6 +176,100 @@ class _CampaignDialog(QDialog):
         }
 
 
+class _AddJobDialog(QDialog):
+    """One job — a fault to chase today, a report to write, an inspection.
+
+    The campaign generator covers PM rounds; everything else in an O&M day is
+    a single entry, and until this existed there was no way to record one.
+    """
+
+    def __init__(self, types, default_type=None, default_date=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Add a job')
+        self.setMinimumWidth(480)
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+
+        form = QFormLayout()
+        self.type_combo = QComboBox()
+        for t in types:
+            self.type_combo.addItem(t['label'], t['code'])
+        i = self.type_combo.findData(default_type or 'corrective')
+        if i < 0:
+            i = self.type_combo.findData('corrective')
+        self.type_combo.setCurrentIndex(max(0, i))
+        form.addRow('Type:', self.type_combo)
+
+        self.title = QLineEdit()
+        self.title.setPlaceholderText('e.g. Monthly report to the customer')
+        form.addRow('Job *:', self.title)
+
+        d = QDate.fromString(default_date, 'yyyy-MM-dd') if default_date else QDate.currentDate()
+        self.date = QDateEdit(d if d.isValid() else QDate.currentDate())
+        self.date.setCalendarPopup(True)
+        self.date.setDisplayFormat('yyyy-MM-dd')
+        form.addRow('Date:', self.date)
+
+        self.block = QLineEdit()
+        self.block.setPlaceholderText('optional — plant block number')
+        form.addRow('Block:', self.block)
+
+        self.hours = QDoubleSpinBox(); self.hours.setRange(0, 240)
+        self.hours.setDecimals(2); self.hours.setSuffix(' h')
+        form.addRow('Planned:', self.hours)
+
+        self.assignee = QLineEdit()
+        self.assignee.setPlaceholderText('optional')
+        form.addRow('Assignee:', self.assignee)
+
+        self.priority = QComboBox()
+        for lbl, val in (('High', 1), ('Normal', 2), ('Low', 3)):
+            self.priority.addItem(lbl, val)
+        self.priority.setCurrentIndex(1)
+        form.addRow('Priority:', self.priority)
+
+        self.notes = QTextEdit(); self.notes.setMaximumHeight(60)
+        self.notes.setPlaceholderText('optional detail')
+        form.addRow('Detail:', self.notes)
+        lay.addLayout(form)
+
+        self.hint = QLabel('')
+        self.hint.setWordWrap(True)
+        self.hint.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        lay.addWidget(self.hint)
+        self.type_combo.currentIndexChanged.connect(self._on_type)
+        self._types = {t['code']: t for t in types}
+        self._on_type()
+
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.button(QDialogButtonBox.Ok).setText('Add')
+        box.accepted.connect(self.accept); box.rejected.connect(self.reject)
+        lay.addWidget(box)
+
+    def _on_type(self):
+        t = self._types.get(self.type_combo.currentData(), {})
+        if t.get('counts_as_downtime'):
+            self.hint.setText('This type counts as unavailability — the hours '
+                              'you record on completion go into the monthly '
+                              'report and reduce availability.')
+        else:
+            self.hint.setText('This type does not affect availability — it is '
+                              'here to plan and track the work, nothing more.')
+
+    def values(self):
+        blk = self.block.text().strip()
+        return {
+            'type_code': self.type_combo.currentData(),
+            'title': self.title.text().strip(),
+            'description': self.notes.toPlainText().strip(),
+            'planned_date': self.date.date().toString('yyyy-MM-dd'),
+            'block': int(blk) if blk.isdigit() else None,
+            'planned_hours': self.hours.value(),
+            'assignee': self.assignee.text().strip(),
+            'priority': self.priority.currentData(),
+        }
+
+
 class _CompleteDialog(QDialog):
     """Actual date and actual hours — the two numbers the customer asks for."""
 
@@ -363,7 +457,12 @@ class PlannerPage(QWidget):
         root.setSpacing(0)
 
         header = PageHeader('Planner', 'PM campaigns · daily work · plan vs actual')
-        b = PrimaryButton('＋  New PM campaign…')
+        b = PrimaryButton('＋  Add job…')
+        b.setToolTip('One job — a fault to chase, a report to write, an '
+                     'inspection. For a PM round use the campaign button.')
+        b.clicked.connect(self._add_job)
+        header.add_action(b)
+        b = SecondaryButton('＋  New PM campaign…')
         b.clicked.connect(self._new_campaign)
         header.add_action(b)
         b = SecondaryButton('⤓  Import Excel…')
@@ -438,6 +537,16 @@ class PlannerPage(QWidget):
                                'Planned h', 'Actual date', 'Actual h', 'Status'])
         self.tbl.doubleClicked.connect(self._complete_selected)
         lay.addWidget(self.tbl, 1)
+        # An empty grid tells you nothing about *why* it is empty — usually a
+        # filter, sometimes simply that nothing has been planned yet.
+        self.empty_hint = QLabel('')
+        self.empty_hint.setWordWrap(True)
+        self.empty_hint.setAlignment(Qt.AlignCenter)
+        self.empty_hint.setStyleSheet(
+            'color:#6B7A8D;font-size:12px;padding:18px;background:#FFFFFF;'
+            'border:1px dashed #D5DEE8;border-radius:8px;')
+        self.empty_hint.setVisible(False)
+        lay.addWidget(self.empty_hint)
         row = QHBoxLayout()
         for label, slot, primary in (
             ('✓  Mark done…', self._complete_selected, True),
@@ -577,6 +686,30 @@ class PlannerPage(QWidget):
                     f"first planned for {it['moved_from']}")
                 self.tbl.item(r, 0).setForeground(QColor('#8A6D1F'))
             self.tbl.item(r, 0).setData(Qt.UserRole, it)
+        self._show_empty_hint()
+
+    def _show_empty_hint(self):
+        if self.tbl.rowCount():
+            self.empty_hint.setVisible(False)
+            return
+        filters = []
+        if self.type_filter.currentData():
+            filters.append(f'type “{self.type_filter.currentText()}”')
+        if self.status_filter.currentData():
+            filters.append(f'status “{self.status_filter.currentText()}”')
+        month = f'{MONTHS[self.month.currentData()]} {self.year.value()}'
+        if filters:
+            self.empty_hint.setText(
+                f'Nothing in {month} matches {" and ".join(filters)}.\n'
+                'Widen the filters above, or add a job.')
+        else:
+            self.empty_hint.setText(
+                f'Nothing planned for {month} yet.\n\n'
+                '“＋ Add job…” records one piece of work — a fault to chase, a '
+                'report to write.  “＋ New PM campaign…” lays a whole PM round '
+                'across the calendar.  “⤓ Import Excel…” brings in a plan you '
+                'already have.')
+        self.empty_hint.setVisible(True)
 
     def _fill_summary(self):
         if not self._project_id:
@@ -694,6 +827,37 @@ class PlannerPage(QWidget):
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         pl.delete_item(it['id'])
+        self._reload()
+
+    def _add_job(self):
+        if not self._project_id:
+            return
+        # default to whatever the type filter is showing, and to a date inside
+        # the month being looked at — otherwise the new job lands out of view
+        y, m = self.year.value(), self.month.currentData()
+        today = datetime.date.today()
+        default_date = (today.isoformat() if (today.year, today.month) == (y, m)
+                        else f'{y:04d}-{m:02d}-01')
+        dlg = _AddJobDialog(pl.get_types(self._project_id),
+                            default_type=self.type_filter.currentData(),
+                            default_date=default_date, parent=self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        v = dlg.values()
+        if not v['title']:
+            QMessageBox.warning(self, 'Needs a name',
+                                'Give the job a short name.')
+            return
+        pl.add_item(self._project_id, **v)
+        # make sure the new job is actually visible: jump to its month and
+        # drop a status filter that would hide it
+        d = v['planned_date']
+        self.year.blockSignals(True); self.month.blockSignals(True)
+        self.year.setValue(int(d[:4]))
+        self.month.setCurrentIndex(int(d[5:7]) - 1)
+        self.year.blockSignals(False); self.month.blockSignals(False)
+        if self.status_filter.currentData() not in (None, 'planned'):
+            self.status_filter.setCurrentIndex(0)
         self._reload()
 
     def _new_campaign(self):

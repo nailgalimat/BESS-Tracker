@@ -548,15 +548,31 @@ def initialize_database():
                 UNIQUE(project_id, code)
             )
         """)
+        # Remove any duplicate builtins a previous version left behind — see
+        # the guarded insert below for why they appeared.
+        c.execute("""
+            DELETE FROM plan_item_types
+             WHERE project_id IS NULL
+               AND id NOT IN (SELECT MIN(id) FROM plan_item_types
+                               WHERE project_id IS NULL GROUP BY code)
+        """)
         for _code, _label, _down, _ord in [
             ('pm',          'Preventive maintenance', 1, 10),
             ('corrective',  'Fault / corrective',     0, 20),
             ('inspection',  'Inspection',             0, 30),
             ('admin',       'Administrative',         0, 40),
         ]:
-            c.execute("INSERT OR IGNORE INTO plan_item_types "
-                      "(project_id, code, label, counts_as_downtime, sort_order) "
-                      "VALUES (NULL, ?, ?, ?, ?)", (_code, _label, _down, _ord))
+            # NOT "INSERT OR IGNORE": UNIQUE(project_id, code) does not
+            # constrain these rows at all, because SQLite treats every NULL as
+            # distinct — so OR IGNORE saw no conflict and added another copy of
+            # all four builtins on every single start.
+            c.execute("""
+                INSERT INTO plan_item_types
+                    (project_id, code, label, counts_as_downtime, sort_order)
+                SELECT NULL, ?, ?, ?, ?
+                 WHERE NOT EXISTS (SELECT 1 FROM plan_item_types
+                                    WHERE project_id IS NULL AND code = ?)
+            """, (_code, _label, _down, _ord, _code))
 
         c.execute("""
             CREATE TABLE IF NOT EXISTS plan_items (
