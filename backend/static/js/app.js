@@ -578,6 +578,104 @@ const App = {
     this._show('screen-event');
   },
 
+  // ── Block picker ────────────────────────────────────────────────────────────
+  // Typing "1,2,3" was impossible: the field asked for a numeric keypad, which
+  // on Android has no comma. Blocks are tapped now; the text field still
+  // accepts typing, including ranges like 1-8.
+  _parseBlocks(text) {
+    const out = new Set();
+    for (const tok of String(text || '').split(',')) {
+      const t = tok.trim();
+      if (!t) continue;
+      const m = t.match(/^(\d+)\s*-\s*(\d+)$/);
+      if (m) {
+        const a = Math.min(+m[1], +m[2]), z = Math.max(+m[1], +m[2]);
+        for (let i = a; i <= z; i++) out.add(i);
+      } else if (/^\d+$/.test(t)) {
+        out.add(+t);
+      }
+    }
+    return [...out].sort((a, b) => a - b);
+  },
+
+  // 1,2,3,5,6,7 -> "1-3, 5-7" so a long selection stays readable
+  _formatBlocks(list) {
+    const n = [...list].sort((a, b) => a - b);
+    if (!n.length) return '';
+    const runs = [];
+    let start = n[0], prev = n[0];
+    for (const v of n.slice(1)) {
+      if (v === prev + 1) { prev = v; continue; }
+      runs.push([start, prev]); start = prev = v;
+    }
+    runs.push([start, prev]);
+    return runs.map(([a, b]) => (a === b ? `${a}` : `${a}-${b}`)).join(', ');
+  },
+
+  async _blockCount() {
+    const pid = document.getElementById('ev-proj').value;
+    const projects = await DB.getMeta('projects', []);
+    const p = (projects || []).find(x => String(x.id) === String(pid));
+    return (p && p.num_blocks) ? p.num_blocks : 0;
+  },
+
+  async openBlockPicker() {
+    const n = await this._blockCount();
+    if (!n) {
+      _showErr(document.getElementById('ev-error'),
+               'This project has no block count yet — sync the desktop once, '
+               + 'or type the blocks by hand (3 or 1,2,3 or 1-8).');
+      return;
+    }
+    this._picked = new Set(this._parseBlocks(
+      document.getElementById('ev-blocks').value));
+    const grid = document.getElementById('bp-grid');
+    grid.innerHTML = '';
+    for (let i = 1; i <= n; i++) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'bp-cell' + (this._picked.has(i) ? ' on' : '');
+      b.textContent = i;
+      b.dataset.block = i;
+      b.addEventListener('click', () => {
+        if (this._picked.has(i)) { this._picked.delete(i); b.classList.remove('on'); }
+        else { this._picked.add(i); b.classList.add('on'); }
+        this._blockPickCount();
+      });
+      grid.appendChild(b);
+    }
+    this._blockPickCount();
+    document.getElementById('block-sheet').style.display = 'flex';
+  },
+
+  _blockPickCount() {
+    const n = this._picked ? this._picked.size : 0;
+    document.getElementById('bp-count').textContent =
+      n ? `${n} selected — ${this._formatBlocks([...this._picked])}`
+        : 'none selected (empty means the whole plant)';
+  },
+
+  blockPickAll() {
+    document.querySelectorAll('#bp-grid .bp-cell').forEach(b => {
+      this._picked.add(+b.dataset.block); b.classList.add('on');
+    });
+    this._blockPickCount();
+  },
+
+  blockPickNone() {
+    this._picked.clear();
+    document.querySelectorAll('#bp-grid .bp-cell').forEach(b => b.classList.remove('on'));
+    this._blockPickCount();
+  },
+
+  closeBlockPicker() { document.getElementById('block-sheet').style.display = 'none'; },
+
+  applyBlockPicker() {
+    document.getElementById('ev-blocks').value =
+      this._formatBlocks([...(this._picked || [])]);
+    this.closeBlockPicker();
+  },
+
   onEventKind() {
     const k = document.getElementById('ev-kind').value;
     document.getElementById('ev-excltype-group').style.display = (k === 'excluded') ? 'block' : 'none';

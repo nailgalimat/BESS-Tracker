@@ -123,6 +123,14 @@ async def lifespan(app: FastAPI):
             if _c not in _cols:
                 _conn.exec_driver_sql(
                     f"ALTER TABLE work_log_entries ADD COLUMN {_c} TEXT DEFAULT ''")
+        # How many blocks the plant has, mirrored from the desktop. The phone
+        # needs it to offer a block picker — typing "1,2,3" is impossible on a
+        # numeric keypad, which has no comma key.
+        _pcols = {r[1] for r in _conn.exec_driver_sql(
+            "PRAGMA table_info(projects)").fetchall()}
+        if "num_blocks" not in _pcols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE projects ADD COLUMN num_blocks INTEGER DEFAULT 0")
 
     # Ensure uploads directory exists
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)

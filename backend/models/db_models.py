@@ -71,6 +71,9 @@ class Project(Base):
     id           = Column(Integer, primary_key=True, autoincrement=False)
     name         = Column(String, nullable=False)
     project_type = Column(String, default="BESS")
+    # How many blocks the plant has, mirrored from the desktop so the phone can
+    # offer a block picker instead of asking the engineer to type numbers.
+    num_blocks   = Column(Integer, default=0)
     updated_at   = Column(String, default=_now)
 
 

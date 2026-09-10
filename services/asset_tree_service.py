@@ -31,6 +31,7 @@ Data freshness: everything here is as of the last imported month. Callers must
 show that date — see `get_data_freshness`.
 """
 
+import os
 import re
 from typing import Optional, List
 
@@ -497,6 +498,17 @@ def get_asset_history(project_id: int, code: str, months: int = 12) -> dict:
             FROM alarm_events WHERE project_id=? AND {where}
             GROUP BY trigger_name ORDER BY hours DESC LIMIT 15
         """, base)]
+        # A general alarm should not head the list as if it were a diagnosis.
+        ovr = {r['trigger_name']: r['is_umbrella'] for r in conn.execute(
+            "SELECT trigger_name, is_umbrella FROM fault_notes "
+            "WHERE project_id=? AND is_umbrella IS NOT NULL", (project_id,))}
+        for f in top_faults:
+            f['is_umbrella'] = is_umbrella_trigger(f['trigger_name'], ovr)
+        # Keep them out of the table entirely; the caller states them in a
+        # line of its own. A table that holds only actionable faults is the
+        # point — ranking the status words merely lower still buries them in.
+        umbrella_faults = [f for f in top_faults if f['is_umbrella']]
+        top_faults = [f for f in top_faults if not f['is_umbrella']]
 
         recent = [dict(r) for r in conn.execute(f"""
             SELECT a.id, a.element, a.block, a.lc, a.unit, a.equipment_type,
@@ -565,6 +577,10 @@ def get_asset_history(project_id: int, code: str, months: int = 12) -> dict:
             'freshness': get_data_freshness(project_id),
             'totals': dict(tot) if tot else {},
             'by_month': by_month, 'top_faults': top_faults, 'recent': recent,
+            'umbrella_faults': umbrella_faults,
+            'umbrella_note': umbrella_summary(
+                umbrella_faults, name_key='trigger_name',
+                events_key='events', hours_key='hours'),
             'work_reports': work_reports, 'pm': pm, 'exclusions': exc,
         }
     finally:
@@ -915,16 +931,272 @@ def get_unreported_faults(project_id: int, year: int = None, month: int = None,
 
     conn = get_connection()
     try:
-        rows = conn.execute(f"""
+        rows = [dict(r) for r in conn.execute(f"""
             SELECT id, element, asset_code, unit_code, block, lc, unit,
                    equipment_type, trigger_name, cls_reason, cls_subsystem,
-                   cls_severity, activated, deactivated,
+                   cls_severity, activated, deactivated, duration_min,
                    ROUND(duration_min/60.0, 2) AS hours, year, month
             FROM alarm_events
             WHERE {' AND '.join(where)}
             ORDER BY duration_min DESC LIMIT ?
-        """, params + [int(limit)]).fetchall()
-        return [dict(r) for r in rows]
+        """, params + [int(limit)])]
+        ovr = {r['trigger_name']: r['is_umbrella'] for r in conn.execute(
+            "SELECT trigger_name, is_umbrella FROM fault_notes "
+            "WHERE project_id=? AND is_umbrella IS NOT NULL", (project_id,))}
+    finally:
+        conn.close()
+
+    # An umbrella alarm sitting next to a real fault on the same block is that
+    # fault's shadow, not a job of its own — drop it from the queue. One left
+    # standing alone is kept: then it is the only evidence there is.
+    umb = [r for r in rows if is_umbrella_trigger(r['trigger_name'], ovr)]
+    if umb:
+        real = [r for r in rows if not is_umbrella_trigger(r['trigger_name'], ovr)]
+        by_block = {}
+        for r in real:
+            by_block.setdefault(r.get('block'), []).append(r)
+        shadowed = set()
+        for r in umb:
+            a0 = pd.to_datetime(r.get('activated'), errors='coerce')
+            if a0 is None or pd.isna(a0):
+                continue
+            a1 = a0 + pd.Timedelta(minutes=float(r.get('duration_min') or 0))
+            for o in by_block.get(r.get('block'), ()):
+                b0 = pd.to_datetime(o.get('activated'), errors='coerce')
+                if b0 is None or pd.isna(b0):
+                    continue
+                b1 = b0 + pd.Timedelta(minutes=float(o.get('duration_min') or 0))
+                if b0 <= a1 and b1 >= a0:
+                    shadowed.add(r['id'])
+                    break
+        rows = [r for r in rows if r['id'] not in shadowed]
+    for r in rows:
+        r['is_umbrella'] = is_umbrella_trigger(r['trigger_name'], ovr)
+    return rows
+
+
+# ── Umbrella faults ──────────────────────────────────────────────────────────
+
+# Some alarms are a general signal rather than a diagnosis: they fire next to
+# the fault that actually happened. Measured over six months, "Input dry node
+# fault" had another alarm alongside it in 5,649 of 5,668 occurrences (98%) —
+# an LC or BSC system alarm, a PCS comm exception, islanding protection, an
+# LCU alarm, sometimes the firefighting system. On its own it names nothing.
+#
+# Left in a "worst faults" table it ranks second on the whole plant by hours
+# and buries the real causes, and its hours largely duplicate theirs.
+# Measured over six months of Tashkent data:
+#   LC - FAULT RESET            51 events, 13,116 h — never alone (0%)
+#   BSC - SYSTEM ALARM STATUS   10,447 events        — never alone (0%)
+#   Input dry node fault        5,668 events         — alone in 2%
+#   LC - SYSTEM ALARM STATE1    58,018 events, 296,596 h — alone in 78%, and
+#     that is the point: SOC upper/lower-limit alarms are not exported as
+#     their own trigger, they arrive folded into this status word, so it
+#     fires on every normal charge to the limit and every discharge.
+# What they share is that each names a *status register* rather than a
+# condition — unlike "Cell undervoltage fault" or "Islanding protection",
+# which say what happened.
+# Second family: LC and BSC are *controllers*. When equipment attached to one
+# of them fails, the controller raises a fault of its own naming only the
+# device — "PCS fault", "DCDC fault", "CMU fault". The useful alarm is the
+# device's own, which says what is wrong; the controller's echo says only
+# where. Measured, every one of these fires alone in 0-2% of cases.
+#
+# A link failure is NOT an echo and stays: "BSC-PCS comm fault", "LC-PCS comm
+# fault" name a condition (that link is down), not merely a device.
+UMBRELLA_PATTERNS = (
+    # status registers rather than events
+    'dry node',
+    'system alarm state',
+    'system alarm status',
+    'fault reset',
+    'alarm running status',
+    'other alarm',
+    'alarm status',
+    'alarm position',
+    'fault position',
+    # a controller echoing a fault on equipment attached to it
+    'fault status 1: pcs fault',
+    'fault status 1: bsc fault',
+    'system fault status: dcdc fault',
+    'system fault status: cmu fault',
+    'system fault status: cell under voltage protection',
+    'system not ready fault',
+    'node fault',
+    'cmu - cmu alarm',
+    'cmu alarm',
+)
+
+UMBRELLA_FOOTNOTE = (
+    'General status alarms, listed separately because they report a status '
+    'register rather than a fault: they accompany the real event (and, for the '
+    'LC status word, also fire on every normal charge to the SOC limit). '
+    'Refer to the specific alarms in the table above.'
+)
+
+
+def umbrella_summary(rows, name_key='trigger', events_key='events',
+                     hours_key='total_h', limit=8) -> str:
+    """One sentence naming the general alarms kept out of a table.
+
+    They are removed rather than ranked so the table holds only things worth
+    acting on, but the reader still needs to know they occurred.
+    """
+    if rows is None or len(rows) == 0:
+        return ''
+    parts = []
+    for r in list(rows)[:limit]:
+        nm = str(r.get(name_key) or '')
+        n = int(r.get(events_key) or 0)
+        h = float(r.get(hours_key) or 0)
+        parts.append(f'{nm} ({n:,} occurrence(s), {h:,.0f} h)')
+    more = len(rows) - limit
+    tail = f' and {more} more' if more > 0 else ''
+    return UMBRELLA_FOOTNOTE + ' Recorded this period: ' + '; '.join(parts) + tail + '.'
+
+
+def is_umbrella_trigger(trigger_name: str, overrides: dict = None) -> bool:
+    """Is this trigger a general signal rather than a diagnosis?
+
+    `overrides` is {trigger_name: 0/1} from the project's own notes, which win
+    over the built-in judgement in both directions.
+    """
+    t = str(trigger_name or '')
+    if overrides and t in overrides and overrides[t] is not None:
+        return bool(overrides[t])
+    low = t.lower()
+    return any(p in low for p in UMBRELLA_PATTERNS)
+
+
+def get_umbrella_overrides(project_id: int) -> dict:
+    conn = get_connection()
+    try:
+        return {r['trigger_name']: r['is_umbrella'] for r in conn.execute(
+            "SELECT trigger_name, is_umbrella FROM fault_notes "
+            "WHERE project_id=? AND is_umbrella IS NOT NULL", (project_id,))}
+    finally:
+        conn.close()
+
+
+def set_fault_umbrella(project_id: int, trigger_name: str, is_umbrella: bool):
+    """Record that this fault is (or is not) a general signal."""
+    if not trigger_name:
+        return
+    conn = get_connection()
+    try:
+        conn.execute("""
+            INSERT INTO fault_notes (project_id, trigger_name, is_umbrella)
+            VALUES (?, ?, ?)
+            ON CONFLICT(project_id, trigger_name) DO UPDATE SET
+                is_umbrella=excluded.is_umbrella, updated_at=datetime('now')
+        """, (project_id, trigger_name, 1 if is_umbrella else 0))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ── Manufacturer's fault reference ───────────────────────────────────────────
+
+# Extracted from the Sungrow LC200/LC300 fault and alarm guides, plus what the
+# site has learned. Read-only and shipped with the app: it is what the maker
+# says, kept apart from `fault_notes`, which is what we say. Neither
+# overwrites the other, and both show up beside a fault.
+DEFAULT_FAULT_REFERENCE_CSV = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'data', 'fault_reference.csv')
+
+_REFERENCE_CACHE = None
+
+
+def load_fault_reference(path: str = None) -> List[dict]:
+    global _REFERENCE_CACHE
+    if _REFERENCE_CACHE is not None and path is None:
+        return _REFERENCE_CACHE
+    import csv
+    p = path or DEFAULT_FAULT_REFERENCE_CSV
+    rows = []
+    try:
+        with open(p, encoding='utf-8', newline='') as f:
+            for r in csv.DictReader(f):
+                if (r.get('trigger_pattern') or '').strip():
+                    rows.append({k: (v or '').strip() for k, v in r.items()})
+    except OSError:
+        rows = []
+    # longest pattern first, so a specific entry wins over a general one
+    rows.sort(key=lambda r: -len(r['trigger_pattern']))
+    if path is None:
+        _REFERENCE_CACHE = rows
+    return rows
+
+
+def get_fault_reference(trigger_name: str) -> Optional[dict]:
+    """What the manufacturer says about this alarm, if anything.
+
+    Matched on a substring of the trigger name, the way alarm classifications
+    are — the SCADA text and the manual's headings never agree exactly.
+    """
+    t = str(trigger_name or '').lower()
+    if not t:
+        return None
+    for r in load_fault_reference():
+        if r['trigger_pattern'].lower() in t:
+            return r
+    return None
+
+
+# ── Fault playbook — ours, not the customer's ────────────────────────────────
+
+def get_fault_note(project_id: int, trigger_name: str) -> Optional[dict]:
+    """What we worked out about this fault last time.
+
+    Kept apart from work_logs.work_performed on purpose: that text is compiled
+    into the monthly report's corrective-maintenance section and goes to the
+    customer. This is the engineers' own note and stays here.
+    """
+    if not trigger_name:
+        return None
+    conn = get_connection()
+    try:
+        r = conn.execute(
+            "SELECT * FROM fault_notes WHERE project_id=? AND trigger_name=?",
+            (project_id, trigger_name)).fetchone()
+        return dict(r) if r else None
+    finally:
+        conn.close()
+
+
+def set_fault_note(project_id: int, trigger_name: str, note: str,
+                   updated_by: str = '') -> None:
+    """Write or clear the note for a fault. Optional by design — there is no
+    prompting and nothing depends on it being filled in."""
+    if not trigger_name:
+        return
+    conn = get_connection()
+    try:
+        if not (note or '').strip():
+            conn.execute("DELETE FROM fault_notes WHERE project_id=? AND trigger_name=?",
+                         (project_id, trigger_name))
+        else:
+            conn.execute("""
+                INSERT INTO fault_notes (project_id, trigger_name, note, updated_by)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(project_id, trigger_name) DO UPDATE SET
+                    note=excluded.note, updated_by=excluded.updated_by,
+                    updated_at=datetime('now')
+            """, (project_id, trigger_name, note.strip(), updated_by or ''))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_fault_notes(project_id: int) -> List[dict]:
+    """Every note, most recently touched first — the troubleshooting handbook
+    as it stands."""
+    conn = get_connection()
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM fault_notes WHERE project_id=? "
+            "ORDER BY updated_at DESC", (project_id,))]
     finally:
         conn.close()
 

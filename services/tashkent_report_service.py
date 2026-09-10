@@ -1250,6 +1250,36 @@ def _chart_soc_trend(socsoh):
 
 # ── REPORT BUILDER ────────────────────────────────────────────────────────────
 
+def _split_general(table):
+    """Separate general status alarms from the faults worth reading.
+
+    Some triggers name a status register rather than an event — the LC and BSC
+    system-alarm words, FAULT RESET, the dry-node input, the converter alarm
+    status words. They accompany the real fault, and the LC one also fires on
+    every normal charge to the SOC limit (SOC limit alarms are not exported as
+    their own trigger; they arrive folded into it). Left in, they outrank every
+    genuine fault by hours and the table stops being readable.
+
+    Returns (faults, general) — the second is stated in a sentence instead.
+    """
+    if table is None or getattr(table, 'empty', True):
+        return table, table
+    if 'umbrella' not in table.columns:
+        return table, table.iloc[0:0]
+    keep = table[~table['umbrella'].astype(bool)].reset_index(drop=True)
+    gen = table[table['umbrella'].astype(bool)].reset_index(drop=True)
+    return keep, gen
+
+
+def _general_sentence(general_table) -> str:
+    if general_table is None or getattr(general_table, 'empty', True):
+        return ''
+    from services.asset_tree_service import umbrella_summary
+    return umbrella_summary(general_table.to_dict('records'),
+                            name_key='trigger', events_key='events',
+                            hours_key='total_h')
+
+
 def generate_tashkent_report(
     working_status_path,
     pcs_cd_path,
@@ -2586,6 +2616,7 @@ def generate_tashkent_report(
         # several units of a block no longer repeat, and every distinct fault
         # is represented instead of 40 copies of the dominant one.
         et = build_event_type_table(important, top_n=50)
+        et, et_general = _split_general(et)
         rows = []
         any_planned = '*' in ''.join(et['blocks'].astype(str)) if not et.empty else False
         any_active = int(et['active'].sum()) if not et.empty else 0
@@ -2619,6 +2650,9 @@ def generate_tashkent_report(
         if any_active:
             note += ('<i> ⚠ alarm was still active at the end of the '
                      'reporting period.</i>')
+        _gen = _general_sentence(et_general)
+        if _gen:
+            note += '<i> ' + _gen + '</i>'
         story.append(Paragraph(note, STYLE_SMALL))
     story.append(Spacer(1, 3*mm))
 
@@ -2629,6 +2663,7 @@ def generate_tashkent_report(
                                 STYLE_BODY))
     else:
         wt = build_event_type_table(warn_detail, top_n=50)
+        wt, wt_general = _split_general(wt)
         rows = []
         any_planned = '*' in ''.join(wt['blocks'].astype(str)) if not wt.empty else False
         any_active = int(wt['active'].sum()) if not wt.empty else 0
@@ -2656,6 +2691,9 @@ def generate_tashkent_report(
             story.append(Paragraph(
                 '<i>* block was under a planned or manual stop at the time of '
                 'the event.</i>', STYLE_SMALL))
+        _gen = _general_sentence(wt_general)
+        if _gen:
+            story.append(Paragraph('<i>' + _gen + '</i>', STYLE_SMALL))
     story.append(Spacer(1, 4*mm))
 
     # 5.2 Major Incidents and Breakdowns (semi-automatic)
@@ -3442,6 +3480,7 @@ def _build_tashkent_docx(output_path, _ctx):
     else:
         # One row per fault TYPE — see the PDF builder for the rationale.
         et = build_event_type_table(important, top_n=50)
+        et, et_general = _split_general(et)
         rows = []
         any_planned = '*' in ''.join(et['blocks'].astype(str)) if not et.empty else False
         any_active = int(et['active'].sum()) if not et.empty else 0
@@ -3472,6 +3511,9 @@ def _build_tashkent_docx(output_path, _ctx):
         if any_active:
             add_caption(doc, '⚠ alarm was still active at the end of the '
                              'reporting period.')
+        _gen = _general_sentence(et_general)
+        if _gen:
+            add_caption(doc, _gen)
 
     # Alarms table — persistent warnings, same columns minus Date
     add_paragraph(doc, 'Warnings', bold=True)
@@ -3480,6 +3522,7 @@ def _build_tashkent_docx(output_path, _ctx):
         add_paragraph(doc, 'No standing warnings of note during the month.')
     else:
         wt = build_event_type_table(warn_detail, top_n=50)
+        wt, wt_general = _split_general(wt)
         rows = []
         any_planned = '*' in ''.join(wt['blocks'].astype(str)) if not wt.empty else False
         any_active = int(wt['active'].sum()) if not wt.empty else 0
@@ -3502,6 +3545,9 @@ def _build_tashkent_docx(output_path, _ctx):
         if any_active:
             add_caption(doc, '⚠ warning was still active at the end of the '
                              'reporting period.')
+        _gen = _general_sentence(wt_general)
+        if _gen:
+            add_caption(doc, _gen)
 
     add_heading(doc, '5.2  Major Incidents and Breakdowns', level=3)
     add_paragraph(doc, 'Summary of breakdowns, incidents and their weight '

@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QTreeWidget, QTreeWidgetItem, QSplitter, QTabWidget,
     QMessageBox, QHeaderView, QAbstractItemView, QScrollArea, QFrame,
     QTableWidget, QTableWidgetItem, QApplication, QDialog, QSpinBox,
-    QFileDialog, QDialogButtonBox, QProgressBar, QCheckBox
+    QFileDialog, QDialogButtonBox, QProgressBar, QCheckBox, QTextEdit
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
@@ -535,6 +535,13 @@ class EquipmentPage(QWidget):
             ['Fault', 'Subsystem', 'Reason', 'Events', 'Hours', 'Last seen'])
         self.faults_tbl.itemSelectionChanged.connect(self._on_fault_selected)
         lay.addWidget(self.faults_tbl, 3)
+        self.umbrella_note = QLabel('')
+        self.umbrella_note.setWordWrap(True)
+        self.umbrella_note.setStyleSheet(
+            'color:#8A6D1F;background:#FFF9E6;border:1px solid #F0DFA8;'
+            'border-radius:5px;padding:5px 8px;font-size:11px;')
+        self.umbrella_note.setVisible(False)
+        lay.addWidget(self.umbrella_note)
 
         row = QHBoxLayout()
         row.addWidget(self._caption('Same fault elsewhere in the plant'))
@@ -547,10 +554,52 @@ class EquipmentPage(QWidget):
             ['Asset', 'Equipment', 'Events', 'Hours', 'Last seen'])
         lay.addWidget(self.similar_tbl, 2)
 
+        # What the manufacturer says about the selected fault — read-only,
+        # shipped with the app, kept apart from our own note below it.
+        self.ref_box = QLabel('')
+        self.ref_box.setWordWrap(True)
+        self.ref_box.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.ref_box.setStyleSheet(
+            'background:#F2F7FF;border:1px solid #CFE0F5;border-radius:6px;'
+            'padding:8px 10px;color:#24405E;font-size:11px;')
+        self.ref_box.setVisible(False)
+        lay.addWidget(self.ref_box)
+
+        # Our own note on the selected fault. Optional, and it never leaves
+        # the app — the customer's report is built from work reports, not this.
+        row = QHBoxLayout()
+        row.addWidget(self._caption('How we deal with this fault — our notes'))
+        row.addStretch()
+        self.note_state = QLabel('')
+        self.note_state.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        row.addWidget(self.note_state)
+        self.umb_chk = QCheckBox('general alarm')
+        self.umb_chk.setToolTip(
+            'Tick when this alarm accompanies other faults rather than naming '
+            'one. It then stops heading the fault tables and stops creating '
+            'jobs of its own when a specific fault was recorded beside it.')
+        self.umb_chk.setEnabled(False)
+        self.umb_chk.toggled.connect(self._toggle_umbrella)
+        row.addWidget(self.umb_chk)
+        self.note_save = SecondaryButton('Save note')
+        self.note_save.setFixedWidth(96)
+        self.note_save.clicked.connect(self._save_note)
+        self.note_save.setEnabled(False)
+        row.addWidget(self.note_save)
+        lay.addLayout(row)
+        self.note_edit = QTextEdit()
+        self.note_edit.setMaximumHeight(84)
+        self.note_edit.setPlaceholderText(
+            'Optional. What actually worked — the check that found it, the '
+            'setting to look at, the part that failed. Written once against '
+            'the fault name, shown every time it happens again. Stays with us.')
+        self.note_edit.setEnabled(False)
+        lay.addWidget(self.note_edit)
+
         lay.addWidget(self._caption('By month'))
         self.month_tbl = make_table(
             ['Month', 'Alarms', 'Excluded', 'Own fault h', 'Total h'])
-        self.month_tbl.setMaximumHeight(150)
+        self.month_tbl.setMaximumHeight(130)
         lay.addWidget(self.month_tbl, 1)
         return w
 
@@ -568,6 +617,10 @@ class EquipmentPage(QWidget):
             ['Report', 'Element', 'Fault', 'Severity', 'Activated', 'Cleared',
              'Hours', 'Excluded by'])
         self.alarm_tbl.doubleClicked.connect(lambda: self._raise_report(self.alarm_tbl))
+        # The alarm log lists every trigger, general ones included — so this is
+        # where a status word can be noted, or its "general" mark taken off,
+        # now that such rows no longer appear in the fault table.
+        self.alarm_tbl.itemSelectionChanged.connect(self._on_alarm_selected)
         lay.addWidget(self.alarm_tbl, 1)
 
         row = QHBoxLayout()
@@ -895,17 +948,20 @@ class EquipmentPage(QWidget):
             f"{n_excl:,} · {_fmt_h(t.get('excluded_hours') or 0)} h")
         self.st_reports.set_value(str(len(h['work_reports'])))
 
-        self._fill_faults(h['top_faults'])
+        self._fill_faults(h['top_faults'], h.get('umbrella_note', ''))
         self._fill_months(h['by_month'])
         self._fill_alarms(h['recent'])
         self._fill_work(h)
         self._fill_identity(a)
         self.similar_tbl.setRowCount(0)
         self.similar_hint.setText('select a fault above')
+        self._load_note('')
         if self.tabs.tabText(self.tabs.currentIndex()).startswith('Needs'):
             self._load_gaps()
 
-    def _fill_faults(self, rows):
+    def _fill_faults(self, rows, note=''):
+        """The table holds actionable faults only; general status alarms are
+        stated beneath it instead of ranked among them."""
         self.faults_tbl.setRowCount(0)
         for r in rows:
             i = self.faults_tbl.rowCount()
@@ -921,6 +977,8 @@ class EquipmentPage(QWidget):
                 if c >= 3:
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.faults_tbl.setItem(i, c, item)
+        self.umbrella_note.setText(note or '')
+        self.umbrella_note.setVisible(bool(note))
 
     def _fill_months(self, rows):
         self.month_tbl.setRowCount(0)
@@ -1193,6 +1251,7 @@ class EquipmentPage(QWidget):
         if not rows or not self._current_code:
             return
         trigger = self.faults_tbl.item(rows[0].row(), 0).text()
+        self._load_note(trigger)
         sim = ats.find_similar_failures(self._project_id, trigger,
                                         exclude_code=self._current_code, limit=25)
         self.similar_tbl.setRowCount(0)
@@ -1212,6 +1271,68 @@ class EquipmentPage(QWidget):
         self.similar_hint.setText(
             f'{len(sim)} other asset(s) hit by this fault'
             if sim else 'only this asset has seen this fault')
+
+    # ── our own note on a fault ──────────────────────────────────────────
+    def _load_note(self, trigger):
+        self._note_trigger = trigger
+        ref = ats.get_fault_reference(trigger) if trigger else None
+        if ref:
+            bits = [f"<b>{ref.get('source', '')}</b>"]
+            for label, key in (('Why it fires', 'cause'),
+                               ('What the system does', 'action'),
+                               ('How to clear it', 'remedy')):
+                if ref.get(key):
+                    bits.append(f"<b>{label}:</b> {ref[key]}")
+            self.ref_box.setText('<br>'.join(bits))
+            self.ref_box.setVisible(True)
+        else:
+            self.ref_box.setVisible(False)
+        rec = ats.get_fault_note(self._project_id, trigger) if trigger else None
+        self.note_edit.blockSignals(True)
+        self.note_edit.setPlainText((rec or {}).get('note', '') or '')
+        self.note_edit.blockSignals(False)
+        self.note_edit.setEnabled(bool(trigger))
+        self.note_save.setEnabled(bool(trigger))
+        self.umb_chk.blockSignals(True)
+        self.umb_chk.setChecked(
+            ats.is_umbrella_trigger(
+                trigger, ats.get_umbrella_overrides(self._project_id))
+            if trigger else False)
+        self.umb_chk.setEnabled(bool(trigger))
+        self.umb_chk.blockSignals(False)
+        if rec:
+            who = f" by {rec['updated_by']}" if rec.get('updated_by') else ''
+            self.note_state.setText(
+                f"noted {str(rec.get('updated_at') or '')[:16]}{who}")
+        else:
+            self.note_state.setText('no note yet — optional')
+
+    def _on_alarm_selected(self):
+        rows = (self.alarm_tbl.selectionModel().selectedRows()
+                if self.alarm_tbl.selectionModel() else [])
+        if not rows:
+            return
+        ev = self.alarm_tbl.item(rows[0].row(), 0).data(Qt.UserRole) or {}
+        trig = ev.get('trigger_name')
+        if trig:
+            self._load_note(trig)
+
+    def _toggle_umbrella(self, on):
+        trig = getattr(self, '_note_trigger', '')
+        if not (self._project_id and trig):
+            return
+        ats.set_fault_umbrella(self._project_id, trig, on)
+        if self._current_code:
+            self.show_asset(self._current_code)
+            self._load_note(trig)
+
+    def _save_note(self):
+        trig = getattr(self, '_note_trigger', '')
+        if not (self._project_id and trig):
+            return
+        ats.set_fault_note(self._project_id, trig,
+                           self.note_edit.toPlainText())
+        self._load_note(trig)
 
     def _save_identity(self):
         if not (self._project_id and self._current_code):

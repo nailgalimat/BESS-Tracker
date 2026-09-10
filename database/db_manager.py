@@ -478,6 +478,127 @@ def initialize_database():
             )
         """)
 
+        # ── FAULT PLAYBOOK (ours, never the customer's) ───────────────────
+        # How we actually deal with a given fault, written by whoever worked
+        # it out. Keyed on the trigger name, not on one alarm, so it is worth
+        # writing once: every future occurrence of that fault shows it.
+        #
+        # Deliberately separate from work_logs.work_performed — that text goes
+        # into the monthly report's corrective-maintenance section and reaches
+        # the customer. This does not leave the app.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS fault_notes (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id   INTEGER NOT NULL,
+                trigger_name TEXT    NOT NULL,
+                note         TEXT    DEFAULT '',
+                updated_by   TEXT    DEFAULT '',
+                updated_at   TEXT    DEFAULT (datetime('now')),
+                UNIQUE(project_id, trigger_name),
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            )
+        """)
+        # An "umbrella" fault is a general signal that fires alongside the real
+        # one rather than naming it — Input dry node fault has something else
+        # beside it in 98% of 5,668 occurrences. NULL means "use the default
+        # judgement"; 1/0 is an explicit override made in the app.
+        _fn_cols = [r[1] for r in c.execute(
+            "PRAGMA table_info(fault_notes)").fetchall()]
+        if 'is_umbrella' not in _fn_cols:
+            c.execute("ALTER TABLE fault_notes ADD COLUMN is_umbrella INTEGER")
+
+        # ── WORK PLANNER ──────────────────────────────────────────────────
+        # Everything else in this app is retrospective: the alarm fired, the
+        # report was written, the month was closed. These three tables are the
+        # forward half — what we intend to do — and the point of them is that
+        # completing a planned job writes the record the monthly report reads,
+        # instead of somebody retyping it later.
+        #
+        # PM here is a *campaign*, not a calendar: August 2026 shows one or two
+        # blocks a day rolling across the plant (block 2 on the 1st, block 3 on
+        # the 2nd … blocks 31-32 on the 27th), a full round taking about three
+        # months. So plan_items are generated from a campaign, not typed in.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS work_plans (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id  INTEGER NOT NULL,
+                title       TEXT    NOT NULL,
+                kind        TEXT    DEFAULT 'campaign',  -- campaign | month | adhoc
+                date_from   TEXT,
+                date_to     TEXT,
+                status      TEXT    DEFAULT 'active',    -- active | closed
+                notes       TEXT    DEFAULT '',
+                created_at  TEXT    DEFAULT (datetime('now')),
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            )
+        """)
+
+        # Work types. The four defaults cover the O&M year; a project can add
+        # its own (commissioning, for instance) without a schema change.
+        # `counts_as_downtime` is what makes PM reduce availability while an
+        # office task does not.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS plan_item_types (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id   INTEGER,          -- NULL = available to every project
+                code         TEXT    NOT NULL,
+                label        TEXT    NOT NULL,
+                counts_as_downtime INTEGER DEFAULT 0,
+                sort_order   INTEGER DEFAULT 0,
+                UNIQUE(project_id, code)
+            )
+        """)
+        for _code, _label, _down, _ord in [
+            ('pm',          'Preventive maintenance', 1, 10),
+            ('corrective',  'Fault / corrective',     0, 20),
+            ('inspection',  'Inspection',             0, 30),
+            ('admin',       'Administrative',         0, 40),
+        ]:
+            c.execute("INSERT OR IGNORE INTO plan_item_types "
+                      "(project_id, code, label, counts_as_downtime, sort_order) "
+                      "VALUES (NULL, ?, ?, ?, ?)", (_code, _label, _down, _ord))
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS plan_items (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id    INTEGER NOT NULL,
+                plan_id       INTEGER,          -- NULL = a standalone day task
+                type_code     TEXT    DEFAULT 'pm',
+                title         TEXT    DEFAULT '',
+                description   TEXT    DEFAULT '',
+                block         INTEGER,          -- plant-wide numbering (1..70)
+                lc            INTEGER,
+                asset_code    TEXT    DEFAULT '',
+                planned_date  TEXT,
+                planned_hours REAL    DEFAULT 0,
+                assignee      TEXT    DEFAULT '',
+                priority      INTEGER DEFAULT 2,           -- 1 high, 2 normal, 3 low
+                status        TEXT    DEFAULT 'planned',   -- planned|in_progress|done|skipped|moved
+                actual_date   TEXT,
+                actual_hours  REAL,
+                actual_notes  TEXT    DEFAULT '',
+                moved_from    TEXT    DEFAULT '',          -- the date it was first planned for
+                alarm_event_id  INTEGER,
+                work_log_id     INTEGER,
+                pm_activity_id  INTEGER,        -- the downtime row this job wrote
+                created_at    TEXT    DEFAULT (datetime('now')),
+                updated_at    TEXT    DEFAULT (datetime('now')),
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (plan_id)    REFERENCES work_plans(id) ON DELETE SET NULL
+            )
+        """)
+        for _idx in (
+            "CREATE INDEX IF NOT EXISTS idx_plan_items_date "
+            "ON plan_items(project_id, planned_date)",
+            "CREATE INDEX IF NOT EXISTS idx_plan_items_plan "
+            "ON plan_items(plan_id)",
+            "CREATE INDEX IF NOT EXISTS idx_plan_items_block "
+            "ON plan_items(project_id, block)",
+            "CREATE INDEX IF NOT EXISTS idx_plan_items_status "
+            "ON plan_items(project_id, status)",
+        ):
+            c.execute(_idx)
+
         # Migration: scope the three unavailability tables to (project, month)
         # so they can be entered per report-month instead of globally. Existing
         # rows keep NULL year/month (the report still date-filters them).

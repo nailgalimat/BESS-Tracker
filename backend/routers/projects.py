@@ -32,7 +32,9 @@ def list_projects(
 ):
     rows = db.query(Project).order_by(Project.name).all()
     return [
-        ProjectOut(id=p.id, name=p.name, project_type=p.project_type or "BESS")
+        ProjectOut(id=p.id, name=p.name,
+                   project_type=p.project_type or "BESS",
+                   num_blocks=p.num_blocks or 0)
         for p in rows
     ]
 
@@ -52,12 +54,14 @@ def replace_projects(
         if existing:
             existing.name         = p.name
             existing.project_type = p.project_type
+            existing.num_blocks   = p.num_blocks or 0
             existing.updated_at   = now
         else:
             db.add(Project(
                 id           = p.id,
                 name         = p.name,
                 project_type = p.project_type,
+                num_blocks   = p.num_blocks or 0,
                 updated_at   = now,
             ))
 

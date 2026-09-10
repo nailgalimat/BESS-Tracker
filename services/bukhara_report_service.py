@@ -1255,9 +1255,20 @@ def build_event_type_table(events_df, top_n=40, period_end=None):
     out = pd.DataFrame(rows)
     if out.empty:
         return out
-    # Unresolved alarms first, then by total downtime
+    # A general alarm — one that fires alongside the real fault instead of
+    # naming it — must not head the table. "Input dry node fault" is second on
+    # the plant by hours yet had another alarm beside it in 98% of 5,668
+    # occurrences, so on its own it points at nothing.
+    from services.asset_tree_service import is_umbrella_trigger
+    out['umbrella'] = out['trigger'].map(is_umbrella_trigger)
+    # Unresolved alarms first, then by total downtime.
     out = out.sort_values(['active', 'total_h'], ascending=[False, False])
-    return out.head(top_n).reset_index(drop=True)
+    # `top_n` caps the faults; every general alarm is kept, because the caller
+    # states them in a sentence and that sentence must be complete. They are
+    # placed last so a caller that does not split them still reads sensibly.
+    faults = out[~out['umbrella'].astype(bool)].head(top_n)
+    general = out[out['umbrella'].astype(bool)]
+    return pd.concat([faults, general], ignore_index=True)
 
 
 def build_faults_summary(events_df, ws_long=None, top_n=15, drop_planned=False):

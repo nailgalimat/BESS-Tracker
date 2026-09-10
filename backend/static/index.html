@@ -10,7 +10,7 @@
   <title>BESS Field Log</title>
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="apple-touch-icon" href="/app/icons/icon-192.png" />
-  <link rel="stylesheet" href="/app/css/app.css?v=10" />
+  <link rel="stylesheet" href="/app/css/app.css?v=11" />
 </head>
 <body>
 
@@ -315,7 +315,15 @@
     <div class="form-row">
       <div class="form-group">
         <label id="ev-blocks-label">Block(s)</label>
-        <input id="ev-blocks" type="text" inputmode="numeric" placeholder="e.g. 3 or 1,2,3 (empty = all)" />
+        <!-- inputmode="numeric" used to be here: on Android that keypad has no
+             comma key, so "1,2,3" simply could not be typed. Blocks are picked
+             from a grid now, and the field still accepts typing as a fallback. -->
+        <input id="ev-blocks" type="text" inputmode="text"
+               placeholder="tap Choose, or type 3 or 1,2,3 or 1-8" />
+        <button type="button" class="btn btn-outline btn-block" id="ev-pick-btn"
+                style="margin-top:6px" onclick="App.openBlockPicker()">
+          ⊞&nbsp; Choose blocks
+        </button>
       </div>
       <div class="form-group">
         <label>Duration (h)</label>
@@ -351,6 +359,24 @@
   </div>
 </div>
 
+<!-- BLOCK PICKER — tapping beats typing on a phone keypad -->
+<div id="block-sheet" class="modal" style="display:none"
+     onclick="if(event.target===this)App.closeBlockPicker()">
+  <div class="modal-card">
+    <h3>Blocks</h3>
+    <p class="wo-avail" id="bp-count">none selected</p>
+    <div class="bp-actions">
+      <button class="btn btn-outline" onclick="App.blockPickAll()">All</button>
+      <button class="btn btn-outline" onclick="App.blockPickNone()">Clear</button>
+    </div>
+    <div id="bp-grid" class="bp-grid"></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="App.closeBlockPicker()">Cancel</button>
+      <button class="btn btn-primary" onclick="App.applyBlockPicker()">Done</button>
+    </div>
+  </div>
+</div>
+
 <!-- ADD SHEET — choose what to create -->
 <div id="add-sheet" class="modal" style="display:none" onclick="if(event.target===this)App.closeAddSheet()">
   <div class="modal-card">
@@ -368,9 +394,9 @@
   <img id="lightbox-img" src="" alt="" />
 </div>
 
-<script src="/app/js/db.js?v=10"></script>
-<script src="/app/js/api.js?v=10"></script>
-<script src="/app/js/app.js?v=10"></script>
+<script src="/app/js/db.js?v=11"></script>
+<script src="/app/js/api.js?v=11"></script>
+<script src="/app/js/app.js?v=11"></script>
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/app/sw.js').catch(() => {});

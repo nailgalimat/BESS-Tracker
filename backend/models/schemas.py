@@ -115,6 +115,7 @@ class ProjectOut(BaseModel):
     id:           int
     name:         str
     project_type: str = "BESS"
+    num_blocks:   int = 0
 
 
 class ProjectsSyncRequest(BaseModel):

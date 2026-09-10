@@ -243,6 +243,25 @@ class WorkLogForm(QWidget):
         self.prec_group = QGroupBox("Seen before")
         pl = QVBoxLayout(self.prec_group)
         pl.setSpacing(4)
+        # What the manufacturer's guide says to do about this fault.
+        self.prec_ref = QLabel("")
+        self.prec_ref.setWordWrap(True)
+        self.prec_ref.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.prec_ref.setStyleSheet(
+            "background:#F2F7FF;border:1px solid #CFE0F5;border-radius:5px;"
+            "padding:7px 9px;color:#24405E;font-size:11px;")
+        self.prec_ref.setVisible(False)
+        pl.addWidget(self.prec_ref)
+
+        # Our own note on this fault, if anyone has written one. Internal —
+        # it is not part of what the monthly report sends the customer.
+        self.prec_note = QLabel("")
+        self.prec_note.setWordWrap(True)
+        self.prec_note.setStyleSheet(
+            "background:#FFF9E6;border:1px solid #F0DFA8;border-radius:5px;"
+            "padding:7px 9px;color:#6B5518;font-size:11px;")
+        self.prec_note.setVisible(False)
+        pl.addWidget(self.prec_note)
         self.prec_hint = QLabel("No earlier report for this fault.")
         self.prec_hint.setStyleSheet("color:#6B7A8D;font-size:11px;")
         self.prec_hint.setWordWrap(True)
@@ -640,6 +659,32 @@ class WorkLogForm(QWidget):
                 fault_text=self.fault_input.toPlainText().strip())
         except Exception:                            # noqa: BLE001
             self._precedents = []
+        # The manufacturer's entry for this fault, when there is one.
+        ref = None
+        if trigger_name:
+            try:
+                ref = ats.get_fault_reference(trigger_name)
+            except Exception:                        # noqa: BLE001
+                ref = None
+        if ref and ref.get('remedy'):
+            self.prec_ref.setText(
+                f"🛠  <b>{ref.get('source', '')}</b><br>{ref['remedy']}")
+            self.prec_ref.setVisible(True)
+        else:
+            self.prec_ref.setVisible(False)
+
+        note = None
+        if trigger_name:
+            try:
+                note = ats.get_fault_note(pid, trigger_name)
+            except Exception:                        # noqa: BLE001
+                note = None
+        if note and (note.get('note') or '').strip():
+            self.prec_note.setText('📓  ' + note['note'].strip())
+            self.prec_note.setVisible(True)
+        else:
+            self.prec_note.setVisible(False)
+
         self.prec_group.setVisible(True)
         if not self._precedents:
             self.prec_hint.setText(
@@ -707,6 +752,8 @@ class WorkLogForm(QWidget):
         self._precedents = []
         self.prec_list.setRowCount(0)
         self.prec_detail.setVisible(False)
+        self.prec_note.setVisible(False)
+        self.prec_ref.setVisible(False)
         self.prec_copy.setEnabled(False)
         self.prec_group.setVisible(False)
 

@@ -30,6 +30,7 @@ from ui.stock_page        import StockPage
 from ui.kpi_page          import KpiPage
 from ui.asset_page           import AssetPage
 from ui.equipment_page       import EquipmentPage
+from ui.planner_page         import PlannerPage
 from ui.worklog_entry_form   import FieldLogEntryPage, FieldLogRecordsPage
 from ui.project_launcher      import ProjectLauncher
 from ui.sync_settings_dialog import SyncSettingsDialog
@@ -64,6 +65,7 @@ PAGE_PROJECTS   = 16
 PAGE_MONTHLY    = 17
 PAGE_LAUNCHER   = 18
 PAGE_EQUIPMENT  = 19
+PAGE_PLANNER    = 20
 
 PAGE_NAMES = {
     PAGE_DASHBOARD: "Dashboard",
@@ -86,12 +88,14 @@ PAGE_NAMES = {
     PAGE_MONTHLY:   "Monthly Reports",
     PAGE_LAUNCHER:  "Select Project",
     PAGE_EQUIPMENT: "Equipment",
+    PAGE_PLANNER:   "Planner",
 }
 
 # Pages that can be scoped to the shell's "current project". Each such page
 # exposes set_current_project(project_id); the shell calls it when a project
 # is opened. Pages without the method are simply skipped (still self-scoped).
-PROJECT_SCOPED_PAGES = ("projects_page", "monthly_page", "equipment_page")
+PROJECT_SCOPED_PAGES = ("projects_page", "monthly_page", "equipment_page",
+                        "planner_page")
 
 
 class NavButton(QPushButton):
@@ -195,6 +199,7 @@ class MainWindow(QMainWindow):
         self._add_nav(mn, "🗂", "Field Records",  PAGE_FIELD_RECS)
 
         self._add_section(mn, "MAINTAIN")
+        self._add_nav(mn, "🗓", "Planner",         PAGE_PLANNER)
         self._add_nav(mn, "🧩", "Equipment",       PAGE_EQUIPMENT)
         self._add_nav(mn, "✅", "Checklists / PM", PAGE_CHECKLIST)
         self._add_nav(mn, "🏷", "Asset Register",  PAGE_ASSETS)
@@ -297,6 +302,7 @@ class MainWindow(QMainWindow):
         self.monthly_page         = MonthlyReportsPage()     # 17
         self.launcher             = ProjectLauncher()        # 18
         self.equipment_page       = EquipmentPage()          # 19
+        self.planner_page         = PlannerPage()            # 20
         # One tap from an alarm to a pre-filled Work Report, and straight back
         # to the list afterwards so the next one is one tap away too.
         self.equipment_page.work_report_requested.connect(self._report_from_alarm)
@@ -328,6 +334,7 @@ class MainWindow(QMainWindow):
             self.monthly_page,     # 17  (Monthly Reports)
             self.launcher,         # 18  (Project launcher — front door)
             self.equipment_page,   # 19  (Equipment — asset tree + history)
+            self.planner_page,     # 20  (Planner — PM campaigns + daily work)
         ]:
             self.stack.addWidget(page)
 

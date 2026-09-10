@@ -313,7 +313,7 @@ def push_projects():
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT id, name, project_type FROM projects ORDER BY id"
+            "SELECT id, name, project_type, num_blocks FROM projects ORDER BY id"
         ).fetchall()
         projects = [dict(r) for r in rows]
     finally:

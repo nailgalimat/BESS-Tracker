@@ -15,6 +15,9 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(SPEC))
 datas = [
     (os.path.join(PROJECT_ROOT, 'data', 'alarm_classifications.csv'),
      'data'),
+    # Manufacturer's LC200/LC300 fault guide, distilled — shown beside a fault
+    (os.path.join(PROJECT_ROOT, 'data', 'fault_reference.csv'),
+     'data'),
 ]
 # monthly_history.json is optional — bundle only if it exists, otherwise the
 # app writes it fresh on first run.
@@ -67,6 +70,7 @@ hidden = [
     'services.tashkent_report_service',
     'services.asset_service',
     'services.asset_tree_service',
+    'services.planner_service',
     'services.checklist_service',
     'services.edit_serials_service',
     'services.kpi_service',
@@ -86,6 +90,7 @@ hidden = [
     'ui.monthly_reports_page',
     'ui.project_launcher',
     'ui.equipment_page',
+    'ui.planner_page',
     'services.image_service',
     'services.sync_config',
     'services.sync_client',
