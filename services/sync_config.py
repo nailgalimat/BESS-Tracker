@@ -13,6 +13,12 @@ from typing import Optional
 
 
 def _config_path() -> str:
+    # Mirrors BESS_DB in db_manager. Tests point it at a config with sync off:
+    # the real one is enabled and holds live tokens, so a test that opens the
+    # main window would otherwise start a sync worker against the server.
+    override = os.getenv("BESS_SYNC_CONFIG")
+    if override:
+        return override
     if getattr(sys, "frozen", False):
         base = os.path.dirname(sys.executable)
     else:

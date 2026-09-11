@@ -24,7 +24,21 @@ pyinstaller --clean "BESS Tracker.spec"
 # uses Inno Setup compiler against installer.iss → installer\BESS_Tracker_Setup.exe
 ```
 
-There is no test suite, no linter config, and no CI. "Verification" in this project means: `python main.py` launches without an import error, the relevant UI page opens, and a report run produces a non-empty PDF/DOCX. Note the requirements pin is loose (`>=`) — when reproducing a user-reported bug, ask which versions they have rather than assuming.
+### Tests
+
+```powershell
+python tests\run.py                  # fast suite, ~1-2 min
+python tests\run.py --real           # + generates the real August report from SCADA exports (~10 min)
+python tests\run.py planner cycles   # only tests whose name contains a word
+```
+
+Run `--real` before every exe build and before a report goes to a customer: frame-level tests cannot catch a crash in the full report pipeline, and one shipped that way. No linter config and no CI.
+
+**Every test imports `tests/_harness.py` first**, before any project module. It points `BESS_DB` at a SQLite-backup snapshot of `dist/pv_bess_tracker.db`, points `BESS_SYNC_CONFIG` at a config with sync off (the real `sync_config.json` is enabled with live tokens, and `MainWindow` starts a sync worker when it is), makes any non-localhost HTTP request raise, and redirects `data/monthly_history*.json` to copies (the report generator writes its month back, and that file is bundled into the exe). `test_harness_isolation.py` proves each of these — if it fails, run nothing else. Outcome is the final `RESULT PASS|FAIL|SKIP` line, not the exit code: PyQt can fault while tearing down the QApplication after every check has run. Tests needing SCADA exports read `BESS_SCADA_DIR` (default: the Desktop LTSA folder) and SKIP when absent — customer data is never committed.
+
+`GOLDEN` in `test_real_tashkent_august.py` holds accepted customer-visible numbers. Changing one on purpose means updating it in the same commit.
+
+Note the requirements pin is loose (`>=`) — when reproducing a user-reported bug, ask which versions they have rather than assuming.
 
 ## Architecture
 
