@@ -1302,13 +1302,29 @@ def _drop_general_events(df, trigger_col='Trigger name'):
 
     The sentence is the same trigger-keyed one every other table uses.
     """
-    from services.asset_tree_service import is_umbrella_trigger
+    from services.asset_tree_service import is_umbrella_trigger, umbrella_summary
     if df is None or getattr(df, 'empty', True) or trigger_col not in df.columns:
         return df, ''
     umb = df[trigger_col].map(is_umbrella_trigger)
     if not bool(umb.any()):
         return df, ''
-    return df[~umb], _general_sentence(build_event_type_table(df[umb], top_n=50))
+    gone = df[umb]
+    # Counted straight off the frame rather than through build_event_type_table:
+    # these callers pass whatever columns their own table needed, and 'longest'
+    # has no Deactivation at all. The sentence needs only a name, a count and
+    # hours, so asking for more was what made report generation fall over.
+    dur = (pd.to_numeric(gone['duration_min'], errors='coerce')
+           if 'duration_min' in gone.columns
+           else pd.Series(0.0, index=gone.index))
+    rows = (gone.assign(_h=dur.fillna(0.0) / 60.0)
+                .groupby(trigger_col)
+                .agg(events=(trigger_col, 'size'), total_h=('_h', 'sum'))
+                .reset_index()
+                .rename(columns={trigger_col: 'trigger'})
+                .sort_values('total_h', ascending=False))
+    return df[~umb], umbrella_summary(rows.to_dict('records'),
+                                      name_key='trigger', events_key='events',
+                                      hours_key='total_h')
 
 
 def _xml(s) -> str:
@@ -1822,6 +1838,7 @@ def generate_tashkent_report(
 
         cls_summary = _by_reason(p[~umb])
         # The sentence names the *triggers* held back — never their reasons.
+        # (Built by the same helper as every other table's note.)
         # Umbrella-ness is a property of the trigger, but the classification
         # maps a controller echo and the device's own fault onto one reason:
         # keying the sentence on reason printed "DC-DC Converter Fault (13)"
@@ -1829,8 +1846,7 @@ def generate_tashkent_report(
         # customer met one name twice and the preamble called it a status
         # register. Same helper the other four tables use, so the wording and
         # the counts-plus-hours form match them.
-        cls_general_note = _general_sentence(
-            build_event_type_table(p[umb], top_n=50))
+        _, cls_general_note = _drop_general_events(p)
 
     # ── 5.1 Faults / Alarms summaries with affected blocks + planned-stop flag ─
     # Drop exclusion-window events first (they're listed separately), then group.

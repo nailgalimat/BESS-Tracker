@@ -104,3 +104,5 @@ trigger_pattern,subsystem,reason,severity,resolution_hint
 "EMERGENCY STOP",BESS,Emergency Stop,Fault,Investigate and reset e-stop
 "BSC-LC COMM FAULT",BESS,BSC-LC Communication,Fault,Check ethernet/CAN between BSC and LC
 "LOW VOLTAGE POWER SUPPLY CIRCUIT FAULT",BESS,Control Power Supply Fault,Fault,Check the low-voltage control supply and its circuit breaker
+"UPS LOW BATTERY ALARM",Auxiliary,UPS Low Battery,Warning,Replace or recharge the MV station UPS battery
+"SF6 LOW PRESSURE ALARM",Grid,SF6 Low Pressure,Warning,Check SF6 gas density and top up at the next planned stop; alarm stage only - operation continues

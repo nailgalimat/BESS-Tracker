@@ -1188,8 +1188,17 @@ def build_event_type_table(events_df, top_n=40, period_end=None):
         return pd.DataFrame()
 
     df = events_df.copy()
-    act = pd.to_datetime(df.get('Activated'), errors='coerce')
-    deact = pd.to_datetime(df.get('Deactivation'), errors='coerce')
+    # A frame that carries only some of the timestamp columns is legitimate —
+    # `summarize_alarms` builds 'longest' with Activated but no Deactivation.
+    # `df.get` then returns None, `pd.to_datetime(None)` a scalar NaT, and the
+    # concat below raised TypeError instead of falling back.
+    def _dt_col(name):
+        if name in df.columns:
+            return pd.to_datetime(df[name], errors='coerce')
+        return pd.Series(pd.NaT, index=df.index, dtype='datetime64[ns]')
+
+    act = _dt_col('Activated')
+    deact = _dt_col('Deactivation')
     if period_end is None:
         period_end = pd.concat([act, deact]).max()
     period_end = pd.to_datetime(period_end, errors='coerce')
