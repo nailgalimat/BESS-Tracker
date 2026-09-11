@@ -250,8 +250,19 @@ class BlockReportPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._worker = None
+        # The open project. Everything this page reads and writes — exclusions,
+        # manual downtime, balancing — is scoped to it; without it the page took
+        # every project's rows, so a Tashkent report could pick up Bukhara's
+        # downtime. None (no project open) keeps the old, unscoped behaviour.
+        self._pid = None
         self._build_ui()
         self._on_site_type_changed()
+        self._refresh_exclusions()
+        self._refresh_manual_unavail()
+        self._refresh_balancing()
+
+    def set_current_project(self, project_id):
+        self._pid = project_id
         self._refresh_exclusions()
         self._refresh_manual_unavail()
         self._refresh_balancing()
@@ -695,7 +706,7 @@ class BlockReportPage(QWidget):
         """Reload the table from the database."""
         self.excl_table.setRowCount(0)
         try:
-            exclusions = get_exclusions()
+            exclusions = get_exclusions(project_id=self._pid)
         except Exception:
             exclusions = []
         for exc in exclusions:
@@ -762,7 +773,7 @@ class BlockReportPage(QWidget):
         if not self._validate_exclusion(data):
             return
         try:
-            add_exclusion(**data)
+            add_exclusion(**data, project_id=self._pid)
             self._refresh_exclusions()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to add:\n{e}")
@@ -780,7 +791,7 @@ class BlockReportPage(QWidget):
             exc_id = int(id_item.text())
         except (TypeError, ValueError):
             return
-        existing = next((e for e in get_exclusions()
+        existing = next((e for e in get_exclusions(project_id=self._pid)
                          if int(e.get("id", -1)) == exc_id), None)
         if not existing:
             QMessageBox.warning(self, "Not found",
@@ -828,7 +839,7 @@ class BlockReportPage(QWidget):
         # Duplicate detection
         existing = []
         try:
-            existing = get_exclusions()
+            existing = get_exclusions(project_id=self._pid)
         except Exception:
             pass
         for exc in existing:
@@ -874,7 +885,7 @@ class BlockReportPage(QWidget):
         """Reload the manual-unavailability table from the database."""
         self.man_table.setRowCount(0)
         try:
-            entries = get_manual_unavailability()
+            entries = get_manual_unavailability(project_id=self._pid)
         except Exception:
             entries = []
         for e in entries:
@@ -914,7 +925,7 @@ class BlockReportPage(QWidget):
                 "Please describe the cause of the downtime.")
             return
         try:
-            add_manual_unavailability(**data)
+            add_manual_unavailability(**data, project_id=self._pid)
             self._refresh_manual_unavail()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to add:\n{e}")
@@ -940,7 +951,7 @@ class BlockReportPage(QWidget):
     def _refresh_balancing(self):
         self.bal_table.setRowCount(0)
         try:
-            periods = get_balancing_periods()
+            periods = get_balancing_periods(project_id=self._pid)
         except Exception:
             periods = []
         for b in periods:
@@ -990,7 +1001,7 @@ class BlockReportPage(QWidget):
         if not self._validate_balancing(data):
             return
         try:
-            add_balancing_period(**data)
+            add_balancing_period(**data, project_id=self._pid)
             self._refresh_balancing()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to add:\n{e}")
@@ -1008,7 +1019,7 @@ class BlockReportPage(QWidget):
             bal_id = int(id_item.text())
         except (TypeError, ValueError):
             return
-        existing = next((b for b in get_balancing_periods()
+        existing = next((b for b in get_balancing_periods(project_id=self._pid)
                          if int(b.get("id", -1)) == bal_id), None)
         if not existing:
             QMessageBox.warning(self, "Not found",
@@ -1097,7 +1108,7 @@ class BlockReportPage(QWidget):
 
         # Load current exclusions (shared globally with the SCADA Report page)
         try:
-            exclusions = get_exclusions()
+            exclusions = get_exclusions(project_id=self._pid)
         except Exception:
             exclusions = []
         if exclusions:
@@ -1107,7 +1118,7 @@ class BlockReportPage(QWidget):
         # Entries dated outside the reported month are filtered out by the
         # report engine itself.
         try:
-            manual_unavail = get_manual_unavailability()
+            manual_unavail = get_manual_unavailability(project_id=self._pid)
         except Exception:
             manual_unavail = []
         if manual_unavail:
@@ -1117,7 +1128,7 @@ class BlockReportPage(QWidget):
         # Cycle-balancing / rested-blocks periods (informational; the report
         # filters to the reported month itself).
         try:
-            balancing = get_balancing_periods()
+            balancing = get_balancing_periods(project_id=self._pid)
         except Exception:
             balancing = []
         if balancing:

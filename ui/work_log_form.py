@@ -918,10 +918,18 @@ class WorkLogForm(QWidget):
         h = self.downtime_h.value()
         desc = self.fault_input.toPlainText().strip()[:200] or "Work report"
         y, mo = self.date_edit.date().year(), self.date_edit.date().month()
-        if impact == "counts" and h > 0 and block:
+        # The combo holds the block *within its zone*; downtime and exclusions
+        # are read by the report in plant numbering. Zone 8 / block 2 is plant
+        # block 57 — written untranslated it charged block 2 instead.
+        plant_block = None
+        if block:
+            from services.project_service import zone_block_to_plant
+            plant_block = (zone_block_to_plant(pid, self.zone_combo.currentData(), block)
+                           or block)
+        if impact == "counts" and h > 0 and plant_block:
             try:
                 unavail_id = add_manual_unavailability(
-                    block=int(block), date_from=date_str, date_to=date_str,
+                    block=int(plant_block), date_from=date_str, date_to=date_str,
                     downtime_h=h, lc=self.lc_combo.currentData(), cause=desc,
                     project_id=pid, year=y, month=mo)
                 set_work_log_unavailability(entry_id, unavail_id)
@@ -929,7 +937,7 @@ class WorkLogForm(QWidget):
             except Exception as e:
                 QMessageBox.warning(self, "Availability",
                     f"Work report saved, but the downtime event failed:\n{e}")
-        elif impact == "excluded" and h > 0 and block:
+        elif impact == "excluded" and h > 0 and plant_block:
             try:
                 total_min = min(int(round(h * 60)), 1439)
                 time_to = f"{total_min // 60:02d}:{total_min % 60:02d}"
@@ -937,7 +945,7 @@ class WorkLogForm(QWidget):
                     exclusion_type=self.excl_type.currentData(),
                     date_from=date_str, date_to=date_str,
                     time_from="00:00", time_to=time_to,
-                    affected_blocks=str(block), description=desc,
+                    affected_blocks=str(plant_block), description=desc,
                     project_id=pid, year=y, month=mo)
                 set_work_log_exclusion(entry_id, excl_id)
                 extras.append(f"{h:g} h excluded ({self.excl_type.currentData()}) — not counted")

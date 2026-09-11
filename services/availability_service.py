@@ -28,6 +28,64 @@ EXCLUSION_TYPES = [
 ]
 
 
+def parse_block_spec(spec) -> Optional[set]:
+    """A blocks field — '3', '23,24', '1-8', '1-8,12' — as a set of block
+    numbers. '' / 'all' / 'all blocks' mean the whole plant and return None;
+    the caller knows how many blocks that is.
+
+    The one parser for every availability input. There used to be several, and
+    they disagreed on ranges: the exclusion weighting counted '1-8' as a single
+    block, and the Tashkent exclusion mask hit int('1-8'), raised, and dropped
+    the whole exclusion without a word. The desktop dialog writes explicit
+    lists, but PM entries from the phone, the planner and Excel import write
+    ranges. Tokens that are not numbers are skipped, never the entire field.
+    """
+    s = str(spec or '').strip()
+    if not s or s.lower() in ('all', 'all blocks'):
+        return None
+    out = set()
+    for tok in s.split(','):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            if '-' in tok:
+                a, z = (int(x) for x in tok.split('-', 1))
+                out.update(range(min(a, z), max(a, z) + 1))
+            else:
+                out.add(int(tok))
+        except ValueError:
+            continue
+    return out
+
+
+def _n_blocks_affected(spec, all_blocks) -> int:
+    """How many of this plant's blocks an exclusion covers.
+
+    The blocks it actually has, among those listed. Counting the listed tokens
+    made '1-8' a single block, and a list naming another plant's blocks was
+    only capped at this plant's size — Tashkent's 1..70 grid outage became a
+    whole-plant exclusion for 15-block Bukhara.
+    """
+    listed = parse_block_spec(spec)
+    if listed is None:
+        return len(all_blocks)
+    try:
+        have = {int(b) for b in all_blocks}
+    except (TypeError, ValueError):             # non-numeric block labels
+        return min(len(listed), len(all_blocks))
+    return len(listed & have)
+
+
+def _report_month_of(date_str):
+    """(year, month) a dated entry belongs to, or (None, None)."""
+    try:
+        d = datetime.strptime(str(date_str)[:10], '%Y-%m-%d')
+        return d.year, d.month
+    except (TypeError, ValueError):
+        return None, None
+
+
 def get_exclusions(project_id: Optional[int] = None,
                     date_from: Optional[str] = None,
                     date_to: Optional[str] = None,
@@ -75,6 +133,14 @@ def add_exclusion(exclusion_type: str, date_from: str, date_to: str,
     """Returns the new exclusion id."""
     if exclusion_type not in EXCLUSION_TYPES:
         raise ValueError(f"Invalid exclusion type: {exclusion_type}")
+    # Stamp the report month from the start date when the caller didn't. The
+    # SCADA Report and Block Performance dialogs never passed one, so every
+    # exclusion they made — ids 39 and 40 on 2026-09-10 among them — was
+    # unstamped and fell back on NULL-means-any-month.
+    if year is None or month is None:
+        y, m = _report_month_of(date_from)
+        year = year if year is not None else y
+        month = month if month is not None else m
 
     conn = get_connection()
     try:
@@ -302,6 +368,10 @@ def add_manual_unavailability(block: int, date_from: str, date_to: str,
                                year: Optional[int] = None,
                                month: Optional[int] = None) -> int:
     """Returns the new entry id. lc None = whole block (both LCs)."""
+    if year is None or month is None:          # see add_exclusion
+        y, m = _report_month_of(date_from)
+        year = year if year is not None else y
+        month = month if month is not None else m
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -429,15 +499,8 @@ def calculate_excluded_hours(exclusions: List[dict],
                                   period_start=period_start,
                                   period_end=period_end)
 
-        # Determine affected blocks
-        affected_str = (exc.get("affected_blocks") or "").strip()
-        if not affected_str or affected_str.lower() in ("all", "all blocks"):
-            n_affected = len(all_blocks)
-        else:
-            try:
-                n_affected = len([b for b in affected_str.split(",") if b.strip()])
-            except ValueError:
-                n_affected = len(all_blocks)
+        # Determine affected blocks — see calculate_plant_excluded_hours
+        n_affected = _n_blocks_affected(exc.get("affected_blocks"), all_blocks)
 
         affected_devices = n_affected * devices_per_block
         device_hours     = hours * affected_devices
@@ -491,25 +554,9 @@ def _exclusion_windows(exclusions: List[dict]):
         start_dt = d_from.normalize() + pd.Timedelta(hours=hf, minutes=mf)
         end_dt   = d_to.normalize()   + pd.Timedelta(hours=ht, minutes=mt)
 
-        affected_str = (exc.get("affected_blocks") or "").strip()
-        if not affected_str or affected_str.lower() in ("all", "all blocks"):
-            blocks = None                      # plant-wide
-        else:
-            blocks = set()
-            for tok in affected_str.split(","):
-                tok = tok.strip()
-                if not tok:
-                    continue
-                try:
-                    if "-" in tok:             # "24-31" style range
-                        a, z = (int(x) for x in tok.split("-", 1))
-                        blocks.update(range(min(a, z), max(a, z) + 1))
-                    else:
-                        blocks.add(int(tok))
-                except ValueError:
-                    continue
-            if not blocks:                     # unparseable spec — skip, as before
-                continue
+        blocks = parse_block_spec(exc.get("affected_blocks"))   # None = plant-wide
+        if blocks is not None and not blocks:  # unparseable spec — skip, as before
+            continue
         out.append((start_dt, end_dt, blocks, exc))
 
     if len(_EXC_WINDOW_CACHE) > 64:
@@ -618,15 +665,7 @@ def calculate_plant_excluded_hours(exclusions: List[dict],
         if raw_hours <= 0:
             continue
 
-        affected_str = (exc.get("affected_blocks") or "").strip()
-        if not affected_str or affected_str.lower() in ("all", "all blocks"):
-            n_affected = n_total_blocks
-        else:
-            try:
-                n_affected = len([b for b in affected_str.split(",") if b.strip()])
-            except ValueError:
-                n_affected = n_total_blocks
-        n_affected = max(0, min(n_affected, n_total_blocks))
+        n_affected = _n_blocks_affected(exc.get("affected_blocks"), all_blocks)
 
         weighted = raw_hours * (n_affected / n_total_blocks) if n_total_blocks else 0.0
 

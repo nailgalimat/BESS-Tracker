@@ -647,69 +647,9 @@ class MonthlyReportsPage(QWidget):
         av.delete_balancing_period(int(self.bal_table.item(r, 0).text())); self._refresh_bal()
 
     # ── Generate ─────────────────────────────────────────────────────────
-    def _parse_blocks(self, csv, nblk):
-        """Parse a block spec ('', 'all', '1,2,3', '1-5') into a list of ints.
-        Empty / 'all' → the whole plant (1..nblk)."""
-        csv = (csv or '').strip()
-        if not csv or csv.lower() in ('all', 'all blocks'):
-            return list(range(1, nblk + 1)) if nblk else []
-        out = []
-        for tok in csv.split(','):
-            tok = tok.strip()
-            if not tok:
-                continue
-            if '-' in tok:
-                try:
-                    a, z = (int(x) for x in tok.split('-', 1))
-                    out += list(range(min(a, z), max(a, z) + 1))
-                except ValueError:
-                    continue
-            else:
-                try:
-                    out.append(int(tok))
-                except ValueError:
-                    continue
-        return out
-
-    def _pm_as_unavailability(self):
-        """Turn the month's PM activities into downtime rows the report engine
-        counts against availability (one per affected block, whole-block scope)."""
-        out = []
-        proj = rw.get_project(self._pid) or {}
-        nblk = int(proj.get('num_blocks') or 0)
-        for r in rw.get_pm_activities(self._pid, self._year, self._month):
-            hours = float(r.get('hours') or 0)
-            if hours <= 0:
-                continue
-            df = r.get('date_from') or ''
-            dt = r.get('date_to') or df
-            desc = (r.get('description') or 'PM').strip()
-            for b in self._parse_blocks(r.get('affected_blocks') or '', nblk):
-                out.append({
-                    'block': b, 'lc': None,
-                    'date_from': df, 'date_to': dt,
-                    'downtime_h': hours,
-                    'cause': f"PM: {desc}" if desc else "PM",
-                    'subsystem': 'PM',
-                })
-        return out
-
-    def _all_unavailability(self):
-        """Downtime that counts against availability: operator-entered manual
-        rows + PM activities (PM always counts, per project setting)."""
-        rows = list(av.get_manual_unavailability(
-            project_id=self._pid, year=self._year, month=self._month) or [])
-        rows += self._pm_as_unavailability()
-        return rows
-
-    def _pm_as_strings(self):
-        out = []
-        for r in rw.get_pm_activities(self._pid, self._year, self._month):
-            blk = r.get('affected_blocks') or 'all blocks'
-            hrs = r.get('hours') or 0
-            desc = r.get('description', '') or 'PM'
-            out.append(f"Block(s) {blk}: {desc} ({hrs:.0f} h, {r.get('date_from','')}→{r.get('date_to','')})")
-        return out
+    # PM-as-downtime, the PM bullet lines, capacities and the availability
+    # inputs come from report_workflow_service.report_inputs — the same call
+    # the real-report test makes, so the two cannot be fed differently.
 
     def _lines(self, text):
         return [ln.strip() for ln in (text or '').splitlines() if ln.strip()]
@@ -729,26 +669,18 @@ class MonthlyReportsPage(QWidget):
             if cfg.get(key): pd[label] = cfg[key]
 
         common = dict(
+            rw.report_inputs(self._pid, self._year, self._month),
             site_name=proj.get('name', ''),
             project_details=pd,
             output_path=self.out_path.path(),
             output_format={0: 'pdf', 1: 'docx', 2: 'both'}[self.fmt.currentIndex()],
-            plant_capacity_mw=cfg.get('plant_capacity_mw') or None,
-            per_block_capacity_mw=cfg.get('per_block_capacity_mw') or None,
-            contractual_plant_capacity_mw=cfg.get('contractual_plant_capacity_mw') or None,
-            redundancy_threshold_pct=cfg.get('redundancy_threshold_pct') or 100,
-            yearly_cycle_target=cfg.get('yearly_cycle_target') or 365.0,
             prepared_by=cfg.get('prepared_by') or None,
             reviewed_by=cfg.get('reviewed_by') or None,
             report_number=self.report_number.text().strip() or None,
-            pm_activities=self._pm_as_strings() or None,
             cm_activities=self._collect_cm_lines() or None,
             site_visits=self._lines(self.site_visits.toPlainText()) or None,
             recommendations=self._lines(self.recommendations.toPlainText()) or None,
             planned_next_period=self._lines(self.planned_next.toPlainText()) or None,
-            exclusions=av.get_exclusions(project_id=self._pid, year=self._year, month=self._month) or None,
-            manual_unavailability=self._all_unavailability() or None,
-            balancing_periods=av.get_balancing_periods(project_id=self._pid, year=self._year, month=self._month) or None,
         )
         if self._site_type == 'bukhara':
             miss = [k for k in ('site_kpi', 'overall_lc', 'battery_unit', 'meter_daily', 'alarms') if not self.bk[k].path()]

@@ -717,10 +717,98 @@ def save_history_record(record, path=None):
     existing = load_history_records(path)
     existing = [r for r in existing if r.get('month') != record.get('month')]
     existing.append(record)
+    # Trim the *oldest months*, not the oldest writes: a back-filled or
+    # regenerated month is appended last, and trimming by list position would
+    # then drop a January the year-to-date figure still needs.
+    existing.sort(key=lambda r: history_key(r) or (0, 0))
     existing = existing[-12:]
     with open(path, 'w') as f:
         json.dump(existing, f, indent=2, default=str)
     return path
+
+
+def history_key(record):
+    """(year, month) of a history record, or None if it can't be told.
+
+    Newer records carry `year` / `month_num`; older ones only the display
+    label ("August 2026"). Never order records by that label — as a string
+    "August" sorts before "December" and "June" before "March".
+    """
+    y, m = record.get('year'), record.get('month_num')
+    if y and m:
+        return int(y), int(m)
+    try:
+        d = datetime.strptime(str(record.get('month', '')).strip(), '%B %Y')
+        return d.year, d.month
+    except ValueError:
+        return None
+
+
+def cycles_in_year(history_records, year, month, month_cycles,
+                   month_start=None, month_end=None):
+    """Equivalent cycles from 1 January of `year` to the end of `month`.
+
+    Returns (value, missing): `missing` lists the months (1-12) the figure
+    should have included but had no record for — empty when it is complete.
+
+    Two defects this replaces, both in the customer's cycles table:
+      * The current month was counted twice. It was summed from the history
+        file — which already holds it after any earlier run of the same month —
+        and then added again. August 2026 printed 266.1 instead of 239.4.
+      * Records were sorted by their label, alphabetically, and the "last 11"
+        were then a random handful of months, not the preceding ones.
+
+    The year is the calendar year: the contract budgets 365 cycles a year,
+    balanced to December. Where the plant's own cycle counter is on record the
+    figure is the counter now minus the counter at the start of the year, so a
+    month with no report of its own (May and July 2026) costs nothing. Without
+    a counter it falls back to adding up the months it has, and says which are
+    missing rather than quietly printing a low number.
+    """
+    def _num(v):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return f if f == f else None          # NaN -> None
+
+    recs = {}
+    for r in history_records or []:
+        k = history_key(r)
+        if k and k != (year, month):          # this run's figures win
+            recs[k] = r
+    recs[(year, month)] = {'cycles_total': month_cycles,
+                           'cycles_start': month_start,
+                           'cycles_end': month_end}
+
+    # Counter at the start of the year: last December's closing reading, else
+    # the earliest opening reading this year. Months before that anchor are
+    # added from their own records (2026: SCADA snapshots begin in March, so
+    # January and February come from the history file).
+    anchor = anchor_month = None
+    dec = recs.get((year - 1, 12))
+    if dec is not None and _num(dec.get('cycles_end')) is not None:
+        anchor, anchor_month = _num(dec.get('cycles_end')), 1
+    else:
+        for m in range(1, month + 1):
+            r = recs.get((year, m))
+            if r is not None and _num(r.get('cycles_start')) is not None:
+                anchor, anchor_month = _num(r.get('cycles_start')), m
+                break
+    end = _num(month_end)
+    # A counter that went backwards (a replaced CMU) cannot be differenced.
+    if anchor is not None and end is not None and end >= anchor:
+        before = range(1, anchor_month)
+        missing = [m for m in before if (year, m) not in recs]
+        value = (end - anchor) + sum(
+            _num(recs[(year, m)].get('cycles_total')) or 0.0
+            for m in before if (year, m) in recs)
+        return value, missing
+
+    missing = [m for m in range(1, month) if (year, m) not in recs]
+    value = sum(_num(recs[(year, m)].get('cycles_total')) or 0.0
+                for m in range(1, month + 1) if (year, m) in recs)
+    return value, missing
 
 
 def calc_block_availability(df_block_5min):
@@ -2426,6 +2514,8 @@ def generate_bukhara_report(
         history_records = load_history_records(history_path or DEFAULT_HISTORY_PATH_BUKHARA)
     current_month_record = {
         'month':         report_month,
+        'year':          dates[0].year,
+        'month_num':     dates[0].month,
         'avg_soc_pct':   avg_soc_pct,
         'avg_soh_pct':   avg_soh_pct,
         'rte_pct':       fleet_rte,
@@ -2437,6 +2527,14 @@ def generate_bukhara_report(
         current_kpis=current_month_record,
         history_records=history_records,
     )
+    # Computed once, here, and read by both the PDF and the DOCX builder —
+    # each used to work it out for itself, identically wrong.
+    annual_accum, annual_missing = cycles_in_year(
+        history_records, dates[0].year, dates[0].month, avg_efc_per_block)
+    if annual_missing:
+        log("  ⚠  'Cycles in one Year' has no record for "
+            + ', '.join(datetime(2000, m, 1).strftime('%B') for m in annual_missing)
+            + f" {dates[0].year} — generate those months, or the figure is low.")
 
     output_paths = []
     if output_format in ('pdf', 'both'):
@@ -2629,16 +2727,7 @@ def _build_bukhara_pdf_internal(output_path, _ctx):
     fleet_avg_cycles = avg_efc_per_block
     yt = float(yearly_cycle_target) or 365.0
     accum_lifetime = cycles_accum_avg if cycles_accum_avg else fleet_avg_cycles
-    annual_accum = fleet_avg_cycles
-    try:
-        if history_records:
-            recent = sorted(
-                [r for r in history_records if r.get('cycles_total') is not None],
-                key=lambda r: str(r.get('month','')))[-11:]
-            annual_accum = sum(float(r.get('cycles_total') or 0)
-                                for r in recent) + fleet_avg_cycles
-    except Exception:
-        pass
+    annual_accum = g['annual_accum']          # see cycles_in_year
     cycles_table_rows = [
         ['1', 'Number of Cycles in Reported Month',
          f'{fleet_avg_cycles:.1f}',
@@ -3376,17 +3465,7 @@ def _build_bukhara_docx(output_path, _ctx):
     add_heading(doc, 'Number of Cycles', level=3)
     yt = float(g.get('yearly_cycle_target') or 365.0)
     accum_lifetime = cycles_accum_avg if cycles_accum_avg else avg_efc_per_block
-    annual_accum = avg_efc_per_block
-    hr_local = g.get('history_records')
-    try:
-        if hr_local:
-            recent = sorted(
-                [r for r in hr_local if r.get('cycles_total') is not None],
-                key=lambda r: str(r.get('month','')))[-11:]
-            annual_accum = sum(float(r.get('cycles_total') or 0)
-                                for r in recent) + avg_efc_per_block
-    except Exception:
-        pass
+    annual_accum = g['annual_accum']          # see cycles_in_year
     add_styled_table(doc,
         ['No', 'Item', 'Total', f'% of yearly cycles ({yt:.0f})'], [
         ['1', 'Number of Cycles in Reported Month',

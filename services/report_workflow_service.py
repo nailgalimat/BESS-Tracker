@@ -241,3 +241,70 @@ def delete_pm_activity(pm_id: int):
         conn.commit()
     finally:
         conn.close()
+
+
+def pm_as_unavailability(project_id: int, year: int, month: int) -> List[dict]:
+    """The month's PM activities as downtime rows the report engine counts
+    against availability — one per affected block, whole-block scope."""
+    from services.availability_service import parse_block_spec
+    nblk = int((get_project(project_id) or {}).get('num_blocks') or 0)
+    out = []
+    for r in get_pm_activities(project_id, year, month):
+        hours = float(r.get('hours') or 0)
+        if hours <= 0:
+            continue
+        df = r.get('date_from') or ''
+        dt = r.get('date_to') or df
+        desc = (r.get('description') or 'PM').strip()
+        blocks = parse_block_spec(r.get('affected_blocks'))
+        if blocks is None:                           # whole plant
+            blocks = range(1, nblk + 1)
+        for b in sorted(blocks):
+            out.append({'block': b, 'lc': None, 'date_from': df, 'date_to': dt,
+                        'downtime_h': hours,
+                        'cause': f"PM: {desc}" if desc else "PM",
+                        'subsystem': 'PM'})
+    return out
+
+
+def pm_as_strings(project_id: int, year: int, month: int) -> List[str]:
+    """The month's PM activities as the report's 3.1 bullet lines."""
+    out = []
+    for r in get_pm_activities(project_id, year, month):
+        blk = r.get('affected_blocks') or 'all blocks'
+        hrs = r.get('hours') or 0
+        desc = r.get('description', '') or 'PM'
+        out.append(f"Block(s) {blk}: {desc} ({hrs:.0f} h, "
+                   f"{r.get('date_from', '')}→{r.get('date_to', '')})")
+    return out
+
+
+def report_inputs(project_id: int, year: int, month: int) -> dict:
+    """Everything the monthly report takes from the database for one
+    project-month: the project's capacities and targets, and every input that
+    moves availability — exclusions, operator-entered downtime, PM as downtime,
+    cycle-balancing periods.
+
+    Defined once so the customer's report and a verification run cannot be fed
+    differently. They were: the Monthly Reports page assembled these itself,
+    Block Performance took every project's and every month's rows, and a test
+    that passed only the exclusions checked a figure nobody receives.
+    """
+    from services import availability_service as av
+    cfg = get_project_config(project_id)
+    manual = list(av.get_manual_unavailability(
+        project_id=project_id, year=year, month=month) or [])
+    manual += pm_as_unavailability(project_id, year, month)
+    return dict(
+        plant_capacity_mw=cfg.get('plant_capacity_mw') or None,
+        per_block_capacity_mw=cfg.get('per_block_capacity_mw') or None,
+        contractual_plant_capacity_mw=cfg.get('contractual_plant_capacity_mw') or None,
+        redundancy_threshold_pct=cfg.get('redundancy_threshold_pct') or 100,
+        yearly_cycle_target=cfg.get('yearly_cycle_target') or 365.0,
+        pm_activities=pm_as_strings(project_id, year, month) or None,
+        exclusions=av.get_exclusions(
+            project_id=project_id, year=year, month=month) or None,
+        manual_unavailability=manual or None,
+        balancing_periods=av.get_balancing_periods(
+            project_id=project_id, year=year, month=month) or None,
+    )

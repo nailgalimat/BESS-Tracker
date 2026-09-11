@@ -56,7 +56,7 @@ from services.bukhara_report_service import (
     load_alarms, load_alarm_classifications, apply_alarm_classifications,
     tag_alarms_with_exclusions,
     summarize_alarms, detect_anomalies, build_monthly_comparison,
-    load_history_records, save_history_record,
+    load_history_records, save_history_record, cycles_in_year,
     _chart_alarm_by_class, _chart_alarm_pie_by_trigger,
     select_important_alarms, IMPORTANT_DURATION_THRESHOLD_MIN,
     build_container_day_status,
@@ -545,14 +545,14 @@ def _tashkent_exclusion_mask(dt_s, blk_s, exclusions):
         start_dt = d_from + pd.Timedelta(hours=hf, minutes=mf)
         end_dt   = d_to + pd.Timedelta(hours=ht, minutes=mt)
         in_time = (dt_s >= start_dt) & (dt_s <= end_dt)
-        aff = (exc.get('affected_blocks') or '').strip()
-        if not aff or aff.lower() in ('all', 'all blocks'):
+        # int('1-8') used to raise here and drop the whole exclusion silently.
+        from services.availability_service import parse_block_spec
+        ids = parse_block_spec(exc.get('affected_blocks'))
+        if ids is None:
             in_blk = pd.Series(True, index=dt_s.index)
+        elif not ids:
+            continue
         else:
-            try:
-                ids = {int(b.strip()) for b in aff.split(',') if b.strip()}
-            except ValueError:
-                continue
             in_blk = blk_s.isin(ids)
         mask |= (in_time & in_blk)
     return mask
@@ -2020,12 +2020,26 @@ def generate_tashkent_report(
     # Monthly comparison
     if history_records is None:
         history_records = load_history_records()
+    # Fleet-mean cycle counter at the start and end of the month, from the same
+    # CMU snapshot as the month's cycles. Kept on the record so a later month
+    # can difference against it; that is what lets 'Cycles in one Year' stay
+    # right across a month nobody generated.
+    cycles_start = cycles_end = None
+    if not cycles_snap.empty:
+        _b = cycles_snap['cycle_begin'].dropna()
+        _e = cycles_snap['cycle_end'].dropna()
+        cycles_start = float(_b.mean()) if not _b.empty else None
+        cycles_end   = float(_e.mean()) if not _e.empty else None
     current_month_record = {
         'month':         report_month,
+        'year':          dates[0].year,
+        'month_num':     dates[0].month,
         'avg_soc_pct':   avg_soc_pct,
         'avg_soh_pct':   avg_soh_pct,
         'rte_pct':       fleet_rte,
         'cycles_total':  avg_efc_per_block,
+        'cycles_start':  cycles_start,
+        'cycles_end':    cycles_end,
         'discharge_mwh': total_discharge_mwh,
         'charge_mwh':    total_charge_mwh,
     }
@@ -2033,6 +2047,14 @@ def generate_tashkent_report(
         current_kpis=current_month_record,
         history_records=history_records,
     )
+    # Computed once and read by both the PDF and the DOCX — see cycles_in_year.
+    annual_accum, annual_missing = cycles_in_year(
+        history_records, dates[0].year, dates[0].month, avg_efc_per_block,
+        month_start=cycles_start, month_end=cycles_end)
+    if annual_missing:
+        log("  ⚠  'Cycles in one Year' has no record for "
+            + ', '.join(datetime(2000, m, 1).strftime('%B') for m in annual_missing)
+            + f" {dates[0].year} — generate those months, or the figure is low.")
 
     log("Building PDF...")
     doc = SimpleDocTemplate(
@@ -2176,19 +2198,7 @@ def generate_tashkent_report(
     story.append(Paragraph('<b>Number of Cycles</b>', STYLE_H3))
     yt = float(yearly_cycle_target) or 365.0
     accum_lifetime = cycles_accum_avg if cycles_accum_avg else avg_efc_per_block
-    # "Accumulative in one Year" = sum of last 12 months of cycles_total in
-    # monthly_history.json (the current month included). Falls back to the
-    # current month's value when no prior history exists.
-    annual_accum = avg_efc_per_block
-    try:
-        if history_records:
-            recent = sorted(
-                [r for r in history_records if r.get('cycles_total') is not None],
-                key=lambda r: str(r.get('month','')))[-11:]   # 11 prior months
-            annual_accum = sum(float(r.get('cycles_total') or 0)
-                                for r in recent) + avg_efc_per_block
-    except Exception:
-        pass
+    # annual_accum: calendar year to date, computed once above (cycles_in_year).
     story.append(_styled_table(
         ['No', 'Item', 'Total', f'% of yearly cycles ({yt:.0f})'],
         [['1', 'Number of Cycles in Reported Month',
@@ -3143,17 +3153,7 @@ def _build_tashkent_docx(output_path, _ctx):
     add_heading(doc, 'Number of Cycles', level=3)
     yt = float(g.get('yearly_cycle_target') or 365.0)
     accum_lifetime = cycles_accum_avg if cycles_accum_avg else avg_efc_per_block
-    annual_accum = avg_efc_per_block
-    history_records_local = g.get('history_records')
-    try:
-        if history_records_local:
-            recent = sorted(
-                [r for r in history_records_local if r.get('cycles_total') is not None],
-                key=lambda r: str(r.get('month','')))[-11:]
-            annual_accum = sum(float(r.get('cycles_total') or 0)
-                                for r in recent) + avg_efc_per_block
-    except Exception:
-        pass
+    annual_accum = g['annual_accum']          # see cycles_in_year
     add_styled_table(doc,
         ['No', 'Item', 'Total', f'% of yearly cycles ({yt:.0f})'],
         [['1', 'Number of Cycles in Reported Month',

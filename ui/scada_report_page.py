@@ -484,7 +484,12 @@ class ScadaReportPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._worker = None
+        self._pid = None            # open project — see BlockReportPage
         self._build_ui()
+        self._refresh_exclusions()
+
+    def set_current_project(self, project_id):
+        self._pid = project_id
         self._refresh_exclusions()
 
     def _build_ui(self):
@@ -709,7 +714,7 @@ class ScadaReportPage(QWidget):
         from services.availability_service import _exclusion_hours
         self.excl_table.setRowCount(0)
         try:
-            exclusions = get_exclusions()
+            exclusions = get_exclusions(project_id=self._pid)
         except Exception:
             exclusions = []
         for exc in exclusions:
@@ -772,7 +777,7 @@ class ScadaReportPage(QWidget):
         if dlg.exec_() == QDialog.Accepted:
             data = dlg.get_data()
             try:
-                add_exclusion(**data)
+                add_exclusion(**data, project_id=self._pid)
                 self._refresh_exclusions()
             except Exception as e:
                 QMessageBox.critical(self,"Error",f"Failed to add:\n{e}")
@@ -855,7 +860,7 @@ class ScadaReportPage(QWidget):
         self._log("Starting report generation...")
 
         # Get current exclusions from table
-        exclusions = get_exclusions()
+        exclusions = get_exclusions(project_id=self._pid)
         if exclusions:
             self._log(f"Including {len(exclusions)} availability exclusion(s)")
 

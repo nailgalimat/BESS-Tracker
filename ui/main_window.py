@@ -95,7 +95,10 @@ PAGE_NAMES = {
 # exposes set_current_project(project_id); the shell calls it when a project
 # is opened. Pages without the method are simply skipped (still self-scoped).
 PROJECT_SCOPED_PAGES = ("projects_page", "monthly_page", "equipment_page",
-                        "planner_page")
+                        "planner_page",
+                        # both read and write exclusions / downtime, which must
+                        # carry the project or they leak into another plant
+                        "block_report_page", "scada_page")
 
 
 class NavButton(QPushButton):
