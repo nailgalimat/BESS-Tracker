@@ -193,8 +193,14 @@ def get_worklog_entry(entry_id: str) -> Optional[dict]:
 
 def update_worklog_entry(entry_id: str, tags: Optional[List[str]] = None, **fields):
     """
-    Update allowed fields.  Bumps updated_at and version.
+    Update allowed fields and queue the row for sync.
     Pass tags=[] to clear, tags=None to leave unchanged.
+
+    `version` is NOT bumped here. It is the server version this row was last
+    based on, and only the server moves it (sync_client stores it after a
+    push). Bumping it locally made every desktop edit arrive "ahead" of the
+    server, which skipped it — so edits to synced entries never reached the
+    server or the phones, and the row re-sent itself every minute.
     """
     allowed = {
         "log_date", "category", "description",
@@ -206,7 +212,6 @@ def update_worklog_entry(entry_id: str, tags: Optional[List[str]] = None, **fiel
     updates["updated_at"] = now
 
     set_clause = ", ".join(f"{k}=?" for k in updates)
-    set_clause += ", version = version + 1"
     # Re-queue for sync so desktop edits propagate to the server (unless the
     # row is still a never-synced local draft, which is already pending).
     set_clause += ", sync_status = CASE WHEN sync_status='local' " \
@@ -228,12 +233,18 @@ def update_worklog_entry(entry_id: str, tags: Optional[List[str]] = None, **fiel
 # ── Delete (soft) ─────────────────────────────────────────────────────────────
 
 def delete_worklog_entry(entry_id: str):
-    """Soft-delete: sets deleted_at, bumps version."""
+    """Soft-delete: sets deleted_at and queues the delete for sync.
+
+    It used to bump the version and leave sync_status alone, so a delete made
+    on the desktop was never sent: the entry lived on on the server and the
+    phones, and came back on the next full pull."""
     conn = get_connection()
     try:
         conn.execute("""
             UPDATE work_log_entries
-            SET deleted_at = ?, updated_at = ?, version = version + 1
+            SET deleted_at = ?, updated_at = ?,
+                sync_status = CASE WHEN sync_status='local' THEN 'local'
+                                   ELSE 'pending' END
             WHERE id = ?
         """, (_now(), _now(), entry_id))
         conn.commit()

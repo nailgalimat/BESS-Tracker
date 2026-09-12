@@ -579,10 +579,73 @@ class SparePartsPanel(QGroupBox):
 
 # ── Timeline card (one log entry) ────────────────────────────────────────────
 
+class ConflictDialog(QDialog):
+    """Show this desktop's version of an entry beside the server's and let the
+    user pick one. Opened from the conflict strip on a LogCard.
+
+    A conflict means the entry was changed here and elsewhere (a phone, another
+    desktop) before the two could sync. Choosing blind is a coin toss, so the
+    server's copy is fetched and shown first.
+    """
+    FIELDS = (('description', 'Description'), ('fault_name', 'Fault'),
+              ('status', 'Status'), ('sap_ticket', 'SAP ticket'),
+              ('spare_parts', 'Spare parts'), ('log_date', 'Date'))
+
+    def __init__(self, entry: dict, server: dict, parent=None):
+        super().__init__(parent)
+        self.choice = None
+        self.setWindowTitle("Sync conflict — which version do you keep?")
+        self.setMinimumWidth(640)
+        lay = QVBoxLayout(self)
+        intro = QLabel(
+            "This entry was changed here and on another device before they "
+            "could sync. Keep one version — the other is overwritten on both sides.")
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        for col, title in ((1, "This desktop"), (2, "Server (other device)")):
+            h = QLabel(f"<b>{title}</b>")
+            grid.addWidget(h, 0, col)
+        row = 1
+        for key, label in self.FIELDS:
+            mine, theirs = str(entry.get(key) or ''), str(server.get(key) or '')
+            if not mine and not theirs:
+                continue
+            grid.addWidget(QLabel(label + ':'), row, 0, Qt.AlignTop)
+            for col, text in ((1, mine), (2, theirs)):
+                v = QLabel(text or '—')
+                v.setWordWrap(True)
+                v.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                if mine != theirs:
+                    v.setStyleSheet("background:#FFF3E0; padding:2px 4px;")
+                grid.addWidget(v, row, col, Qt.AlignTop)
+            row += 1
+        lay.addLayout(grid)
+
+        btns = QHBoxLayout()
+        btns.addStretch()
+        for text, choice in (("Keep this desktop's", 'mine'),
+                             ("Use the server's", 'server')):
+            b = QPushButton(text)
+            b.clicked.connect(lambda _=None, c=choice: self._pick(c))
+            btns.addWidget(b)
+        cancel = QPushButton("Decide later")
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(cancel)
+        lay.addLayout(btns)
+
+    def _pick(self, choice):
+        self.choice = choice
+        self.accept()
+
+
 class LogCard(QFrame):
     """Displays one work_log_entry in the timeline."""
-    edit_requested   = pyqtSignal(str)
-    delete_requested = pyqtSignal(str)
+    edit_requested     = pyqtSignal(str)
+    delete_requested   = pyqtSignal(str)
+    conflict_requested = pyqtSignal(str)
 
     def __init__(self, entry: dict, images: list, parent=None):
         super().__init__(parent)
@@ -637,6 +700,24 @@ class LogCard(QFrame):
         date_lbl.setStyleSheet("color:#757575; font-size:11px;")
         header.addWidget(date_lbl)
         outer.addLayout(header)
+
+        # A sync conflict is held until someone chooses — say so on the card,
+        # not only as a count in the sync settings.
+        if entry.get('sync_status') == 'conflict':
+            strip = QHBoxLayout()
+            warn = QLabel("⚠  Also changed on another device — not synced until you choose.")
+            warn.setStyleSheet("color:#E65100; font-size:11px; font-weight:bold;")
+            strip.addWidget(warn)
+            strip.addStretch()
+            fix = QPushButton("Resolve…")
+            fix.setFixedHeight(22)
+            fix.setStyleSheet(
+                "QPushButton{border:1px solid #FB8C00;border-radius:4px;"
+                "padding:0 8px;font-size:11px;background:#FFF3E0;}"
+                "QPushButton:hover{background:#FFE0B2;}")
+            fix.clicked.connect(lambda: self.conflict_requested.emit(self._entry['id']))
+            strip.addWidget(fix)
+            outer.addLayout(strip)
 
         # Description
         desc = entry.get('description', '')
@@ -1580,6 +1661,7 @@ class FieldLogRecordsPage(QWidget):
             card   = LogCard(entry, images, parent=self._timeline_widget)
             card.edit_requested.connect(self._on_edit)
             card.delete_requested.connect(self._on_delete)
+            card.conflict_requested.connect(self._on_conflict)
             self._timeline_layout.addWidget(card)
 
         self._timeline_layout.addStretch()
@@ -1589,6 +1671,36 @@ class FieldLogRecordsPage(QWidget):
         dlg = EditWorklogEntryDialog(entry_id, parent=self)
         if dlg.exec_() == QDialog.Accepted:
             self._load_timeline()
+
+    def _on_conflict(self, entry_id: str):
+        from services import sync_client as sc
+        try:
+            server = sc.get_server_entry(entry_id)
+        except RuntimeError as ex:
+            QMessageBox.warning(self, "Sync conflict", str(ex))
+            return
+        if server is None:
+            # The other side no longer has it; there is nothing to compare.
+            answer = QMessageBox.question(
+                self, "Sync conflict",
+                "The server no longer has this entry.\n\n"
+                "Send this desktop's copy back to it?  (No = remove it here too.)",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+            if answer == QMessageBox.Cancel:
+                return
+            choice = 'mine' if answer == QMessageBox.Yes else 'server'
+        else:
+            dlg = ConflictDialog(get_worklog_entry(entry_id) or {}, server, parent=self)
+            if dlg.exec_() != QDialog.Accepted or not dlg.choice:
+                return
+            choice = dlg.choice
+        try:
+            msg = sc.resolve_conflict(entry_id, choice)
+        except RuntimeError as ex:
+            QMessageBox.warning(self, "Sync conflict", str(ex))
+            return
+        QMessageBox.information(self, "Sync conflict", msg)
+        self._load_timeline()
 
     def _on_delete(self, entry_id: str):
         answer = QMessageBox.question(

@@ -91,7 +91,9 @@ class WorkLogImageOut(BaseModel):
 class WorkLogEntryOut(BaseModel):
     id:               str
     user_id:          str
-    project_id:       int
+    # Optional: phone entries carry no project, and a required int made
+    # GET /worklogs/{id} answer 500 for every one of them.
+    project_id:       Optional[int] = None
     container_id:     Optional[int]
     equipment_serial: str
     site_location:    str

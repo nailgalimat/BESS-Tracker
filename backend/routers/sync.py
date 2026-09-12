@@ -86,6 +86,23 @@ def _image_to_dict(img: WorkLogImage) -> dict:
     }
 
 
+# ── ONE ENTRY ─────────────────────────────────────────────────────────────────
+
+@router.get("/entry/{entry_id}")
+def get_entry(
+    entry_id: str,
+    db:       Session = Depends(get_db),
+    user:     User    = Depends(get_current_user),
+):
+    """The server's current copy of one entry, in the same shape the pull
+    sends — what a device needs to settle a sync conflict. (GET /worklogs/{id}
+    has a narrower schema: no fault/status/SAP/spare-parts fields.)"""
+    entry = db.query(WorkLogEntry).filter(WorkLogEntry.id == entry_id).first()
+    if not entry or (user.role != "admin" and entry.user_id != user.id):
+        raise HTTPException(status_code=404, detail="Entry not found")
+    return _entry_to_dict(entry)
+
+
 # ── PULL ──────────────────────────────────────────────────────────────────────
 
 @router.get("/pull", response_model=SyncPullResponse)
@@ -95,7 +112,9 @@ def pull(
     db:        Session       = Depends(get_db),
     user:      User          = Depends(get_current_user),
 ):
+    from services.sync_cursor import settled_before
     cursor = since if since and since != "0" else _EPOCH
+    settled = settled_before()      # see services/sync_cursor.py
 
     # Shared visibility filter for entries and images (images join their parent
     # entry). Non-admins see only their own entries; a device never gets its
@@ -112,7 +131,8 @@ def pull(
 
     # ── Entries updated after cursor ─────────────────────────────────────────
     entry_q = _visible(
-        db.query(WorkLogEntry).filter(WorkLogEntry.updated_at > cursor)
+        db.query(WorkLogEntry).filter(WorkLogEntry.updated_at > cursor,
+                                      WorkLogEntry.updated_at <= settled)
     ).order_by(WorkLogEntry.updated_at.asc())
     total_entries = entry_q.count()
     entries       = entry_q.limit(_PAGE).all()
@@ -124,7 +144,8 @@ def pull(
     img_q = _visible(
         db.query(WorkLogImage)
           .join(WorkLogEntry, WorkLogImage.work_log_id == WorkLogEntry.id)
-          .filter(WorkLogImage.updated_at > cursor)
+          .filter(WorkLogImage.updated_at > cursor,
+                  WorkLogImage.updated_at <= settled)
     ).order_by(WorkLogImage.updated_at.asc())
     total_images = img_q.count()
     images       = img_q.limit(_PAGE).all()
@@ -210,22 +231,37 @@ def push(
             return SyncPushResponse(**json.loads(cached.response_json))
 
     # ── Process changes ───────────────────────────────────────────────────────
-    results: list[SyncChangeResult] = []
-
-    for change in body.changes:
+    def _apply(change):
         if change.entity == "work_log":
-            result = _apply_entry_change(change, body.device_id, user, db)
-        elif change.entity == "work_log_image":
-            result = _apply_image_change(change, user, db)
-        else:
-            result = SyncChangeResult(
-                id      = change.id,
-                outcome = "error",
-                message = f"Unknown entity: {change.entity}",
-            )
-        results.append(result)
+            return _apply_entry_change(change, body.device_id, user, db)
+        if change.entity == "work_log_image":
+            return _apply_image_change(change, user, db)
+        return SyncChangeResult(id=change.id, outcome="error",
+                                message=f"Unknown entity: {change.entity}")
 
-    db.commit()
+    # The whole batch in one transaction — a retry with the same idempotency
+    # key then either finds everything or nothing. But one change that fails
+    # at commit used to take the batch down with a 500, and since the device
+    # resends the same batch every sync, it never got through again — nor did
+    # anything queued behind it. If the batch fails, redo it change by change
+    # so only the bad one comes back as an error.
+    try:
+        results = [_apply(c) for c in body.changes]
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        log.warning("sync.push.batch_failed_retrying_singly",
+                    extra={"device_id": body.device_id, "error": str(exc)[:200]})
+        results = []
+        for c in body.changes:
+            try:
+                r = _apply(c)
+                db.commit()
+            except Exception as one_exc:
+                db.rollback()
+                r = SyncChangeResult(id=c.id, outcome="error",
+                                     message=str(one_exc)[:200])
+            results.append(r)
     response = SyncPushResponse(results=results)
 
     # ── Store idempotency record ───────────────────────────────────────────────
@@ -255,6 +291,12 @@ def push(
     })
 
     return response
+
+
+def _clean_tags(tags) -> list:
+    """Tags as stored: trimmed, lower-case, each once. 'BMS, bms' used to put
+    two identical rows into a composite primary key and fail the batch."""
+    return sorted({str(t).strip().lower() for t in (tags or []) if str(t).strip()})
 
 
 def _apply_entry_change(change, device_id: str, user: User, db: Session) -> SyncChangeResult:
@@ -302,11 +344,8 @@ def _apply_entry_change(change, device_id: str, user: User, db: Session) -> Sync
             )
             db.add(entry)
             db.flush()   # get DB-assigned defaults before returning version
-            # Tags
-            for tag in payload.get("tags", []):
-                tag = tag.strip().lower()
-                if tag:
-                    db.add(WorkLogTag(work_log_id=change.id, tag=tag))
+            for tag in _clean_tags(payload.get("tags")):
+                db.add(WorkLogTag(work_log_id=change.id, tag=tag))
             return SyncChangeResult(id=change.id, outcome="applied", server_version=entry.version)
 
         # Existing row
@@ -318,6 +357,19 @@ def _apply_entry_change(change, device_id: str, user: User, db: Session) -> Sync
             return SyncChangeResult(
                 id=change.id, outcome="conflict", server_row=_entry_to_dict(entry)
             )
+
+        # Client ahead. Older desktop builds bumped their local version on
+        # every edit, so their edits arrived "ahead" and were skipped — every
+        # sync, forever, without anyone being told. If this device was also the
+        # last to write the row, nobody else has changed it since and the edit
+        # is a plain fast-forward. Otherwise the device cannot have seen the
+        # other writer's change: that is a conflict, and it must say so.
+        if entry.version < change.version:
+            if entry.origin_device != device_id:
+                return SyncChangeResult(
+                    id=change.id, outcome="conflict", server_row=_entry_to_dict(entry)
+                )
+            change.version = entry.version
 
         if entry.version == change.version:
             # Fast-forward update
@@ -341,10 +393,8 @@ def _apply_entry_change(change, device_id: str, user: User, db: Session) -> Sync
 
             if "tags" in payload:
                 db.query(WorkLogTag).filter(WorkLogTag.work_log_id == change.id).delete()
-                for tag in payload["tags"]:
-                    tag = tag.strip().lower()
-                    if tag:
-                        db.add(WorkLogTag(work_log_id=change.id, tag=tag))
+                for tag in _clean_tags(payload["tags"]):
+                    db.add(WorkLogTag(work_log_id=change.id, tag=tag))
 
             return SyncChangeResult(id=change.id, outcome="applied", server_version=entry.version)
 

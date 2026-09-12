@@ -12,6 +12,7 @@ Handles:
 Returns SyncResult (namedtuple) for every sync cycle.
 """
 
+import json
 import os
 import uuid
 from collections import namedtuple
@@ -187,13 +188,19 @@ def _get_tags_for_entry(entry_id: str) -> list:
         conn.close()
 
 
-def _mark_entry_synced(entry_id: str):
+def _mark_entry_synced(entry_id: str, server_version=None):
+    """Mark pushed, and remember which server version the row now matches —
+    the base the next edit will be sent against."""
     conn = get_connection()
     try:
-        conn.execute(
-            "UPDATE work_log_entries SET sync_status='synced' WHERE id=?",
-            (entry_id,)
-        )
+        if server_version is not None:
+            conn.execute(
+                "UPDATE work_log_entries SET sync_status='synced', version=? WHERE id=?",
+                (int(server_version), entry_id))
+        else:
+            conn.execute(
+                "UPDATE work_log_entries SET sync_status='synced' WHERE id=?",
+                (entry_id,))
         conn.commit()
     finally:
         conn.close()
@@ -263,11 +270,20 @@ def push_pending() -> dict:
                 "idempotency_key": str(uuid.uuid4()),
             })
             if resp.status_code == 200:
+                sent = {c["id"]: c["action"] for c in changes}
                 for result in resp.json()["results"]:
-                    if result["outcome"] == "applied":
-                        _mark_entry_synced(result["id"])
+                    outcome = result["outcome"]
+                    if outcome == "applied":
+                        _mark_entry_synced(result["id"], result.get("server_version"))
                         stats["pushed"] += 1
-                    elif result["outcome"] == "conflict":
+                    elif outcome == "skipped" and sent.get(result["id"]) == "delete":
+                        # nothing to delete on the server (never reached it)
+                        _mark_entry_synced(result["id"])
+                    elif outcome in ("conflict", "skipped"):
+                        # "skipped" is how a server from before this fix
+                        # answered an edit it could not place. Re-sending it
+                        # every minute helped nobody; as a conflict the user
+                        # sees it and settles it.
                         _mark_entry_conflict(result["id"])
                         stats["conflicts"] += 1
                     else:
@@ -350,12 +366,109 @@ def push_stock():
         pass
 
 
+# ── Inbox: pulled items that could not be applied yet ─────────────────────────
+# The pull cursors move past every item the server sends. An item that failed
+# to apply — a write-off for a project with no warehouse here yet, an event
+# with a bad date — used to be dropped on the spot and never offered again,
+# while the phone showed it as sent. Now it waits in sync_inbox and is retried
+# at the start of every pull until it applies.
+
+def _inbox_put(kind: str, item: dict, error) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("""
+            INSERT INTO sync_inbox (kind, item_id, payload, error)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(kind, item_id) DO UPDATE SET
+                payload=excluded.payload, error=excluded.error,
+                attempts=sync_inbox.attempts + 1, last_try=datetime('now')
+        """, (kind, str(item["id"]), json.dumps(item, default=str), str(error)[:300]))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _inbox_done(kind: str, item_id) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM sync_inbox WHERE kind=? AND item_id=?", (kind, str(item_id)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _inbox_items(kind: str) -> list:
+    conn = get_connection()
+    try:
+        return [json.loads(r["payload"]) for r in conn.execute(
+            "SELECT payload FROM sync_inbox WHERE kind=? ORDER BY first_seen", (kind,))]
+    finally:
+        conn.close()
+
+
+def inbox_waiting() -> list:
+    """What is waiting to be applied, for display: [{kind, item_id, error, attempts}]."""
+    conn = get_connection()
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT kind, item_id, error, attempts, first_seen FROM sync_inbox "
+            "ORDER BY first_seen")]
+    finally:
+        conn.close()
+
+
+def _retry_inbox(kind: str, apply_fn, stats: dict) -> None:
+    for item in _inbox_items(kind):
+        try:
+            if apply_fn(item):
+                stats["applied"] += 1
+            _inbox_done(kind, item["id"])
+        except Exception as ex:
+            _inbox_put(kind, item, ex)
+
+
+def _apply_writeoff(wo: dict) -> bool:
+    """Apply one phone write-off as an OUT stock transaction on the project's
+    warehouse. False if it was already applied (dedup on reference 'MOB-<id>');
+    raises if it cannot be applied yet."""
+    from services.stock_service import get_project_warehouse_id, record_transaction
+    ref = f"MOB-{wo['id']}"
+    conn = get_connection()
+    try:
+        seen = conn.execute(
+            "SELECT 1 FROM stock_transactions WHERE reference=? LIMIT 1", (ref,)).fetchone()
+    finally:
+        conn.close()
+    if seen:
+        return False
+    wh_id = get_project_warehouse_id(wo["project_id"])
+    if not wh_id:
+        raise RuntimeError(f"project {wo['project_id']} has no warehouse on this desktop yet")
+    note = "Mobile write-off"
+    if wo.get("block"):
+        note += f" · block {wo['block']}"
+    if wo.get("note"):
+        note += f" · {wo['note']}"
+    record_transaction(
+        warehouse_id=wh_id,
+        material_number=wo["material_number"],
+        transaction_type="OUT",
+        quantity=float(wo.get("quantity") or 0),
+        transaction_date=wo.get("log_date") or _now()[:10],
+        project_id=wo["project_id"],
+        reference=ref,
+        notes=note,
+    )
+    return True
+
+
 def pull_writeoffs() -> dict:
     """Pull mobile material write-offs and apply each as an OUT stock
     transaction on the matching project warehouse. Idempotent: a write-off is
-    only applied once (dedup on reference 'MOB-<id>')."""
-    from services.stock_service import get_project_warehouse_id, record_transaction
+    only applied once (dedup on reference 'MOB-<id>'). One that cannot be
+    applied yet waits in the inbox instead of being dropped."""
     stats = {"applied": 0, "errors": 0}
+    _retry_inbox("writeoff", _apply_writeoff, stats)
     cursor = str(sync_config.stock_cursor or "0")   # never None — see below
 
     while True:
@@ -370,37 +483,11 @@ def pull_writeoffs() -> dict:
             break
 
         for wo in body.get("writeoffs", []):
-            ref = f"MOB-{wo['id']}"
             try:
-                conn = get_connection()
-                try:
-                    seen = conn.execute(
-                        "SELECT 1 FROM stock_transactions WHERE reference=? LIMIT 1",
-                        (ref,)).fetchone()
-                finally:
-                    conn.close()
-                if seen:
-                    continue   # already applied
-                wh_id = get_project_warehouse_id(wo["project_id"])
-                if not wh_id:
-                    continue   # project has no warehouse locally — skip
-                note = f"Mobile write-off"
-                if wo.get("block"):
-                    note += f" · block {wo['block']}"
-                if wo.get("note"):
-                    note += f" · {wo['note']}"
-                record_transaction(
-                    warehouse_id=wh_id,
-                    material_number=wo["material_number"],
-                    transaction_type="OUT",
-                    quantity=float(wo.get("quantity") or 0),
-                    transaction_date=wo.get("log_date") or _now()[:10],
-                    project_id=wo["project_id"],
-                    reference=ref,
-                    notes=note,
-                )
-                stats["applied"] += 1
-            except Exception:
+                if _apply_writeoff(wo):
+                    stats["applied"] += 1
+            except Exception as ex:
+                _inbox_put("writeoff", wo, ex)
                 stats["errors"] += 1
 
         new_cursor = body.get("cursor")
@@ -412,26 +499,6 @@ def pull_writeoffs() -> dict:
             break
 
     return stats
-
-
-def _parse_blocks_csv(csv: str) -> list:
-    out = []
-    for tok in (csv or "").split(","):
-        tok = tok.strip()
-        if not tok:
-            continue
-        if "-" in tok:
-            try:
-                a, z = (int(x) for x in tok.split("-", 1))
-                out += list(range(min(a, z), max(a, z) + 1))
-            except ValueError:
-                continue
-        else:
-            try:
-                out.append(int(tok))
-            except ValueError:
-                continue
-    return out
 
 
 def _field_event_seen(event_id: str) -> bool:
@@ -455,14 +522,60 @@ def _mark_field_event(event_id: str, kind: str):
         conn.close()
 
 
+def _apply_field_event(ev: dict) -> bool:
+    """Route one phone event into its report table. False if it was already
+    applied or is of a kind this desktop doesn't handle; raises if it cannot be
+    applied."""
+    from services.availability_service import (
+        add_manual_unavailability, add_exclusion, EXCLUSION_TYPES, parse_block_spec)
+    from services.report_workflow_service import add_pm_activity
+    if _field_event_seen(ev["id"]):
+        return False
+    pid = ev["project_id"]
+    df  = ev.get("date_from") or ""
+    dt  = ev.get("date_to") or df
+    hrs = float(ev.get("hours") or 0)
+    desc = ev.get("description") or ""
+    blocks_csv = ev.get("blocks") or ""
+    year  = int(df[:4]) if len(df) >= 4 else None
+    month = int(df[5:7]) if len(df) >= 7 else None
+    kind = ev.get("kind")
+
+    if kind == "pm":
+        add_pm_activity(pid, year, month,
+                        affected_blocks=blocks_csv, date_from=df,
+                        date_to=dt, hours=hrs, description=desc)
+    elif kind == "counts":
+        for b in sorted(parse_block_spec(blocks_csv) or []) or [0]:
+            add_manual_unavailability(
+                block=b, date_from=df, date_to=dt, downtime_h=hrs,
+                lc=None, cause=desc or "Field-reported",
+                project_id=pid, year=year, month=month)
+    elif kind == "excluded":
+        et = ev.get("exclusion_type") or "Major Fault"
+        if et not in EXCLUSION_TYPES:
+            et = "Major Fault"
+        total_min = min(int(round(hrs * 60)), 1439)
+        time_to = f"{total_min // 60:02d}:{total_min % 60:02d}" if hrs > 0 else "23:59"
+        add_exclusion(exclusion_type=et, date_from=df, date_to=dt,
+                      time_from="00:00", time_to=time_to,
+                      affected_blocks=blocks_csv, description=desc,
+                      project_id=pid, year=year, month=month)
+    else:
+        return False
+
+    _mark_field_event(ev["id"], kind or "")
+    return True
+
+
 def pull_field_events() -> dict:
     """Pull phone-captured PM / downtime / exclusion events and route each into
     the matching report table. Deduped via synced_field_events so re-pulling
-    never double-counts."""
-    from services.availability_service import (
-        add_manual_unavailability, add_exclusion, EXCLUSION_TYPES)
-    from services.report_workflow_service import add_pm_activity
+    never double-counts. One that cannot be applied waits in the inbox and is
+    retried every sync — PM hours from the phone feed the customer's
+    availability, and used to vanish on a single failure."""
     stats = {"applied": 0, "errors": 0}
+    _retry_inbox("field_event", _apply_field_event, stats)
     # Always a string: a missing/None cursor would blow up the comparison
     # below and take the whole sync with it.
     cursor = str(sync_config.field_cursor or "0")
@@ -479,46 +592,11 @@ def pull_field_events() -> dict:
             break
 
         for ev in body.get("events", []):
-            if _field_event_seen(ev["id"]):
-                continue
             try:
-                pid = ev["project_id"]
-                df  = ev.get("date_from") or ""
-                dt  = ev.get("date_to") or df
-                hrs = float(ev.get("hours") or 0)
-                desc = ev.get("description") or ""
-                blocks_csv = ev.get("blocks") or ""
-                year  = int(df[:4]) if len(df) >= 4 else None
-                month = int(df[5:7]) if len(df) >= 7 else None
-                kind = ev.get("kind")
-
-                if kind == "pm":
-                    add_pm_activity(pid, year, month,
-                                    affected_blocks=blocks_csv, date_from=df,
-                                    date_to=dt, hours=hrs, description=desc)
-                elif kind == "counts":
-                    blks = _parse_blocks_csv(blocks_csv) or [0]
-                    for b in blks:
-                        add_manual_unavailability(
-                            block=b, date_from=df, date_to=dt, downtime_h=hrs,
-                            lc=None, cause=desc or "Field-reported",
-                            project_id=pid, year=year, month=month)
-                elif kind == "excluded":
-                    et = ev.get("exclusion_type") or "Major Fault"
-                    if et not in EXCLUSION_TYPES:
-                        et = "Major Fault"
-                    total_min = min(int(round(hrs * 60)), 1439)
-                    time_to = f"{total_min // 60:02d}:{total_min % 60:02d}" if hrs > 0 else "23:59"
-                    add_exclusion(exclusion_type=et, date_from=df, date_to=dt,
-                                  time_from="00:00", time_to=time_to,
-                                  affected_blocks=blocks_csv, description=desc,
-                                  project_id=pid, year=year, month=month)
-                else:
-                    continue
-
-                _mark_field_event(ev["id"], kind or "")
-                stats["applied"] += 1
-            except Exception:
+                if _apply_field_event(ev):
+                    stats["applied"] += 1
+            except Exception as ex:
+                _inbox_put("field_event", ev, ex)
                 stats["errors"] += 1
 
         new_cursor = body.get("cursor")
@@ -534,51 +612,152 @@ def pull_field_events() -> dict:
 
 # ── Pull ──────────────────────────────────────────────────────────────────────
 
-def _apply_pulled_entry(data: dict, action: str):
-    """INSERT OR REPLACE a server entry into local SQLite."""
+_ENTRY_COLS = ("project_id", "container_id", "equipment_serial", "site_location",
+               "category", "description", "fault_name", "status", "sap_ticket",
+               "spare_parts", "log_date", "created_at", "updated_at",
+               "deleted_at", "version")
+
+
+def _store_server_entry(conn, data: dict):
+    """Write the server's copy of an entry over the local one — in place.
+
+    Never INSERT OR REPLACE: REPLACE deletes the row first, and with foreign
+    keys on that cascades to its spare-parts rows (the links to the stock
+    transactions they were deducted by), its photos and its tags. A full
+    re-pull — which every log-out/log-in triggers, by resetting the cursor —
+    silently stripped all of them.
+    """
+    vals = (
+        data.get("project_id") or None,          # None for phone entries
+        data.get("container_id"),
+        data.get("equipment_serial", ""),
+        data.get("site_location", ""),
+        data.get("category", "other"),
+        data.get("description", ""),
+        data.get("fault_name", ""),
+        data.get("status", ""),
+        data.get("sap_ticket", ""),
+        data.get("spare_parts", ""),
+        data.get("log_date", ""),
+        data.get("created_at", _now()),
+        data.get("updated_at", _now()),
+        data.get("deleted_at"),
+        data.get("version", 1),
+    )
+    cols = ", ".join(_ENTRY_COLS)
+    marks = ", ".join("?" for _ in _ENTRY_COLS)
+    sets = ", ".join(f"{c}=excluded.{c}" for c in _ENTRY_COLS)
+    conn.execute(f"""
+        INSERT INTO work_log_entries (id, {cols}, sync_status)
+        VALUES (?, {marks}, 'synced')
+        ON CONFLICT(id) DO UPDATE SET {sets}, sync_status='synced'
+    """, (data["id"],) + vals)
+    conn.execute("DELETE FROM work_log_tags WHERE work_log_id=?", (data["id"],))
+    for tag in data.get("tags", []):
+        conn.execute(
+            "INSERT OR IGNORE INTO work_log_tags (work_log_id, tag) VALUES (?,?)",
+            (data["id"], tag))
+
+
+def _apply_pulled_entry(data: dict, action: str) -> str:
+    """Apply one pulled entry. Returns 'applied', 'conflict' or 'kept'.
+
+    An entry holding a local edit that has not been pushed yet is not
+    overwritten: someone else changed it meanwhile, so it is marked 'conflict'
+    and keeps the local text until the user chooses (see resolve_conflict).
+    Before, the server copy simply replaced it and the edit was gone.
+    """
     conn = get_connection()
     try:
+        local = conn.execute(
+            "SELECT sync_status, version FROM work_log_entries WHERE id=?", (data["id"],)
+        ).fetchone()
+        if local is not None and local["sync_status"] in ("local", "pending", "conflict"):
+            # A copy no newer than the one this edit was made on (a full
+            # re-pull after log-in resends everything) changes nothing: the
+            # edit is simply still to be pushed.
+            if (local["sync_status"] == "pending"
+                    and int(data.get("version") or 0) <= int(local["version"] or 0)):
+                return "kept"
+            conn.execute("UPDATE work_log_entries SET sync_status='conflict' WHERE id=?",
+                         (data["id"],))
+            conn.commit()
+            return "conflict"
         if action == "delete":
             conn.execute("""
                 UPDATE work_log_entries
-                SET deleted_at=?, updated_at=?, sync_status='synced'
+                SET deleted_at=?, updated_at=?, version=?, sync_status='synced'
                 WHERE id=?
-            """, (data.get("deleted_at") or _now(), _now(), data["id"]))
+            """, (data.get("deleted_at") or _now(), _now(),
+                  data.get("version", 1), data["id"]))
         else:
-            # Check if project_id exists locally — if not, still store (foreign key is ON)
-            conn.execute("""
-                INSERT OR REPLACE INTO work_log_entries
-                    (id, project_id, container_id, equipment_serial, site_location,
-                     category, description, fault_name, status, sap_ticket,
-                     spare_parts, log_date, created_at, updated_at,
-                     deleted_at, version, sync_status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')
-            """, (
-                data["id"],
-                data.get("project_id") or None,   # None for mobile entries without project
-                data.get("container_id"),
-                data.get("equipment_serial", ""),
-                data.get("site_location", ""),
-                data.get("category", "other"),
-                data.get("description", ""),
-                data.get("fault_name", ""),
-                data.get("status", ""),
-                data.get("sap_ticket", ""),
-                data.get("spare_parts", ""),
-                data.get("log_date", ""),
-                data.get("created_at", _now()),
-                data.get("updated_at", _now()),
-                data.get("deleted_at"),
-                data.get("version", 1),
-            ))
-            # Tags
-            conn.execute("DELETE FROM work_log_tags WHERE work_log_id=?", (data["id"],))
-            for tag in data.get("tags", []):
-                conn.execute(
-                    "INSERT OR IGNORE INTO work_log_tags (work_log_id, tag) VALUES (?,?)",
-                    (data["id"], tag)
-                )
+            _store_server_entry(conn, data)
         conn.commit()
+        return "applied"
+    finally:
+        conn.close()
+
+
+def get_server_entry(entry_id: str) -> Optional[dict]:
+    """The server's current copy of one entry, or None when it has none.
+
+    Raises RuntimeError when the server cannot be asked — including a server
+    from before /sync/entry existed, whose 404 means "no such route", not "no
+    such entry". Mistaking one for the other would delete a real entry here.
+    """
+    try:
+        resp = _request("get", f"/sync/entry/{entry_id}")
+    except RequestException as ex:
+        raise RuntimeError(f"Server not reachable: {ex}")
+    if resp.status_code == 404:
+        try:
+            detail = resp.json().get("detail", "")
+        except ValueError:
+            detail = ""
+        if detail == "Entry not found":
+            return None
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"The server could not return this entry (HTTP {resp.status_code}). "
+            "If it has not been updated to this version yet, redeploy it first.")
+    return resp.json()
+
+
+def resolve_conflict(entry_id: str, keep: str) -> str:
+    """Settle a sync conflict on one entry.
+
+    keep='mine'   — the local text wins: rebase it on the server's current
+                    version and queue it; the next push overwrites the server.
+    keep='server' — the server's copy wins and replaces the local text.
+
+    Reads the server's copy first, so the choice is made against what is on
+    the server now, not when the conflict arose. Returns a short message.
+    Raises RuntimeError when the server cannot be reached.
+    """
+    if keep not in ("mine", "server"):
+        raise ValueError("keep must be 'mine' or 'server'")
+    server = get_server_entry(entry_id)
+    conn = get_connection()
+    try:
+        if server is None:
+            if keep == "mine":
+                # Not on the server (never arrived, or removed): send it as new.
+                conn.execute("UPDATE work_log_entries SET sync_status='pending', version=1 "
+                             "WHERE id=?", (entry_id,))
+                conn.commit()
+                return "Not on the server — it will be sent as a new entry."
+            conn.execute("UPDATE work_log_entries SET deleted_at=?, sync_status='synced' "
+                         "WHERE id=?", (_now(), entry_id))
+            conn.commit()
+            return "Not on the server any more — removed here too."
+        if keep == "server":
+            _store_server_entry(conn, server)
+            conn.commit()
+            return "Server version kept."
+        conn.execute("UPDATE work_log_entries SET version=?, sync_status='pending' WHERE id=?",
+                     (int(server.get("version", 1)), entry_id))
+        conn.commit()
+        return "Your version will replace the server's on the next sync."
     finally:
         conn.close()
 
@@ -613,7 +792,7 @@ def _apply_pulled_image(data: dict):
 
 def pull_delta() -> dict:
     """Pull all changes since last_cursor and apply to local DB."""
-    stats = {"pulled": 0, "errors": 0}
+    stats = {"pulled": 0, "errors": 0, "conflicts": 0}
     cursor = sync_config.last_cursor
 
     while True:
@@ -630,8 +809,11 @@ def pull_delta() -> dict:
             for change in body["changes"]:
                 try:
                     if change["entity"] == "work_log":
-                        _apply_pulled_entry(change["data"], change["action"])
-                        stats["pulled"] += 1
+                        got = _apply_pulled_entry(change["data"], change["action"])
+                        if got == "conflict":
+                            stats["conflicts"] += 1
+                        elif got == "applied":
+                            stats["pulled"] += 1
                     elif change["entity"] == "work_log_image":
                         _apply_pulled_image(change["data"])
                 except Exception as exc:
@@ -721,11 +903,14 @@ def sync_now() -> SyncResult:
         return SyncResult(0, 0, 0, 0, 0)
 
     push_projects()
+    # Write-offs first: the server lowers its stock mirror the moment a phone
+    # writes off, and pushing the desktop's quantities before applying that
+    # write-off here put the old figure back on the phones for a whole cycle.
+    wo_stats = pull_writeoffs()
     push_stock()
     push_stats = push_pending()
     pull_stats  = pull_delta()
-    pull_writeoffs()
-    pull_field_events()
+    ev_stats = pull_field_events()
     download_pending_remote_images()
 
     sync_config.last_sync_at = _now()
@@ -734,7 +919,12 @@ def sync_now() -> SyncResult:
     return SyncResult(
         pushed    = push_stats["pushed"],
         pulled    = pull_stats["pulled"],
-        conflicts = push_stats.get("conflicts", 0),
-        errors    = push_stats.get("errors", 0) + pull_stats.get("errors", 0),
+        conflicts = push_stats.get("conflicts", 0) + pull_stats.get("conflicts", 0),
+        # Phone events and write-offs count too — their failures used to be
+        # dropped silently and the status bar read "up to date". Whatever is
+        # still waiting in the inbox is reported until it applies.
+        errors    = (push_stats.get("errors", 0) + pull_stats.get("errors", 0)
+                     + max(len(inbox_waiting()),
+                           wo_stats.get("errors", 0) + ev_stats.get("errors", 0))),
         skipped   = 0,
     )

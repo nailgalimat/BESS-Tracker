@@ -145,8 +145,10 @@ def pull_writeoffs(
     db:        Session       = Depends(get_db),
     user:      User          = Depends(get_current_user),
 ):
+    from services.sync_cursor import settled_before
     cursor = since if since and since != "0" else _EPOCH
-    q = db.query(StockWriteoff).filter(StockWriteoff.updated_at > cursor)
+    q = db.query(StockWriteoff).filter(StockWriteoff.updated_at > cursor,
+                                       StockWriteoff.updated_at <= settled_before())
     if user.role != "admin":
         q = q.filter(StockWriteoff.user_id == user.id)
     q = q.order_by(StockWriteoff.updated_at.asc())

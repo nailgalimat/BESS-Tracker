@@ -201,6 +201,43 @@ try:
         H.check(local(q)['description'] == 'phone text' and local(q)['sync_status'] == 'synced',
                 'choosing the server\'s copy settles it')
 
+    print('\n=== S5: a phone item that cannot be applied yet waits, then applies ===')
+    import services.report_workflow_service as rw
+    import services.stock_service as ss
+    ev_id = str(uuid.uuid4())
+    requests.post(URL + '/events', headers=PH, json={
+        'id': ev_id, 'project_id': 77, 'kind': 'pm', 'blocks': '1-2',
+        'date_from': '2026-09-10', 'date_to': '2026-09-10', 'hours': 4,
+        'description': 'PM from the phone'})
+    time.sleep(SETTLE)
+    st = sc.pull_field_events()
+    H.check(st['errors'] == 1 and any(w['item_id'] == ev_id for w in sc.inbox_waiting()),
+            'PM event for a project not on this desktop yet waits (was dropped for good)')
+    c = dbm.get_connection()
+    c.execute("INSERT INTO projects (id, name, num_zones, num_blocks, num_containers) "
+              "VALUES (77, 'Arrives later', 1, 4, 8)")
+    c.commit(); c.close()
+    st = sc.pull_field_events()
+    H.check(st['applied'] == 1 and not any(w['item_id'] == ev_id for w in sc.inbox_waiting()),
+            'applies on the next sync once the project exists')
+    H.check(len(rw.get_pm_activities(77, 2026, 9)) == 1, 'and its PM hours reach the report tables')
+
+    wo_id = str(uuid.uuid4())
+    requests.post(URL + '/stock/writeoff', headers=PH, json={
+        'id': wo_id, 'project_id': 77, 'material_number': 'MAT-9', 'quantity': 3,
+        'log_date': '2026-09-10'})
+    time.sleep(SETTLE)
+    sc.pull_writeoffs()
+    H.check(any(w['item_id'] == wo_id for w in sc.inbox_waiting()),
+            'write-off for a project with no warehouse waits (was skipped for good)')
+    ss.ensure_project_warehouse(77, 'Arrives later')
+    st = sc.pull_writeoffs()
+    c = dbm.get_connection()
+    n_tx = c.execute("SELECT COUNT(*) FROM stock_transactions WHERE reference=?",
+                     ('MOB-' + wo_id,)).fetchone()[0]
+    c.close()
+    H.check(n_tx == 1 and not sc.inbox_waiting(), 'applied once the warehouse exists, exactly once')
+
     print('\n=== a full re-pull does not invent conflicts ===')
     m = str(uuid.uuid4())
     phone_push(m, 1, 'm original')

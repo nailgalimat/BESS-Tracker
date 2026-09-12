@@ -795,6 +795,24 @@ def initialize_database():
             )
         """)
 
+        # Pulled phone items (PM / downtime events, stock write-offs) that could
+        # not be applied when they arrived. The pull cursor moves past them
+        # regardless — so they used to be lost for good, while the phone showed
+        # them as sent. Here they wait and are retried on every sync until they
+        # apply (e.g. once the project's warehouse exists).
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS sync_inbox (
+                kind        TEXT NOT NULL,          -- 'field_event' | 'writeoff'
+                item_id     TEXT NOT NULL,
+                payload     TEXT NOT NULL,          -- the item as the server sent it
+                error       TEXT DEFAULT '',
+                attempts    INTEGER DEFAULT 1,
+                first_seen  TEXT DEFAULT (datetime('now')),
+                last_try    TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (kind, item_id)
+            )
+        """)
+
         # ── ENSURE MAIN WAREHOUSE EXISTS ──────────────────────────────────
         existing = c.execute(
             "SELECT id FROM warehouses WHERE is_main=1"

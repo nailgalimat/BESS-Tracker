@@ -17,8 +17,12 @@ warnings.filterwarnings('ignore')
 
 GOLDEN = {
     # contractual method, with every availability input the Monthly Reports page
-    # passes (27 exclusions, 24 manual downtime rows, 4 balancing periods)
-    'availability_pct': 99.54,
+    # passes. Was 99.54 until 2026-09-11/12, when August's exclusion windows were
+    # corrected against the SCADA data — starts moved to when the plant actually
+    # went down, restoration of the blocks that did not come back added, and the
+    # KKS windows stretched to the stop they covered. Both rounds user-approved;
+    # exclusion_edge_report is what found them.
+    'availability_pct': 99.81,
     # calendar year to date: counter at 31 Aug minus counter at 1 Mar, plus the
     # January and February records (snapshots begin in March 2026)
     'cycles_in_year': 249.6,
@@ -95,6 +99,18 @@ m = re.search(r'availability for the period was ([\d.]+)%', txt)
 avail = float(m.group(1)) if m else None
 H.check(avail is not None and abs(avail - GOLDEN['availability_pct']) < 0.005,
         'BESS availability {}% (accepted {}%)'.format(avail, GOLDEN['availability_pct']))
+
+print('\n=== 4.4.1 unavailability reasons: no grid-outage edges on Aug 7-12 ===')
+edge = []
+for t in Document(docx).tables:
+    hdr = [c.text.strip() for c in t.rows[0].cells]
+    if 'Dominant Cause' in hdr:
+        for row in t.rows[1:]:
+            cells = [c.text.strip() for c in row.cells]
+            print('   ' + ' | '.join(cells))
+            if any(d in cells[1] for d in ('08-Aug', '09-Aug', '10-Aug', '11-Aug', '12-Aug')):
+                edge.append(cells[0] + ' ' + cells[1])
+H.check(not edge, 'no incident spans the corrected outage nights: {}'.format(edge or 'none'))
 
 print('\n=== cycles ===')
 

@@ -558,6 +558,82 @@ def _tashkent_exclusion_mask(dt_s, blk_s, exclusions):
     return mask
 
 
+def exclusion_edge_report(ws_long, exclusions, fault_states=None,
+                          touch_minutes=10):
+    """Fault time sitting right against an exclusion window — the sign that the
+    window was entered shorter than the stop it covers.
+
+    August 2026: every night-time grid-outage window started 35-45 minutes
+    after the plant had already gone down, and none covered the blocks that
+    stayed down after the grid returned until the morning shift restarted them.
+    306 LC-hours — half the month's counted downtime — were edges like that, and
+    they filled section 4.4.1 with "faults" on the outage nights. Nothing showed
+    it; the operator saw only a lower availability.
+
+    A fault run (contiguous FAULT/FAULT STOP samples of one LC, outside every
+    window) counts when it ends within `touch_minutes` of a window's start, or
+    begins within `touch_minutes` of its end, on a block the window covers.
+    Returns one dict per (window, side) — side 'before' or 'after' — with the
+    blocks, the earliest start / latest end, and the LC-hours; largest first.
+    """
+    if ws_long is None or ws_long.empty or not exclusions:
+        return []
+    from services.availability_service import parse_block_spec
+    states = {s.upper() for s in (fault_states or FAULT_SHUTDOWN_STATES)}
+    ws = ws_long[['Datetime', 'block_id', 'container_id', 'working_status']].copy()
+    ws['Datetime'] = pd.to_datetime(ws['Datetime'], errors='coerce')
+    ws = ws.dropna(subset=['Datetime', 'block_id', 'container_id'])
+    ws = ws[ws['working_status'].astype(str).str.strip().str.upper().isin(states)]
+    if ws.empty:
+        return []
+    ws['block_id'] = ws['block_id'].astype(int)
+    ws = ws[~_tashkent_exclusion_mask(ws['Datetime'], ws['block_id'], exclusions).values]
+
+    step = pd.Timedelta(minutes=5)
+    runs = []
+    for (b, lc), g in ws.sort_values('Datetime').groupby(['block_id', 'container_id']):
+        t = list(g['Datetime'])
+        s = p = t[0]
+        for x in t[1:] + [None]:
+            if x is not None and x - p <= step:
+                p = x
+                continue
+            runs.append((int(b), int(lc), s, p + step))
+            if x is not None:
+                s = p = x
+
+    wins = []
+    for e in exclusions:
+        try:
+            a = pd.Timestamp(f"{e['date_from']} {e.get('time_from') or '00:00'}")
+            z = pd.Timestamp(f"{e['date_to']} {e.get('time_to') or '23:59'}")
+        except (ValueError, KeyError):
+            continue
+        wins.append((a, z, parse_block_spec(e.get('affected_blocks')), e))
+
+    touch = pd.Timedelta(minutes=touch_minutes)
+    found = {}
+    for b, lc, s, t in runs:
+        for a, z, blocks, e in wins:
+            if blocks is not None and b not in blocks:
+                continue
+            if a - touch <= t <= a + touch:
+                side = 'before'
+            elif z - touch <= s <= z + touch:
+                side = 'after'
+            else:
+                continue
+            k = (id(e), side)
+            f = found.setdefault(k, {'exclusion': e, 'side': side, 'window': (a, z),
+                                     'blocks': set(), 'first': s, 'last': t, 'lc_hours': 0.0})
+            f['blocks'].add(b)
+            f['first'] = min(f['first'], s)
+            f['last'] = max(f['last'], t)
+            f['lc_hours'] += (t - s).total_seconds() / 3600.0
+            break
+    return sorted(found.values(), key=lambda f: -f['lc_hours'])
+
+
 _SEV_RANK = {'CRITICAL': 3, 'FAULT': 2, 'WARNING': 1, 'INFO': 0}
 
 
@@ -1734,6 +1810,27 @@ def generate_tashkent_report(
     unavail_reasons = build_unavailability_reasons_tashkent(
         ws_long, alarms=alarms, exclusions=exclusions,
     )
+    # Say so when an exclusion window looks shorter than the stop it covers —
+    # see exclusion_edge_report. Only the operator sees this, in the log.
+    edge_warnings = []
+    for f in exclusion_edge_report(ws_long, exclusions):
+        if f['lc_hours'] < 1.0:
+            continue
+        e, (a, z) = f['exclusion'], f['window']
+        blocks = sorted(f['blocks'])
+        blk = (', '.join(map(str, blocks)) if len(blocks) <= 8
+               else f"{len(blocks)} blocks ({blocks[0]}-{blocks[-1]})")
+        if f['side'] == 'before':
+            hint = (f"already down from {f['first']:%d-%b %H:%M}, before the window "
+                    f"starts at {a:%H:%M}")
+        else:
+            hint = (f"still down until {f['last']:%d-%b %H:%M} after the window "
+                    f"ends at {z:%H:%M}")
+        msg = (f"  ⚠  {e.get('exclusion_type', 'Exclusion')} {a:%d-%b %H:%M}–{z:%H:%M}: "
+               f"block {blk} {hint} — {f['lc_hours']:.1f} LC-h counted against "
+               f"availability. If the stop really ran that long, correct the window.")
+        edge_warnings.append(msg)
+        log(msg)
 
     # Merge operator-entered unavailability rows (manual_unavailability) into
     # the auto-detected incidents. Manual rows complement — they never replace
