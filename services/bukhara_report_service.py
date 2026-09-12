@@ -2348,7 +2348,7 @@ def generate_bukhara_report(
     history_records=None,          # list of past-month dicts for 4.3 comparison
     history_path=None,             # per-site history JSON (defaults to Bukhara-only file)
     annexes=None,                  # list of strings appended to Section 8
-    output_format='pdf',           # 'pdf', 'docx', or 'both'
+    output_format='docx',          # 'docx' (default), 'pdf', or 'both'
     exclusions=None,               # list of dicts from availability_service.get_exclusions()
 ):
     def log(msg):
@@ -2536,14 +2536,18 @@ def generate_bukhara_report(
             + ', '.join(datetime(2000, m, 1).strftime('%B') for m in annual_missing)
             + f" {dates[0].year} — generate those months, or the figure is low.")
 
+    # One file name per format — asking for both used to write the PDF over
+    # whatever name the caller gave, .docx included.
+    base_path = output_path.rsplit('.', 1)[0]
     output_paths = []
     if output_format in ('pdf', 'both'):
         log("Building PDF...")
+        output_path = base_path + '.pdf'
         _build_bukhara_pdf_internal(output_path, dict(locals()))
         output_paths.append(output_path)
 
     if output_format in ('docx', 'both'):
-        docx_path = output_path.rsplit('.', 1)[0] + '.docx'
+        docx_path = base_path + '.docx'
         log("Building DOCX...")
         _build_bukhara_docx(docx_path, dict(locals()))
         output_paths.append(docx_path)
@@ -3005,8 +3009,8 @@ def _build_bukhara_pdf_internal(output_path, _ctx):
                 r['cls_reason'],
                 str(int(r['occurrences'])),
                 f"{r['total_hours']:.1f} h",
-                r['blocks_affected'][:30],
-                r['cls_resolution'][:40] if r['cls_resolution'] else '—',
+                r['blocks_affected'],
+                r['cls_resolution'] if r['cls_resolution'] else '—',
             ])
         story.append(_styled_table(
             ['Sub-system', 'Reason / Cause', 'Occurrences',
@@ -3079,10 +3083,10 @@ def _build_bukhara_pdf_internal(output_path, _ctx):
                     label,
                     str(r.get('Activated', ''))[:16],
                     str(r.get('Element', ''))[:18],
-                    str(r.get('Trigger name', ''))[:46],
+                    str(r.get('Trigger name', '')),
                     (f"{r['duration_min']/60:.1f} h"
                        if pd.notna(r.get('duration_min')) else '—'),
-                    str(r.get('excluded_by', ''))[:22],
+                    str(r.get('excluded_by', '')),
                 ])
         if excl_rows:
             story.append(_styled_table(
@@ -3135,12 +3139,12 @@ def _build_bukhara_pdf_internal(output_path, _ctx):
                 date_str = ''
             rows.append([
                 str(i),
-                str(r.get('Trigger name', ''))[:42],
+                str(r.get('Trigger name', '')),
                 blk,
                 str(r.get('cls_subsystem', '') or ''),
                 str(r.get('cls_reason', '') or ''),
                 date_str,
-                str(r.get('cls_resolution', '') or '—')[:40],
+                str(r.get('cls_resolution', '') or '—'),
             ])
         story.append(_styled_table(
             ['No.', 'Fault Name', 'Block #', 'Sub-system',
@@ -3181,11 +3185,11 @@ def _build_bukhara_pdf_internal(output_path, _ctx):
                 blk = m.group(1) if m else ''
                 rows.append([
                     str(i),
-                    str(r.get('Trigger name', ''))[:42],
+                    str(r.get('Trigger name', '')),
                     blk,
                     str(r.get('cls_subsystem', '') or ''),
                     str(r.get('cls_reason', '') or ''),
-                    str(r.get('cls_resolution', '') or '—')[:40],
+                    str(r.get('cls_resolution', '') or '—'),
                 ])
             story.append(_styled_table(
                 ['No.', 'Fault Name', 'Block #', 'Sub-system',
@@ -3207,11 +3211,11 @@ def _build_bukhara_pdf_internal(output_path, _ctx):
         for i, inc in enumerate(breakdown_incidents, start=1):
             rows.append([
                 str(i),
-                str(inc.get('incident', ''))[:50],
+                str(inc.get('incident', '')),
                 str(inc.get('date_time', ''))[:18],
-                str(inc.get('breakdown_type', ''))[:24],
-                str(inc.get('temporary_solution', ''))[:36],
-                str(inc.get('final_solution', ''))[:36],
+                str(inc.get('breakdown_type', '')),
+                str(inc.get('temporary_solution', '')),
+                str(inc.get('final_solution', '')),
                 str(inc.get('closure_date', ''))[:14],
             ])
         story.append(_styled_table(
@@ -3229,7 +3233,7 @@ def _build_bukhara_pdf_internal(output_path, _ctx):
                 '<i>Longest events (informational):</i>', STYLE_SMALL))
             rows = []
             for _, r in alarm_sum['longest'].iterrows():
-                trigger = str(r['Trigger name'])[:45]
+                trigger = str(r['Trigger name'])
                 if bool(r.get('is_excluded', False)):
                     excl_lbl = str(r.get('excluded_by', '') or 'exclusion')
                     trigger = f"{trigger}  (during {excl_lbl})"
@@ -3613,7 +3617,7 @@ def _build_bukhara_docx(output_path, _ctx):
         rows = [[r['cls_subsystem'], r['cls_reason'],
                   str(int(r['occurrences'])),
                   f"{r['total_hours']:.1f} h",
-                  (r['cls_resolution'] or '—')[:50]]
+                  (r['cls_resolution'] or '—')]
                  for _, r in gp.head(15).iterrows()]
         add_styled_table(doc,
             ['Sub-system', 'Reason / Cause', 'Occurrences', 'Hours', 'Resolution'],
@@ -3642,10 +3646,10 @@ def _build_bukhara_docx(output_path, _ctx):
                     label,
                     str(r.get('Activated', ''))[:16],
                     str(r.get('Element', ''))[:18],
-                    str(r.get('Trigger name', ''))[:46],
+                    str(r.get('Trigger name', '')),
                     (f"{r['duration_min']/60:.1f} h"
                        if pd.notna(r.get('duration_min')) else '—'),
-                    str(r.get('excluded_by', ''))[:22],
+                    str(r.get('excluded_by', '')),
                 ])
         if excl_rows:
             add_styled_table(doc,
@@ -3682,12 +3686,12 @@ def _build_bukhara_docx(output_path, _ctx):
                 date_str = ''
             rows.append([
                 str(i),
-                str(r.get('Trigger name', ''))[:42],
+                str(r.get('Trigger name', '')),
                 blk,
                 str(r.get('cls_subsystem', '') or ''),
                 str(r.get('cls_reason', '') or ''),
                 date_str,
-                str(r.get('cls_resolution', '') or '—')[:40],
+                str(r.get('cls_resolution', '') or '—'),
             ])
         add_styled_table(doc,
             ['No.', 'Fault Name', 'Block #', 'Sub-system',
@@ -3722,11 +3726,11 @@ def _build_bukhara_docx(output_path, _ctx):
                 blk = m.group(1) if m else ''
                 rows.append([
                     str(i),
-                    str(r.get('Trigger name', ''))[:42],
+                    str(r.get('Trigger name', '')),
                     blk,
                     str(r.get('cls_subsystem', '') or ''),
                     str(r.get('cls_reason', '') or ''),
-                    str(r.get('cls_resolution', '') or '—')[:40],
+                    str(r.get('cls_resolution', '') or '—'),
                 ])
             add_styled_table(doc,
                 ['No.', 'Fault Name', 'Block #', 'Sub-system',
@@ -3741,11 +3745,11 @@ def _build_bukhara_docx(output_path, _ctx):
         for i, inc in enumerate(breakdown_incidents_local, start=1):
             rows.append([
                 str(i),
-                str(inc.get('incident', ''))[:50],
+                str(inc.get('incident', '')),
                 str(inc.get('date_time', ''))[:18],
-                str(inc.get('breakdown_type', ''))[:24],
-                str(inc.get('temporary_solution', ''))[:36],
-                str(inc.get('final_solution', ''))[:36],
+                str(inc.get('breakdown_type', '')),
+                str(inc.get('temporary_solution', '')),
+                str(inc.get('final_solution', '')),
                 str(inc.get('closure_date', ''))[:14],
             ])
         add_styled_table(doc,
@@ -3758,7 +3762,7 @@ def _build_bukhara_docx(output_path, _ctx):
             add_paragraph(doc, 'Longest events (informational):', italic=True)
             rows = []
             for _, r in alarm_sum['longest'].iterrows():
-                trig = str(r['Trigger name'])[:50]
+                trig = str(r['Trigger name'])
                 if bool(r.get('is_excluded', False)):
                     excl_lbl = str(r.get('excluded_by', '') or 'exclusion')
                     trig = f"{trig}  (during {excl_lbl})"

@@ -39,17 +39,18 @@ def main():
     parser = argparse.ArgumentParser(description='Generate the Tashkent monthly report.')
     parser.add_argument('--input-dir',  default=DEFAULT_INPUT_DIR)
     parser.add_argument('--output-dir', default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument('--format', choices=['pdf', 'docx', 'both'], default='pdf',
-                        help='Output format: pdf (default), docx, or both')
+    parser.add_argument('--format', choices=['docx', 'pdf', 'both'], default='docx',
+                        help='Output format: docx (default), pdf, or both')
     parser.add_argument('--month-label', default='March_2026')
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
+    ext = 'docx' if args.format in ('docx', 'both') else 'pdf'
     output_path = os.path.join(args.output_dir,
-        f'Tashkent_Monthly_Report_{args.month_label}.pdf')
+        f'Tashkent_Monthly_Report_{args.month_label}.{ext}')
 
     print(f"Input dir : {args.input_dir}")
     print(f"Output dir: {args.output_dir}")
-    print(f"Target PDF: {output_path}\n")
+    print(f"Target    : {output_path}\n")
 
     t = time.time()
     generate_tashkent_report(
@@ -71,7 +72,8 @@ def main():
         output_format         = args.format,
     )
     print(f"\nDone in {time.time()-t:.1f}s")
-    print(f"PDF size: {os.path.getsize(output_path):,} bytes")
+    if os.path.exists(output_path):
+        print(f"Size: {os.path.getsize(output_path):,} bytes")
 
 
 if __name__ == '__main__':

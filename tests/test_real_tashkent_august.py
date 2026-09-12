@@ -75,17 +75,22 @@ ARGS = dict(
     progress_callback=lambda *a, **k: None,
 )
 
-pdf = os.path.join(H.WORK, 'August_2026.pdf')
+# Word only: that is what the report is delivered as. The PDF renderer still
+# lays the report out (its story is built either way, so a crash in it still
+# shows up here) but writes no pages unless a PDF is asked for.
 docx = os.path.join(H.WORK, 'August_2026.docx')
-generate_tashkent_report(output_path=pdf, output_format='both', **ARGS)
-H.check(os.path.getsize(pdf) > 50000, 'PDF written ({:,} bytes)'.format(os.path.getsize(pdf)))
+generate_tashkent_report(output_path=docx, output_format='docx', **ARGS)
 H.check(os.path.exists(docx) and os.path.getsize(docx) > 50000,
-        'DOCX written — a DOCX failure is otherwise only logged')
+        'DOCX written ({:,} bytes) — a DOCX failure is otherwise only logged'.format(
+            os.path.getsize(docx) if os.path.exists(docx) else 0))
+H.check(not os.path.exists(docx.rsplit('.', 1)[0] + '.pdf'),
+        'no PDF left beside it')
 
-from pypdf import PdfReader                                         # noqa: E402
 from docx import Document                                           # noqa: E402
 
-txt = '\n'.join((p.extract_text() or '') for p in PdfReader(pdf).pages)
+_doc = Document(docx)
+txt = '\n'.join([p.text for p in _doc.paragraphs]
+                + [c.text for t in _doc.tables for r in t.rows for c in r.cells])
 
 print('\n=== general alarms ===')
 H.check(txt.count(UMBRELLA_FOOTNOTE[:60]) >= 1, 'the general-alarm note is printed')
@@ -99,6 +104,27 @@ m = re.search(r'availability for the period was ([\d.]+)%', txt)
 avail = float(m.group(1)) if m else None
 H.check(avail is not None and abs(avail - GOLDEN['availability_pct']) < 0.005,
         'BESS availability {}% (accepted {}%)'.format(avail, GOLDEN['availability_pct']))
+
+print('\n=== fault names are printed whole ===')
+# The tables used to slice names at 38-50 characters, so the customer read
+# "PCS - Converter Unit 1 Fault Status 1: AC" and never learned it was an AC
+# over-voltage. Both renderers wrap cell text, so nothing needs cutting.
+import sqlite3                                                     # noqa: E402
+_c = sqlite3.connect('file:{}?mode=ro'.format(H.DB.replace(os.sep, '/')), uri=True)
+triggers = [t for (t,) in _c.execute(
+    "SELECT DISTINCT trigger_name FROM alarm_events WHERE project_id=1 "
+    "AND year=2026 AND month=8") if t and len(t) > 40]
+_c.close()
+cells = [c.text.strip() for t in Document(docx).tables for r in t.rows for c in r.cells]
+# a cell that is the *start* of a known fault name, but not the whole name
+cut = sorted({c for c in cells if len(c) >= 25
+              and any(t.startswith(c) and t != c for t in triggers)})
+H.check(not cut, 'no cell holds a half-written name ({} long names in the month){}'.format(
+    len(triggers), '' if not cut else ': ' + repr(cut[:2])))
+docx_text = '\n'.join(cells)
+shown = [t for t in triggers if t in docx_text]
+H.check(bool(shown), 'long names do appear in full, e.g. "{}"'.format(
+    max(shown, key=len) if shown else '-'))
 
 print('\n=== 4.4.1 unavailability reasons: no grid-outage edges on Aug 7-12 ===')
 edge = []
@@ -115,13 +141,8 @@ H.check(not edge, 'no incident spans the corrected outage nights: {}'.format(edg
 print('\n=== cycles ===')
 
 
-def pdf_value(label):
-    m = re.search(re.escape(label) + r'\s*([\d.]+)', txt)
-    return float(m.group(1)) if m else None
-
-
-def docx_value(label):
-    for t in Document(docx).tables:
+def docx_value(path, label):
+    for t in Document(path).tables:
         for row in t.rows:
             cells = [c.text.strip() for c in row.cells]
             if len(cells) > 2 and cells[1] == label:
@@ -132,19 +153,16 @@ def docx_value(label):
 for key, label in (('cycles_month', 'Number of Cycles in Reported Month'),
                    ('cycles_in_year', 'Accumulative Number of Cycles in one Year'),
                    ('cycles_lifetime', 'Accumulative Number of Cycles')):
-    p, d = pdf_value(label), docx_value(label)
-    H.check(p is not None and p == d, '{}: PDF {} = DOCX {}'.format(label, p, d))
-    H.check(p is not None and abs(p - GOLDEN[key]) < 0.05,
-            '{}: {} (accepted {})'.format(label, p, GOLDEN[key]))
+    v = docx_value(docx, label)
+    H.check(v is not None and abs(v - GOLDEN[key]) < 0.05,
+            '{}: {} (accepted {})'.format(label, v, GOLDEN[key]))
 
 print('\n=== a second run of the same month changes nothing ===')
-pdf2 = os.path.join(H.WORK, 'August_2026_rerun.pdf')
-generate_tashkent_report(output_path=pdf2, output_format='pdf', **ARGS)
-txt2 = '\n'.join((p.extract_text() or '') for p in PdfReader(pdf2).pages)
-m2 = re.search(r'Accumulative Number of Cycles in one Year\s*([\d.]+)', txt2)
-H.check(m2 is not None and float(m2.group(1)) == pdf_value(
-    'Accumulative Number of Cycles in one Year'),
-    'Cycles in one Year stable on re-run (it used to grow by a month per run)')
+docx2 = os.path.join(H.WORK, 'August_2026_rerun.docx')
+generate_tashkent_report(output_path=docx2, output_format='docx', **ARGS)
+H.check(docx_value(docx2, 'Accumulative Number of Cycles in one Year')
+        == docx_value(docx, 'Accumulative Number of Cycles in one Year'),
+        'Cycles in one Year stable on re-run (it used to grow by a month per run)')
 
 H.check(_digest(real_hist) == hist_before, 'the real KPI history file was not touched')
 

@@ -94,20 +94,21 @@ def main():
     parser.add_argument('--input-dir',  default=DEFAULT_INPUT_DIR,
                         help='Folder containing the SCADA export xlsx files')
     parser.add_argument('--output-dir', default=DEFAULT_OUTPUT_DIR,
-                        help='Destination folder for the PDF')
-    parser.add_argument('--format', choices=['pdf', 'docx', 'both'], default='pdf',
-                        help='Output format: pdf (default), docx, or both')
+                        help='Destination folder for the report')
+    parser.add_argument('--format', choices=['docx', 'pdf', 'both'], default='docx',
+                        help='Output format: docx (default), pdf, or both')
     parser.add_argument('--month-label', default='April_2026',
                         help='Label used in the output filename')
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
+    ext = 'docx' if args.format in ('docx', 'both') else 'pdf'
     output_path = os.path.join(args.output_dir,
-        f'Nur_Bukhara_Monthly_Report_{args.month_label}.pdf')
+        f'Nur_Bukhara_Monthly_Report_{args.month_label}.{ext}')
 
     print(f"Input dir : {args.input_dir}")
     print(f"Output dir: {args.output_dir}")
-    print(f"Target PDF: {output_path}")
+    print(f"Target    : {output_path}")
     print()
 
     t = time.time()
@@ -136,7 +137,8 @@ def main():
         # history_records auto-loaded from data/monthly_history.json
     )
     print(f"\nDone in {time.time()-t:.1f}s")
-    print(f"PDF size: {os.path.getsize(output_path):,} bytes")
+    if os.path.exists(output_path):
+        print(f"Size: {os.path.getsize(output_path):,} bytes")
 
 
 if __name__ == '__main__':

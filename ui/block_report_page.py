@@ -4,8 +4,9 @@ ui/block_report_page.py
 Block-level monthly operations report page.
 
 Unified UI for the two new report engines (Bukhara, Tashkent). The operator
-picks a site type, fills in capacity + narrative fields, selects the source
-files, and chooses an output format (PDF / DOCX / both).
+picks a site type, fills in capacity + narrative fields and selects the source
+files. The report is written as a Word document — it is edited before it goes
+to the customer, and a PDF is printed from Word at the end.
 """
 import os
 from PyQt5.QtWidgets import (
@@ -65,7 +66,7 @@ class BlockReportWorker(QThread):
                     site_visits       = self.params.get('site_visits') or None,
                     recommendations   = self.params.get('recommendations') or None,
                     planned_next_period = self.params.get('planned_next_period') or None,
-                    output_format     = self.params.get('output_format', 'pdf'),
+                    output_format     = self.params.get('output_format', 'docx'),
                     exclusions        = self.params.get('exclusions') or None,
                     yearly_cycle_target = self.params.get('yearly_cycle_target', 365.0),
                     report_number       = self.params.get('report_number') or None,
@@ -102,7 +103,7 @@ class BlockReportWorker(QThread):
                     site_visits       = self.params.get('site_visits') or None,
                     recommendations   = self.params.get('recommendations') or None,
                     planned_next_period = self.params.get('planned_next_period') or None,
-                    output_format     = self.params.get('output_format', 'pdf'),
+                    output_format     = self.params.get('output_format', 'docx'),
                     exclusions        = self.params.get('exclusions') or None,
                     yearly_cycle_target = self.params.get('yearly_cycle_target', 365.0),
                     report_number       = self.params.get('report_number') or None,
@@ -160,11 +161,17 @@ class _SavePathPicker(QWidget):
         layout.addWidget(btn)
 
     def _browse(self):
+        # Word only: the report is edited before it goes to the customer, and
+        # a PDF is printed from Word at the end.
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Report Output",
-            "BlockReport.pdf", "PDF Files (*.pdf)"
+            "BlockReport.docx", "Word Documents (*.docx)"
         )
-        if path: self.path_input.setText(path)
+        if path:
+            if not path.lower().endswith('.docx'):
+                path = path.rsplit('.', 1)[0] + '.docx' if '.' in os.path.basename(path) \
+                    else path + '.docx'
+            self.path_input.setText(path)
 
     def path(self): return self.path_input.text().strip()
     def set_path(self, p): self.path_input.setText(p)
@@ -591,14 +598,8 @@ class BlockReportPage(QWidget):
         # ── Output ────────────────────────────────────────────────────────
         out_group = QGroupBox("Output")
         of = QFormLayout(); of.setSpacing(8)
-        self.fp_output = _SavePathPicker("Where to save the report")
+        self.fp_output = _SavePathPicker("Where to save the report (.docx)")
         of.addRow("Save Report to *:", self.fp_output)
-        fmt_row = QHBoxLayout()
-        self.fmt_combo = QComboBox()
-        self.fmt_combo.addItems(['PDF', 'DOCX', 'Both PDF + DOCX'])
-        self.fmt_combo.setFixedWidth(180)
-        fmt_row.addWidget(self.fmt_combo); fmt_row.addStretch()
-        of.addRow("Output Format:", fmt_row)
         out_group.setLayout(of)
         cl.addWidget(out_group)
 
@@ -1095,7 +1096,7 @@ class BlockReportPage(QWidget):
         return True
 
     def _output_format(self):
-        return {0: 'pdf', 1: 'docx', 2: 'both'}[self.fmt_combo.currentIndex()]
+        return 'docx'
 
     # ── Generate ─────────────────────────────────────────────────────────
 

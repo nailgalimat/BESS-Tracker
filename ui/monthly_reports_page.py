@@ -296,10 +296,10 @@ class MonthlyReportsPage(QWidget):
             self.bk[key] = _FilePicker(); bf.addRow(lbl + ":", self.bk[key])
         l.addWidget(self.bk_group)
 
+        # Word only — the report is edited before it goes out, and a PDF is
+        # printed from Word at the end.
         og = QGroupBox("Output"); of = QFormLayout(og)
-        self.fmt = QComboBox(); self.fmt.addItems(['PDF', 'DOCX', 'Both PDF + DOCX'])
-        of.addRow("Format:", self.fmt)
-        self.out_path = _SavePathPicker("Where to save the report")
+        self.out_path = _SavePathPicker("Where to save the report (.docx)")
         of.addRow("Save to *:", self.out_path)
         l.addWidget(og)
 
@@ -673,7 +673,7 @@ class MonthlyReportsPage(QWidget):
             site_name=proj.get('name', ''),
             project_details=pd,
             output_path=self.out_path.path(),
-            output_format={0: 'pdf', 1: 'docx', 2: 'both'}[self.fmt.currentIndex()],
+            output_format='docx',
             prepared_by=cfg.get('prepared_by') or None,
             reviewed_by=cfg.get('reviewed_by') or None,
             report_number=self.report_number.text().strip() or None,

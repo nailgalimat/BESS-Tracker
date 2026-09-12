@@ -1452,7 +1452,7 @@ def generate_tashkent_report(
     planned_next_period=None,
     history_records=None,
     annexes=None,
-    output_format='pdf',
+    output_format='docx',          # 'docx' (default), 'pdf', or 'both'
     exclusions=None,               # list of dicts from availability_service.get_exclusions()
     balancing_periods=None,        # list of dicts from availability_service.get_balancing_periods()
     project_id=None,               # when set, this month's alarms become equipment history
@@ -2153,9 +2153,18 @@ def generate_tashkent_report(
             + ', '.join(datetime(2000, m, 1).strftime('%B') for m in annual_missing)
             + f" {dates[0].year} — generate those months, or the figure is low.")
 
-    log("Building PDF...")
+    # The report is a Word document: it gets edited before it goes out, and
+    # whoever needs a PDF prints one from Word. The PDF renderer is still here
+    # and still the source of the layout, but its pages are only written when
+    # a PDF is actually asked for. Each format gets its own file name, so
+    # asking for both cannot write one over the other.
+    want_pdf = output_format in ('pdf', 'both')
+    base_path = output_path.rsplit('.', 1)[0]
+    pdf_path, docx_out = base_path + '.pdf', base_path + '.docx'
+
+    log("Building the report..." if not want_pdf else "Building PDF...")
     doc = SimpleDocTemplate(
-        output_path, pagesize=A4,
+        pdf_path, pagesize=A4,
         leftMargin=20*mm, rightMargin=20*mm,
         topMargin=20*mm, bottomMargin=20*mm,
         title=f'BESS Operations Report — {site_name} {report_month}',
@@ -2736,7 +2745,7 @@ def generate_tashkent_report(
                 str(int(r['occurrences'])),
                 f"{r['total_hours']:.1f} h",
                 r['blocks_affected'],
-                (r['resolution'] or '—')[:38],
+                (r['resolution'] or '—'),
             ])
         story.append(_styled_table(
             ['Equipment', 'Reason', 'Occurrences',
@@ -2818,10 +2827,10 @@ def generate_tashkent_report(
                     label,
                     str(r.get('Activated', ''))[:16],
                     str(r.get('Element', ''))[:18],
-                    str(r.get('Trigger name', ''))[:46],
+                    str(r.get('Trigger name', '')),
                     (f"{r['duration_min']/60:.1f} h"
                        if pd.notna(r.get('duration_min')) else '—'),
-                    str(r.get('excluded_by', ''))[:22],
+                    str(r.get('excluded_by', '')),
                 ])
         if excl_rows:
             story.append(_styled_table(
@@ -2872,7 +2881,7 @@ def generate_tashkent_report(
         any_planned = '*' in ''.join(et['blocks'].astype(str)) if not et.empty else False
         any_active = int(et['active'].sum()) if not et.empty else 0
         for i, (_, r) in enumerate(et.iterrows(), start=1):
-            name = str(r['trigger'])[:40] + (' ⚠' if r['active'] else '')
+            name = str(r['trigger']) + (' ⚠' if r['active'] else '')
             worst = (f"{r['worst_when']} · {r['worst_h']:.1f} h"
                      if r['worst_when'] else f"{r['worst_h']:.1f} h")
             rows.append([
@@ -2883,13 +2892,13 @@ def generate_tashkent_report(
                 str(int(r['events'])),
                 f"{r['total_h']:,.1f}",
                 worst,
-                str(r['resolution'] or '—')[:38],
+                str(r['resolution'] or '—'),
             ])
         story.append(_styled_table(
             ['No.', 'Fault Name', 'Equipment', 'Blocks affected',
              'Events', 'Total h', 'Worst single', 'Resolution'],
             rows,
-            col_widths=[8*mm, 38*mm, 18*mm, 26*mm, 12*mm, 13*mm, 23*mm, 32*mm]
+            col_widths=[8*mm, 44*mm, 18*mm, 24*mm, 12*mm, 13*mm, 20*mm, 31*mm]
         ))
         note = ('<i>One row per fault type — the same fault occurring on '
                 'several units of a block is counted, not repeated. '
@@ -2921,18 +2930,18 @@ def generate_tashkent_report(
         for i, (_, r) in enumerate(wt.iterrows(), start=1):
             rows.append([
                 str(i),
-                str(r['trigger'])[:42] + (' ⚠' if r['active'] else ''),
+                str(r['trigger']) + (' ⚠' if r['active'] else ''),
                 str(r['subsystem'] or ''),
                 str(r['blocks'] or ''),
                 str(int(r['events'])),
                 f"{r['total_h']:,.1f}",
-                str(r['resolution'] or '—')[:40],
+                str(r['resolution'] or '—'),
             ])
         story.append(_styled_table(
             ['No.', 'Warning', 'Equipment', 'Blocks affected',
              'Events', 'Total h', 'Resolution'],
             rows,
-            col_widths=[8*mm, 42*mm, 18*mm, 26*mm, 12*mm, 14*mm, 40*mm]
+            col_widths=[8*mm, 48*mm, 18*mm, 24*mm, 12*mm, 14*mm, 36*mm]
         ))
         if any_active:
             story.append(Paragraph(
@@ -2966,13 +2975,13 @@ def generate_tashkent_report(
                   if inc.get('downtime_h') is not None else '')
             rows.append([
                 str(i),
-                str(inc.get('incident', ''))[:40],
-                str(inc.get('blocks', ''))[:14],
+                str(inc.get('incident', '')),
+                str(inc.get('blocks', '')),
                 str(inc.get('date_time', ''))[:16],
-                str(inc.get('breakdown_type', ''))[:18],
+                str(inc.get('breakdown_type', '')),
                 dt,
-                str(inc.get('temporary_solution', ''))[:30],
-                str(inc.get('final_solution', ''))[:30],
+                str(inc.get('temporary_solution', '')),
+                str(inc.get('final_solution', '')),
             ])
         story.append(_styled_table(
             ['No.', 'Breakdown incident', 'Block(s)', 'Date and time',
@@ -2991,7 +3000,7 @@ def generate_tashkent_report(
                 '<i>Longest events (informational):</i>', STYLE_SMALL))
             rows = []
             for _, r in alarm_sum['longest'].iterrows():
-                trig = str(r['Trigger name'])[:50]
+                trig = str(r['Trigger name'])
                 if bool(r.get('is_excluded', False)):
                     excl_lbl = str(r.get('excluded_by', '') or 'exclusion')
                     trig = f"{trig}  (during {excl_lbl})"
@@ -3091,13 +3100,13 @@ def generate_tashkent_report(
         f'{datetime.now().strftime("%Y-%m-%d %H:%M")}',
         STYLE_SMALL))
 
-    doc.build(story)
-    log(f"PDF saved: {output_path}")
-    pdf_path = output_path
+    if want_pdf:
+        doc.build(story)
+        log(f"PDF saved: {pdf_path}")
 
     docx_path = None
     if output_format in ('docx', 'both'):
-        docx_path = output_path.rsplit('.', 1)[0] + '.docx'
+        docx_path = docx_out
         log("Building DOCX...")
         try:
             _build_tashkent_docx(docx_path, locals())
@@ -3111,10 +3120,8 @@ def generate_tashkent_report(
     except Exception as e:
         log(f"Note: could not save history record: {e}")
 
-    if output_format == 'docx' and docx_path:
-        # User asked for docx only — return docx path and skip PDF? We
-        # actually still produced the PDF (simpler), so return both.
-        return [pdf_path, docx_path]
+    if output_format == 'docx':
+        return docx_path
     if output_format == 'both' and docx_path:
         return [pdf_path, docx_path]
     return pdf_path
@@ -3649,7 +3656,7 @@ def _build_tashkent_docx(output_path, _ctx):
                 italic=True)
         rows = [[r['subsystem'], r['reason'], str(int(r['occurrences'])),
                   f"{r['total_hours']:.1f} h", r['blocks_affected'],
-                  (r['resolution'] or '—')[:50]]
+                  (r['resolution'] or '—')]
                  for _, r in faults_summary.iterrows()]
         add_styled_table(doc,
             ['Equipment', 'Reason', 'Occurrences', 'Hours',
@@ -3712,10 +3719,10 @@ def _build_tashkent_docx(output_path, _ctx):
                     label,
                     str(r.get('Activated', ''))[:16],
                     str(r.get('Element', ''))[:18],
-                    str(r.get('Trigger name', ''))[:46],
+                    str(r.get('Trigger name', '')),
                     (f"{r['duration_min']/60:.1f} h"
                        if _pd.notna(r.get('duration_min')) else '—'),
-                    str(r.get('excluded_by', ''))[:22],
+                    str(r.get('excluded_by', '')),
                 ])
         if excl_rows:
             add_styled_table(doc,
@@ -3753,13 +3760,13 @@ def _build_tashkent_docx(output_path, _ctx):
                      if r['worst_when'] else f"{r['worst_h']:.1f} h")
             rows.append([
                 str(i),
-                str(r['trigger'])[:40] + (' ⚠' if r['active'] else ''),
+                str(r['trigger']) + (' ⚠' if r['active'] else ''),
                 str(r['subsystem'] or ''),
                 str(r['blocks'] or ''),
                 str(int(r['events'])),
                 f"{r['total_h']:,.1f}",
                 worst,
-                str(r['resolution'] or '—')[:38],
+                str(r['resolution'] or '—'),
             ])
         add_styled_table(doc,
             ['No.', 'Fault Name', 'Equipment', 'Blocks affected',
@@ -3793,12 +3800,12 @@ def _build_tashkent_docx(output_path, _ctx):
         for i, (_, r) in enumerate(wt.iterrows(), start=1):
             rows.append([
                 str(i),
-                str(r['trigger'])[:42] + (' ⚠' if r['active'] else ''),
+                str(r['trigger']) + (' ⚠' if r['active'] else ''),
                 str(r['subsystem'] or ''),
                 str(r['blocks'] or ''),
                 str(int(r['events'])),
                 f"{r['total_h']:,.1f}",
-                str(r['resolution'] or '—')[:40],
+                str(r['resolution'] or '—'),
             ])
         add_styled_table(doc,
             ['No.', 'Warning', 'Equipment', 'Blocks affected',
@@ -3829,13 +3836,13 @@ def _build_tashkent_docx(output_path, _ctx):
                   if inc.get('downtime_h') is not None else '')
             rows.append([
                 str(i),
-                str(inc.get('incident', ''))[:40],
-                str(inc.get('blocks', ''))[:14],
+                str(inc.get('incident', '')),
+                str(inc.get('blocks', '')),
                 str(inc.get('date_time', ''))[:16],
-                str(inc.get('breakdown_type', ''))[:18],
+                str(inc.get('breakdown_type', '')),
                 dt,
-                str(inc.get('temporary_solution', ''))[:30],
-                str(inc.get('final_solution', ''))[:30],
+                str(inc.get('temporary_solution', '')),
+                str(inc.get('final_solution', '')),
             ])
         add_styled_table(doc,
             ['No.', 'Breakdown incident', 'Block(s)', 'Date and time',
@@ -3847,7 +3854,7 @@ def _build_tashkent_docx(output_path, _ctx):
             add_paragraph(doc, 'Longest events (informational):', italic=True)
             rows = []
             for _, r in alarm_sum['longest'].iterrows():
-                trig = str(r['Trigger name'])[:50]
+                trig = str(r['Trigger name'])
                 if bool(r.get('is_excluded', False)):
                     excl_lbl = str(r.get('excluded_by', '') or 'exclusion')
                     trig = f"{trig}  (during {excl_lbl})"
