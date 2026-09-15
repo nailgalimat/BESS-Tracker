@@ -1,20 +1,30 @@
 /**
  * sw.js — Service Worker for BESS Field Log PWA
  * Strategy: Cache-first for app shell, network-first for API calls.
+ *
+ * Every PWA change: bump V here AND the ?v= on the css/js tags in index.html,
+ * to the same number. The shell is cached under the exact URLs index.html
+ * requests. It used to cache /app/js/app.js while the page asked for
+ * app.js?v=11: after an update the old cache was deleted, and the first start
+ * without network got HTML (the /app/ fallback) instead of the script — the
+ * app did not open on site.
  */
 
-const CACHE  = 'bess-v11';
+const V      = '12';
+const CACHE  = 'bess-v' + V;
 const SHELL  = [
   '/app/',
-  '/app/css/app.css',
-  '/app/js/db.js',
-  '/app/js/api.js',
-  '/app/js/app.js',
+  '/app/css/app.css?v=' + V,
+  '/app/js/db.js?v=' + V,
+  '/app/js/api.js?v=' + V,
+  '/app/js/app.js?v=' + V,
   '/app/manifest.json',
   '/app/icons/icon-192.png',
 ];
 
 // ── Install: cache app shell ─────────────────────────────────────────────────
+// addAll is all-or-nothing: if any shell file fails to download, this version
+// does not install and the previous one (with its cache) stays in charge.
 self.addEventListener('install', e => {
   e.waitUntil(
     caches.open(CACHE)
@@ -23,7 +33,7 @@ self.addEventListener('install', e => {
   );
 });
 
-// ── Activate: delete old caches ──────────────────────────────────────────────
+// ── Activate: delete old caches (only once the new shell is fully cached) ────
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys()
@@ -52,19 +62,29 @@ self.addEventListener('fetch', e => {
 
   // App shell → cache-first, network fallback
   e.respondWith(
-    caches.match(e.request).then(cached => {
-      if (cached) return cached;
-      return fetch(e.request).then(res => {
-        // Cache only successful GET responses
-        if (res.ok && e.request.method === 'GET') {
-          const clone = res.clone();
-          caches.open(CACHE).then(c => c.put(e.request, clone));
-        }
-        return res;
-      }).catch(() =>
-        // Offline and not in cache → serve index as fallback
-        caches.match('/app/')
-      );
-    })
+    caches.match(e.request)
+      // A shell file under another ?v= (a page cached before the update) is
+      // still the right file: this cache holds exactly one version of each.
+      .then(cached => cached || (url.origin === self.location.origin
+                                 && url.pathname.startsWith('/app/')
+                                 ? caches.match(e.request, { ignoreSearch: true })
+                                 : undefined))
+      .then(cached => {
+        if (cached) return cached;
+        return fetch(e.request).then(res => {
+          // Cache only successful GET responses
+          if (res.ok && e.request.method === 'GET') {
+            const clone = res.clone();
+            caches.open(CACHE).then(c => c.put(e.request, clone));
+          }
+          return res;
+        }).catch(() =>
+          // Offline and not cached: a page navigation gets the app; a script or
+          // stylesheet must not be answered with HTML.
+          e.request.mode === 'navigate'
+            ? caches.match('/app/')
+            : new Response('', { status: 504, statusText: 'Offline' })
+        );
+      })
   );
 });

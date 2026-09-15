@@ -783,8 +783,37 @@ class PlannerPage(QWidget):
         if dlg.exec_() != QDialog.Accepted:
             return
         date, hours, notes = dlg.values()
-        out = pl.complete_item(it['id'], actual_date=date, actual_hours=hours,
-                               notes=notes)
+        from services import report_workflow_service as rw
+        if (it.get('counts_as_downtime') and hours > rw.PM_CONFIRM_HOURS
+                and QMessageBox.question(
+                    self, 'Long PM', f'{hours:g} h of PM on one block in one day — is that right?',
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes):
+            return
+        try:
+            out = pl.complete_item(it['id'], actual_date=date, actual_hours=hours,
+                                   notes=notes)
+        except rw.PMValidationError as e:
+            QMessageBox.warning(self, 'Cannot mark done', '\n'.join(e.problems))
+            return
+        except rw.PMDuplicateError as e:
+            d = e.duplicates[0]
+            ex = d['existing']
+            box = QMessageBox(self)
+            box.setWindowTitle('PM already recorded')
+            box.setText(
+                f"Block {d['block']} on {d['date']} already has a PM record: "
+                f"{rw.fmt_hours(ex.get('hours'))} h ({ex.get('source') or 'entered earlier'})"
+                f" — “{ex.get('description') or ''}”.\n\n"
+                "One PM is charged once. Which hours are right?")
+            keep = box.addButton(f"Keep {rw.fmt_hours(ex.get('hours'))} h", QMessageBox.AcceptRole)
+            repl = box.addButton(f"Use {hours:g} h", QMessageBox.DestructiveRole)
+            box.addButton(QMessageBox.Cancel)
+            box.exec_()
+            if box.clickedButton() not in (keep, repl):
+                return
+            out = pl.complete_item(it['id'], actual_date=date, actual_hours=hours,
+                                   notes=notes,
+                                   on_duplicate='link' if box.clickedButton() is keep else 'update')
         self._reload()
         if out['wrote_downtime']:
             self.summary.setText(
@@ -915,6 +944,11 @@ class PlannerPage(QWidget):
                f"{res['completed']} already had an actual date — their downtime "
                f"was recorded." if res.get('completed') else '',
                f"{res['skipped']} blank row(s) skipped." if res['skipped'] else '']
+        if res.get('notes'):
+            msg.append('')
+            msg.append(f"{len(res['notes'])} completion(s) matched a PM record that "
+                       "already existed — no second record was added:")
+            msg += ['   • ' + p for p in res['notes'][:8]]
         if res['problems']:
             msg.append('')
             msg.append(f"{len(res['problems'])} row(s) could not be used:")

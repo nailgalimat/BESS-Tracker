@@ -64,6 +64,7 @@ hidden = [
     'database.db_manager',
     'services.analytics_service',
     'services.availability_service',
+    'services.availability_inputs_service',
     'services.scada_report_service',
     'services.bukhara_report_service',
     'services.docx_renderer',

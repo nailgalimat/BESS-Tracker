@@ -73,6 +73,13 @@ The math is applied in two slightly different ways:
 
 Both follow the same "cap-then-remove-from-denominator" pattern: `excluded_effective = min(excluded, plant_outage)`, then `adjusted = (scheduled − plant_outage) / (scheduled − excluded_effective)`. This guarantees `excluded_hours=0` produces byte-identical output to the pre-exclusion code path — so any new report that doesn't use exclusions still calculates exactly as before.
 
+### PM records and the month's availability inputs
+
+- **One PM record per (project, plant block, date).** Every PM write — phone event, planner completion, Excel import, the Monthly Reports PM table — goes through `report_workflow_service.record_pm` / `update_pm_record`, which validate (`validate_pm`: a block, the whole plant only as `'all'`; 0 < h ≤ 24; dates 2020-01-01..tomorrow), split multi-block entries, and raise `PMDuplicateError` for a block-day that already has a record (callers answer `update` / `skip`, the planner `link`). `pm_as_unavailability` charges a block-day once and never treats an empty block as the whole plant. `pm_activities.source/source_ref` say who wrote a record. Do not insert into `pm_activities` directly.
+- **Phone events** go through `availability_inputs_service.route_field_event`: PM applies unless it needs a decision; `counts` / `excluded` always wait in `field_event_queue` until confirmed on the Monthly Reports → Availability inputs tab (real times and blocks) or rejected. Nothing in the queue counts.
+- **A PM record covers its own stop** in the Tashkent engine (`pm_stop_windows`: on the PM date, the longest run of the block out of operation that overlaps 07:00–19:00); its SCADA downtime is not counted, the PM hours are, and its alarms are tagged like a Scheduled Maintenance window's (`tag_alarms_with_exclusions`), so they leave 3.2 / 5.1 / Faults-Warnings / 5.2. A stop with no PM record for that block and day is never covered. Logged as "PM stop … / PM-covered"; `test_pm_covers_stop.py` pins the definition. Only `pm_activities` rows (marked `pm_id` in `report_inputs`) trigger it.
+- The PWA shell is cached under the exact `?v=` URLs: bump `V` in `backend/static/sw.js` and the `?v=` in `index.html` together. Manual check: `tests/PWA_OFFLINE_CHECK.md`.
+
 ### Report generators (`services/{scada,bukhara,tashkent}_report_service.py`)
 
 Three coexisting generators, **kept deliberately independent** — the Bukhara module's docstring explicitly says it does not import or modify the older `scada_report_service.py`. UI dispatches by site type. All three:

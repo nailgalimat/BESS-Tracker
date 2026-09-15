@@ -169,12 +169,27 @@ def get_item(item_id: int) -> Optional[dict]:
         conn.close()
 
 
+def _owns_pm_record(conn, item_id: int, pm_id) -> bool:
+    """Whether the PM record a job points at was written by that job. A job can
+    also point at a record someone else wrote (the phone's, linked when the job
+    was closed on the same block-day); undoing the job must not delete that."""
+    if not pm_id:
+        return False
+    r = conn.execute("SELECT source, source_ref FROM pm_activities WHERE id=?",
+                     (pm_id,)).fetchone()
+    if not r:
+        return False
+    src, ref = (r[0] or ''), (r[1] or '')
+    return (src in ('planner', 'import') and ref == str(item_id)) or (src == '' and ref == '')
+
+
 def delete_item(item_id: int):
-    """Removes the job and any downtime row it wrote."""
+    """Removes the job and the downtime row it wrote (a record it only linked
+    to stays)."""
     it = get_item(item_id)
     conn = get_connection()
     try:
-        if it and it.get('pm_activity_id'):
+        if it and _owns_pm_record(conn, item_id, it.get('pm_activity_id')):
             conn.execute("DELETE FROM pm_activities WHERE id=?",
                          (it['pm_activity_id'],))
         conn.execute("DELETE FROM plan_items WHERE id=?", (item_id,))
@@ -235,14 +250,23 @@ def get_items(project_id: int, date_from: str = None, date_to: str = None,
 # ── Doing the work ───────────────────────────────────────────────────────────
 
 def complete_item(item_id: int, actual_date: str = None,
-                  actual_hours: float = None, notes: str = '') -> dict:
+                  actual_hours: float = None, notes: str = '',
+                  on_duplicate: str = 'raise', source: str = 'planner') -> dict:
     """Mark a job done — and, when its type counts as downtime, write the
-    `pm_activities` row the monthly report reads.
+    `pm_activities` record the monthly report reads, through
+    report_workflow_service.record_pm (one record per block-day, validated).
 
-    Re-completing the same job updates the row it already wrote rather than
-    adding a second one, so correcting an entry cannot double-charge
-    availability.
+    Re-completing the same job updates the record it already wrote, so
+    correcting an entry cannot double-charge availability. When the block-day
+    already has a record from somewhere else — the technician's phone PM, say —
+    `on_duplicate` decides, and nothing is written until it does:
+      'raise'  — PMDuplicateError (the planner page asks)
+      'link'   — keep that record and its hours; the job points at it
+      'update' — put this job's hours on that record; the job points at it
+    A downtime type without a block raises PMValidationError: an empty block
+    used to charge the whole plant.
     """
+    from services import report_workflow_service as rw
     it = get_item(item_id)
     if not it:
         raise ValueError(f'No plan item {item_id}')
@@ -250,33 +274,54 @@ def complete_item(item_id: int, actual_date: str = None,
     if actual_hours is None:
         actual_hours = it.get('planned_hours') or 0
 
+    pm_id = it.get('pm_activity_id')
+    wrote_downtime, linked = False, None
+    if _type_counts_downtime(it['project_id'], it['type_code']) and actual_hours > 0:
+        if not it.get('block'):
+            raise rw.PMValidationError(
+                ['this job has no block - set the block before marking it done '
+                 '(PM hours are charged per block)'])
+        desc = (it.get('title') or '').strip() or 'Planned maintenance'
+        own = pm_id and rw.get_pm_record(pm_id)
+        conn = get_connection()
+        try:
+            owned = bool(own) and _owns_pm_record(conn, item_id, pm_id)
+        finally:
+            conn.close()
+        if owned:
+            rw.update_pm_record(pm_id, str(it['block']), actual_date, actual_date,
+                                actual_hours, desc)
+        else:
+            res = rw.record_pm(it['project_id'], str(it['block']), actual_date,
+                               actual_date, actual_hours, desc, source=source,
+                               source_ref=str(item_id),
+                               on_duplicate={'link': 'skip'}.get(on_duplicate, on_duplicate))
+            ids = res['created'] + res['updated']
+            if res['skipped']:                       # 'link': the existing record stays
+                linked = res['skipped'][0]['existing']
+                pm_id = linked['id']
+            elif ids:
+                pm_id = ids[0]
+                rec = rw.get_pm_record(pm_id) or {}
+                if not res['created'] and not (rec.get('source') == source
+                                               and rec.get('source_ref') == str(item_id)):
+                    linked = rec                     # 'update': someone else's record
+            if linked and not linked.get('source'):
+                # A record from before `source` existed would read as this job's
+                # own, and reopening the job would delete it. Say whose it is.
+                from services.availability_inputs_service import _inferred_pm_sources
+                who = _inferred_pm_sources(it['project_id']).get(linked['id'], 'desktop')
+                conn = get_connection()
+                try:
+                    conn.execute("UPDATE pm_activities SET source=? WHERE id=? "
+                                 "AND COALESCE(source,'')=''", (who, linked['id']))
+                    conn.commit()
+                finally:
+                    conn.close()
+        wrote_downtime = True
+
     conn = get_connection()
     try:
-        pm_id = it.get('pm_activity_id')
-        wrote_downtime = False
-        if _type_counts_downtime(it['project_id'], it['type_code']) and actual_hours > 0:
-            y, m = int(actual_date[:4]), int(actual_date[5:7])
-            blocks = str(it['block']) if it.get('block') else ''
-            desc = (it.get('title') or '').strip() or 'Planned maintenance'
-            if pm_id:
-                conn.execute("""
-                    UPDATE pm_activities
-                       SET year=?, month=?, affected_blocks=?, date_from=?,
-                           date_to=?, hours=?, description=?
-                     WHERE id=?
-                """, (y, m, blocks, actual_date, actual_date,
-                      float(actual_hours), desc, pm_id))
-            else:
-                cur = conn.execute("""
-                    INSERT INTO pm_activities
-                        (project_id, year, month, affected_blocks, date_from,
-                         date_to, hours, description)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (it['project_id'], y, m, blocks, actual_date, actual_date,
-                      float(actual_hours), desc))
-                pm_id = cur.lastrowid
-            wrote_downtime = True
-
         conn.execute("""
             UPDATE plan_items
                SET status='done', actual_date=?, actual_hours=?, actual_notes=?,
@@ -289,15 +334,17 @@ def complete_item(item_id: int, actual_date: str = None,
         conn.close()
     return {'item_id': item_id, 'actual_date': actual_date,
             'actual_hours': float(actual_hours),
-            'pm_activity_id': pm_id, 'wrote_downtime': wrote_downtime}
+            'pm_activity_id': pm_id, 'wrote_downtime': wrote_downtime,
+            'linked_existing': linked}
 
 
 def reopen_item(item_id: int):
-    """Undo a completion, taking its downtime row with it."""
+    """Undo a completion, taking the downtime row it wrote with it (a record it
+    only linked to stays)."""
     it = get_item(item_id)
     conn = get_connection()
     try:
-        if it and it.get('pm_activity_id'):
+        if it and _owns_pm_record(conn, item_id, it.get('pm_activity_id')):
             conn.execute("DELETE FROM pm_activities WHERE id=?",
                          (it['pm_activity_id'],))
         conn.execute("""
@@ -626,20 +673,31 @@ def import_from_excel(project_id: int, path: str, mapping: dict,
     finally:
         conn.close()
 
-    completed = 0
+    # An imported completion never adds a second PM record for a block-day: if
+    # one exists (the technician's phone PM, the PM tab), the job is linked to
+    # it and its hours stay — and the summary says so, with both figures.
+    completed, notes = 0, []
     for item_id, r in zip(ids, rows):
         if r['actual_date'] or r['actual_hours'] is not None:
             try:
-                complete_item(item_id, actual_date=r['actual_date'],
-                              actual_hours=r['actual_hours'])
+                out = complete_item(item_id, actual_date=r['actual_date'],
+                                    actual_hours=r['actual_hours'],
+                                    on_duplicate='link', source='import')
                 completed += 1
+                ex = out.get('linked_existing')
+                if ex:
+                    notes.append(
+                        f"{r['title']}: block {r['block']} on {out['actual_date']} already "
+                        f"had a PM record (#{ex['id']}, {float(ex.get('hours') or 0):g} h) — kept it, "
+                        f"the file says {out['actual_hours']:g} h; change it under "
+                        f"Monthly Reports → Availability inputs if the file is right")
             except Exception as e:                    # noqa: BLE001
                 problems.append(f"{r['title']}: could not record completion — {e}")
 
     log(f'Imported {made} job(s), {completed} already done; '
         f'{skipped} blank row(s); {len(problems)} problem(s).')
     return {'imported': made, 'completed': completed, 'skipped': skipped,
-            'problems': problems, 'plan_id': plan_id}
+            'problems': problems, 'notes': notes, 'plan_id': plan_id}
 
 
 def export_customer_excel(project_id: int, year: int, month: int, path: str,

@@ -829,12 +829,21 @@ def _parse_manual_unavail(manual_unavailability):
     ('Block 17', 'LC2', '02'...). Single source of truth for the contractual
     availability, the 4.4.1 table and the heatmap so they can't drift apart.
     """
+    def _day(v):
+        # The database stores ISO dates. pandas applies dayfirst even to those,
+        # so '2026-08-01' read as 8 January: every row dated the 1st-12th fell
+        # outside the month and its downtime silently vanished (Aug 2026: six
+        # PM rows, 96 PCS unit-h). Only typed dates are day-first.
+        s = str(v or '').strip()
+        if re.match(r'\d{4}-\d{1,2}-\d{1,2}', s):
+            return pd.to_datetime(s)
+        return pd.to_datetime(s, dayfirst=True)
+
     out = []
     for m in (manual_unavailability or []):
         try:
-            d_from = pd.to_datetime(m.get('date_from'), dayfirst=True)
-            d_to   = pd.to_datetime(m.get('date_to') or m.get('date_from'),
-                                    dayfirst=True)
+            d_from = _day(m.get('date_from'))
+            d_to   = _day(m.get('date_to') or m.get('date_from'))
             if pd.isna(d_from) or pd.isna(d_to):
                 continue
             bm = re.search(r'\d+', str(m.get('block') or ''))
@@ -861,11 +870,251 @@ def _parse_manual_unavail(manual_unavailability):
     return out
 
 
+BESS_CONTAINER_FAULT_RE = r'System Fault Status:\s*(?:DCDC fault|CMU fault)'
+
+
+def bess_container_fault_episodes(alarms):
+    """Periods a whole BESS container was in fault, from the alarm log.
+
+    The BSC raises 'System Fault Status: DCDC fault / CMU fault' for the
+    container as a whole; a fault on one of its eight DC/DC modules or CMUs
+    alone does not raise it, and the container keeps running on the other
+    seven (block 28, 3-5 Aug 2026: module 5 out for 42 h, every PCS of the block
+    cycling normally). Overlapping rows of one container merge into one
+    episode. Returns [{block, lc, container, start, end, triggers}].
+    """
+    if not isinstance(alarms, dict):
+        return []
+    p = alarms.get('production_dedup')
+    if p is None or p.empty:
+        p = alarms.get('production')
+    if p is None or p.empty or 'Element' not in p.columns:
+        return []
+    ids = p['Element'].astype(str).str.extract(r'^BSC\s+(\d+)\.(\d+)\.(\d+)\s*$')
+    hit = ids[0].notna() & p['Trigger name'].astype(str).str.contains(
+        BESS_CONTAINER_FAULT_RE, case=False, regex=True)
+    if not hit.any():
+        return []
+    f = p[hit].assign(block=ids.loc[hit, 0].astype(int), lc=ids.loc[hit, 1].astype(int),
+                      container=ids.loc[hit, 2].astype(int))
+    f['_a'] = pd.to_datetime(f['Activated'], errors='coerce')
+    f['_d'] = pd.to_datetime(f['Deactivation'], errors='coerce')
+    period_end = pd.concat([pd.to_datetime(p['Activated'], errors='coerce'),
+                            pd.to_datetime(p['Deactivation'], errors='coerce')]).max()
+    f['_d'] = f['_d'].fillna(period_end)                 # still active at month end
+    f = f.dropna(subset=['_a', '_d']).sort_values('_a')
+    out = []
+    for (b, lc, c), g in f.groupby(['block', 'lc', 'container'], sort=True):
+        cur = None
+        for _, r in g.iterrows():
+            trig = str(r['Trigger name']).split(':')[-1].strip()
+            if cur is not None and r['_a'] <= cur['end']:
+                cur['end'] = max(cur['end'], r['_d'])
+                cur['triggers'].add(trig)
+            else:
+                cur = {'block': int(b), 'lc': int(lc), 'container': int(c),
+                       'start': r['_a'], 'end': r['_d'], 'triggers': {trig}}
+                out.append(cur)
+    for e in out:
+        e['triggers'] = sorted(e['triggers'])
+    return out
+
+
+def _bess_fault_down(p, episodes, in_window):
+    """PCS unit-hours lost to whole-container BESS faults that the LC status and
+    PCS fault flag do not show. Marks nothing in `p`; returns one row per
+    episode that cost time: {block, lc, container, unit, start, end, hours,
+    triggers}.
+
+    For each episode, a unit of that LC counts while it is non-operating, its
+    block is in operation (some unit of the block charging or discharging — so
+    a block idle for dispatch costs nothing), the time is not already counted
+    and not inside an exclusion window. The faulted container stops one unit;
+    the other keeps cycling and stops only when its own container is full or
+    empty, so the unit idle longest is taken. Which PCS unit a BSC container
+    feeds is not in the exports (block 28, 30 Aug 2026: BSC 28.02.01 in fault,
+    PCS 28.02.02 idle), so it is read off the data rather than the names.
+    """
+    if not episodes or p is None or p.empty:
+        return []
+    blocks = {e['block'] for e in episodes}
+    sub = p[p['block_id'].isin(blocks)]
+    if sub.empty:
+        return []
+    operating = (~sub['nonop']).groupby([sub['Datetime'], sub['block_id']]).transform('any')
+    free = sub['nonop'] & operating & ~sub['down'] & ~in_window.loc[sub.index]
+    taken = pd.Series(False, index=sub.index)
+    rows = []
+    for e in sorted(episodes, key=lambda e: e['start']):
+        cand = (free & ~taken & (sub['block_id'] == e['block'])
+                & (sub['container_id'] == e['lc'])
+                # end exclusive: a 5-min alarm is one 5-min sample, not two
+                & (sub['Datetime'] >= e['start']) & (sub['Datetime'] < e['end']))
+        if not cand.any():
+            continue
+        per_unit = cand.groupby(sub['unit']).sum()
+        unit = int(per_unit.idxmax())
+        hit = cand & (sub['unit'] == unit)
+        taken |= hit
+        rows.append(dict(e, unit=unit, hours=float(hit.sum()) * 5 / 60.0))
+    return rows
+
+
+# ── A PM record covers its own stop ──────────────────────────────────────────
+# User decision 2026-09-15. A PM is charged exactly once — by the hours entered
+# for it (technician or desktop). Without this the block's FAULT / non-operating
+# samples during the PM isolation are counted from SCADA as well, and the PM
+# hours land on top: block 25 on 24.08 showed ~5.8 h FAULT (~23 PCS unit-h)
+# during its PM beside the 16 unit-h of PM hours. In August the PM stops sat
+# inside Scheduled Maintenance windows; from September no window is needed for
+# PM — windows stay for grid outages and KKS/EPC works.
+#
+# The PM stop, precisely: on each date of a PM record (project, plant block,
+# date), take the samples of that block on that date (00:00-24:00). The block
+# is out of operation at a timestamp when any of its LCs is in a state other
+# than PM_OPERATING_STATES — so FAULT, STOPPED, STOPPING, STARTING and the
+# '0' / empty status the LC shows while de-energised all count as "out". A run
+# is consecutive "out" samples no more than PM_RUN_GAP_MIN apart. Of the runs
+# that overlap the working day (PM_WORKDAY, 07:00-19:00), the longest is the
+# PM stop (the earlier one on a tie). Within [run start, run end) the block's
+# down samples are not counted; everything else that day still is — a fault
+# later in the day is a separate run and counts as before. A day with a second
+# stop inside the working day is named in the log, so a wrong pick is visible.
+# Only records from pm_activities trigger it (report_workflow_service marks
+# their downtime rows with `pm_id`); manual rows typed as PM do not.
+
+PM_WORKDAY = (7, 19)
+PM_RUN_GAP_MIN = 10
+PM_OPERATING_STATES = {'RUNNING', 'STANDBY', 'INITIAL STATUS', 'SELF-CHECKING',
+                       'LOW ENERGY COMPENSATION'}
+
+
+def pm_records_from_manual(manual_unavailability):
+    """The PM records among the report's manual downtime rows — the rows
+    report_workflow_service.pm_as_unavailability marks with `pm_id`.
+    Returns [{pm_id, block, date_from, date_to, hours}] (dates normalised)."""
+    out = []
+    for m in (manual_unavailability or []):
+        if m.get('pm_id') is None:
+            continue
+        try:
+            b = int(m.get('block'))
+        except (TypeError, ValueError):
+            continue
+        d1 = pd.to_datetime(str(m.get('date_from') or '')[:10], errors='coerce')
+        d2 = pd.to_datetime(str(m.get('date_to') or '')[:10], errors='coerce')
+        if pd.isna(d1):
+            continue
+        if pd.isna(d2) or d2 < d1:
+            d2 = d1
+        out.append({'pm_id': m['pm_id'], 'block': b, 'date_from': d1.normalize(),
+                    'date_to': d2.normalize(),
+                    'hours': float(m.get('downtime_h') or 0)})
+    return out
+
+
+def pm_stop_windows(ws_long, pm_records, workday=PM_WORKDAY):
+    """The stop each PM record covers, found in the LC working status — see the
+    definition above. One dict per (block, date) of the records:
+    {pm_id, block, date, start, end, clock_hours, pm_hours, other_stops,
+    exclusion}; start/end are None (and exclusion None) when the block did not
+    stop in the working day, in which case only the entered hours count.
+    `exclusion` is the same window as an exclusion-style dict (inclusive
+    minutes) for builders that take those."""
+    if ws_long is None or ws_long.empty or not pm_records:
+        return []
+    blocks = {r['block'] for r in pm_records}
+    ws = ws_long[['Datetime', 'block_id', 'working_status']].copy()
+    ws['block_id'] = pd.to_numeric(ws['block_id'], errors='coerce')
+    ws = ws[ws['block_id'].isin(blocks)]
+    ws['Datetime'] = pd.to_datetime(ws['Datetime'], errors='coerce')
+    ws = ws.dropna(subset=['Datetime'])
+    if ws.empty:
+        return []
+    ws['out'] = ~ws['working_status'].astype(str).str.strip().str.upper().isin(
+        PM_OPERATING_STATES)
+    per_ts = (ws.groupby(['block_id', 'Datetime'])['out'].any()
+                .reset_index().sort_values(['block_id', 'Datetime']))
+    step, gap = pd.Timedelta(minutes=5), pd.Timedelta(minutes=PM_RUN_GAP_MIN)
+    out, seen = [], set()
+    for rec in sorted(pm_records, key=lambda r: (r['date_from'], r['pm_id'])):
+        b = rec['block']
+        for day in pd.date_range(rec['date_from'], rec['date_to'], freq='D'):
+            if (b, day) in seen:
+                continue
+            seen.add((b, day))
+            g = per_ts[(per_ts['block_id'] == b) & (per_ts['Datetime'] >= day)
+                       & (per_ts['Datetime'] < day + pd.Timedelta(days=1))]
+            runs, s, p = [], None, None
+            for t, o in zip(g['Datetime'], g['out']):
+                if o:
+                    if s is not None and t - p <= gap:
+                        p = t
+                    else:
+                        if s is not None:
+                            runs.append((s, p + step))
+                        s = p = t
+                elif s is not None:
+                    runs.append((s, p + step))
+                    s = p = None
+            if s is not None:
+                runs.append((s, p + step))
+            w0 = day + pd.Timedelta(hours=workday[0])
+            w1 = day + pd.Timedelta(hours=workday[1])
+            cand = [r for r in runs if r[0] < w1 and r[1] > w0]
+            row = {'pm_id': rec['pm_id'], 'block': b, 'date': day, 'start': None,
+                   'end': None, 'clock_hours': 0.0, 'pm_hours': rec['hours'],
+                   'other_stops': [], 'exclusion': None}
+            if cand:
+                start, end = max(cand, key=lambda r: (r[1] - r[0], -r[0].value))
+                # inclusive minutes up to just before the first sample back in
+                # operation (and before midnight when the stop runs past it)
+                last = end - pd.Timedelta(minutes=1)
+                row.update(start=start, end=end,
+                           clock_hours=(end - start).total_seconds() / 3600.0,
+                           other_stops=[r for r in cand if r != (start, end)],
+                           exclusion={'exclusion_type': 'Preventive maintenance',
+                                      'date_from': f'{start:%Y-%m-%d}',
+                                      'time_from': f'{start:%H:%M}',
+                                      'date_to': f'{last:%Y-%m-%d}',
+                                      'time_to': f'{last:%H:%M}',
+                                      'affected_blocks': str(b)})
+            out.append(row)
+    return out
+
+
+def _pm_stop_mask(dt_s, blk_s, pm_stops):
+    """Rows (Datetime, block_id) inside a PM stop: [start, end) on its block."""
+    mask = pd.Series(False, index=dt_s.index)
+    for w in (pm_stops or []):
+        if w.get('start') is None:
+            continue
+        mask |= ((blk_s == w['block']) & (dt_s >= w['start']) & (dt_s < w['end']))
+    return mask
+
+
+def _pm_cover(dt_s, blk_s, down, pm_stops, unit_h=5 / 60.0):
+    """Apply the PM-stop rule to a down mask. Returns (down without the covered
+    samples, covered mask, covered unit-hours, one row per stop with its
+    covered_unit_hours)."""
+    covered = _pm_stop_mask(dt_s, blk_s, pm_stops) & down
+    rows = []
+    for w in (pm_stops or []):
+        if w.get('start') is None:
+            rows.append(dict(w, covered_unit_hours=0.0))
+            continue
+        wm = covered & (blk_s == w['block']) & (dt_s >= w['start']) & (dt_s < w['end'])
+        rows.append(dict(w, covered_unit_hours=float(wm.sum()) * unit_h))
+    return down & ~covered, covered, float(covered.sum()) * unit_h, rows
+
+
 def calc_contractual_availability_tashkent(ws_long, pcs_long=None,
                                             container_capacity_kwh=2752.0,
                                             fault_states=None, exclusions=None,
                                             pcs_fault_long=None,
-                                            manual_unavailability=None):
+                                            manual_unavailability=None,
+                                            bess_fault_episodes=None,
+                                            pm_stops=None):
     """
     Contractual BESS availability (capacity-weighted, fault-shutdown only):
 
@@ -889,6 +1138,18 @@ def calc_contractual_availability_tashkent(ws_long, pcs_long=None,
     as the 4.4.1 manual rows: block, lc, date_from/to, downtime_h). Each adds
     downtime_h x the affected capacity (LC given -> 2 PCS units; whole block
     -> 4 units) to the unavailable time, reported separately for transparency.
+
+    `bess_fault_episodes` (optional, from bess_container_fault_episodes): a
+    whole BESS container in fault stops its PCS unit while the LC status stays
+    RUNNING/STANDBY and the PCS fault flag stays clear, so neither test above
+    sees it. That unit's idle time while its block was in operation is added —
+    see _bess_fault_down. PCS-refined method only.
+
+    `pm_stops` (optional, from pm_stop_windows): a PM record covers its own
+    stop — down samples of the block inside it are not counted, because the PM
+    is charged by its entered hours (in `manual_unavailability`). Reported as
+    `pm_covered_unit_hours` and per stop in `pm_stop_rows`. Applied after the
+    exclusion windows, so time already excluded is not counted as covered.
 
     Granularity (hierarchy: block = 2 LC = 4 PCS units = 4 BESS containers;
     1 PCS unit = 1 container = `container_capacity_kwh`, default 2752 kWh):
@@ -958,14 +1219,23 @@ def calc_contractual_availability_tashkent(ws_long, pcs_long=None,
         else:
             p['down'] = p['lc_fault'] & p['nonop']
         excluded_unit_hours = 0.0
+        in_window = pd.Series(False, index=p.index)
         if exclusions:
-            em = _tashkent_exclusion_mask(p['Datetime'], p['block_id'], exclusions) & p['down']
+            in_window = _tashkent_exclusion_mask(p['Datetime'], p['block_id'], exclusions)
+            em = in_window & p['down']
             excluded_unit_hours = float(em.sum()) * 5 / 60.0
             p['down'] = p['down'] & ~em
+        p['down'], pm_covered, pm_covered_unit_hours, pm_rows = _pm_cover(
+            p['Datetime'], p['block_id'], p['down'], pm_stops)
+        if pm_stops:
+            in_window = in_window | _pm_stop_mask(p['Datetime'], p['block_id'], pm_stops)
+        bess_rows = _bess_fault_down(p, bess_fault_episodes, in_window)
+        bess_unit_hours = sum(r['hours'] for r in bess_rows)
         n_units = p.groupby(['block_id', 'container_id', 'unit']).ngroups
         if n_units > 0:
             manual_unit_hours = _manual_unit_hours(per_lc_units=2)
-            down_unit_hours  = float(p['down'].sum()) * 5 / 60.0 + manual_unit_hours
+            down_unit_hours  = (float(p['down'].sum()) * 5 / 60.0 + manual_unit_hours
+                                + bess_unit_hours)
             installed_kwh    = n_units * container_capacity_kwh
             unavail_caphours = down_unit_hours * container_capacity_kwh
             total_caphours   = total_hours * installed_kwh
@@ -978,6 +1248,10 @@ def calc_contractual_availability_tashkent(ws_long, pcs_long=None,
                 'down_unit_hours':   down_unit_hours,
                 'excluded_unit_hours': excluded_unit_hours,
                 'manual_unit_hours': manual_unit_hours,
+                'pm_covered_unit_hours': pm_covered_unit_hours,
+                'pm_stop_rows':      pm_rows,
+                'bess_fault_unit_hours': bess_unit_hours,
+                'bess_fault_rows':   bess_rows,
                 'used_unit_fault':   used_unit_fault,
                 'unit_capacity_kwh': container_capacity_kwh,
                 'n_units':           n_units,
@@ -995,6 +1269,8 @@ def calc_contractual_availability_tashkent(ws_long, pcs_long=None,
         em = _tashkent_exclusion_mask(ws['Datetime'], ws['block_id'], exclusions) & ws['lc_fault']
         excluded_unit_hours = float(em.sum()) * 5 / 60.0
         ws['lc_fault'] = ws['lc_fault'] & ~em
+    ws['lc_fault'], _, pm_covered_unit_hours, pm_rows = _pm_cover(
+        ws['Datetime'], ws['block_id'], ws['lc_fault'], pm_stops)
     lc_capacity_kwh  = container_capacity_kwh * 2     # 1 LC = 2 units
     manual_unit_hours = _manual_unit_hours(per_lc_units=1)
     down_unit_hours  = float(ws['lc_fault'].sum()) * 5 / 60.0 + manual_unit_hours
@@ -1010,6 +1286,8 @@ def calc_contractual_availability_tashkent(ws_long, pcs_long=None,
         'down_unit_hours':   down_unit_hours,
         'excluded_unit_hours': excluded_unit_hours,
         'manual_unit_hours': manual_unit_hours,
+        'pm_covered_unit_hours': pm_covered_unit_hours,
+        'pm_stop_rows':      pm_rows,
         'used_unit_fault':   False,
         'unit_capacity_kwh': lc_capacity_kwh,
         'n_units':           n_lc,
@@ -1396,8 +1674,16 @@ def _drop_general_events(df, trigger_col='Trigger name'):
                 .groupby(trigger_col)
                 .agg(events=(trigger_col, 'size'), total_h=('_h', 'sum'))
                 .reset_index()
-                .rename(columns={trigger_col: 'trigger'})
-                .sort_values('total_h', ascending=False))
+                .rename(columns={trigger_col: 'trigger'}))
+    if 'Activated' in gone.columns:
+        # clock time, not the sum over every channel reporting it (see elapsed_hours)
+        from services.bukhara_report_service import elapsed_hours
+        act = pd.to_datetime(gone['Activated'], errors='coerce')
+        end = act + pd.to_timedelta(dur, unit='m')
+        blk = gone['Element'].astype(str).str.extract(r'(\d+)')[0] if 'Element' in gone.columns else None
+        rows['total_h'] = [elapsed_hours(act[m], end[m], None if blk is None else blk[m])
+                           for m in (gone[trigger_col] == t for t in rows['trigger'])]
+    rows = rows.sort_values('total_h', ascending=False)
     return df[~umb], umbrella_summary(rows.to_dict('records'),
                                       name_key='trigger', events_key='events',
                                       hours_key='total_h')
@@ -1524,8 +1810,17 @@ def generate_tashkent_report(
     cls = load_alarm_classifications(alarm_classifications_path)
     alarms = apply_alarm_classifications(alarms, cls)
 
+    # A PM record covers its own stop (see pm_stop_windows) — for availability
+    # and, user decision 2026-09-15, for the alarm tables too: the isolation
+    # alarms of a PM stop are tagged exactly like those inside a Scheduled
+    # Maintenance window, so 3.2, 5.1, the Faults/Warnings tables and 5.2 drop
+    # them by the same is_excluded path. Only the PM-covered stop of a block
+    # that has a PM record that day; the same alarm at another time still counts.
+    pm_stops = pm_stop_windows(ws_long, pm_records_from_manual(manual_unavailability))
+    pm_windows = [w['exclusion'] for w in pm_stops if w['exclusion']]
+
     # Tag alarms inside availability-exclusion windows (no-op if none)
-    alarms = tag_alarms_with_exclusions(alarms, exclusions or [])
+    alarms = tag_alarms_with_exclusions(alarms, list(exclusions or []) + pm_windows)
 
     log("Summarising alarms...")
     alarm_sum = summarize_alarms(alarms)
@@ -1807,8 +2102,12 @@ def generate_tashkent_report(
     # planned maintenance/restoration (exclusion windows) removed and the real
     # downtime + dominant cause attributed. Replaces the old heatmap-red scan
     # that reported 0.0 h / OTHER because it only saw production alarms.
+    # A PM record covers its own stop (pm_stops, found above): its SCADA
+    # downtime is left out of 4.4.1 and of the contractual figure, since the PM
+    # hours already count. Listed in the log so the stops attributed to PM can
+    # be checked.
     unavail_reasons = build_unavailability_reasons_tashkent(
-        ws_long, alarms=alarms, exclusions=exclusions,
+        ws_long, alarms=alarms, exclusions=list(exclusions or []) + pm_windows,
     )
     # Say so when an exclusion window looks shorter than the stop it covers —
     # see exclusion_edge_report. Only the operator sees this, in the log.
@@ -1888,7 +2187,50 @@ def generate_tashkent_report(
     contractual_avail = calc_contractual_availability_tashkent(
         ws_long, pcs_long=pcs_unit_status, exclusions=exclusions,
         pcs_fault_long=pcs_unit_fault,
-        manual_unavailability=manual_unavailability)
+        manual_unavailability=manual_unavailability,
+        bess_fault_episodes=bess_container_fault_episodes(alarms),
+        pm_stops=pm_stops)
+
+    _pm_rows = (contractual_avail or {}).get('pm_stop_rows') or []
+    for r in _pm_rows:
+        if r['start'] is None:
+            log(f"  PM record #{r['pm_id']}: block {r['block']} {r['date']:%d-%b} — no stop "
+                f"in the working day; only its {r['pm_hours']:g} h count")
+            continue
+        log(f"  PM stop: block {r['block']} {r['start']:%d-%b %H:%M}–{r['end']:%H:%M} "
+            f"({r['clock_hours']:.1f} h) covered by PM record #{r['pm_id']} "
+            f"({r['pm_hours']:g} h entered) — {r['covered_unit_hours']:.1f} unit-h of "
+            f"SCADA downtime not counted")
+        for s, e in r['other_stops']:
+            log(f"  ⚠  block {r['block']} {r['date']:%d-%b}: a second stop "
+                f"{s:%H:%M}–{e:%H:%M} in the working day still counts — if that was "
+                f"the PM, check the PM record's date and the stop times")
+    if _pm_rows:
+        log(f"PM-covered: {sum(1 for r in _pm_rows if r['start'] is not None)} stop(s), "
+            f"{(contractual_avail or {}).get('pm_covered_unit_hours', 0.0):.1f} unit-h "
+            f"of SCADA downtime left to the PM hours")
+
+    # A BESS container fault that stopped a PCS unit is downtime like any other,
+    # so 4.4.1 lists it beside the fault shutdowns it now counts with.
+    _bess = (contractual_avail or {}).get('bess_fault_rows') or []
+    for r in _bess:
+        log(f"  BESS container fault: PCS {r['block']:02d}.{r['lc']:02d}.{r['unit']:02d} idle "
+            f"{r['hours']:.1f} h while block {r['block']} ran ({r['start']:%d-%b %H:%M}–"
+            f"{r['end']:%d-%b %H:%M}, BSC {r['block']:02d}.{r['lc']:02d}.{r['container']:02d})")
+    if _bess:
+        bdf = pd.DataFrame([{
+            'block_id': r['block'], 'container_id': r['lc'], 'status': 'FAULT',
+            'date_from': r['start'].normalize(), 'date_to': r['end'].normalize(),
+            'n_days': (r['end'].normalize() - r['start'].normalize()).days + 1,
+            'cause': 'BESS container fault: ' + ', '.join(r['triggers']) + ' (1 PCS unit)',
+            'subsystem': 'BESS', 'severity': '', 'fault_events': None,
+            'downtime_h': r['hours'], 'manual': False,
+        } for r in _bess])
+        unavail_reasons = (bdf if unavail_reasons is None or unavail_reasons.empty else
+                           pd.concat([unavail_reasons, bdf], ignore_index=True, sort=False)
+                           .sort_values('downtime_h', ascending=False).reset_index(drop=True))
+        # rows built without the flag must not read as operator-entered ('*')
+        unavail_reasons['manual'] = unavail_reasons['manual'].fillna(False).astype(bool)
 
     # Per-reason summary for the Services Provision section.
     #
@@ -2413,6 +2755,12 @@ def generate_tashkent_report(
             f'{ca["manual_unit_hours"]:,.1f} {ca["unit_label"]}-h to the '
             f'fault-shutdown time.'
             if ca.get('manual_unit_hours', 0) > 0 else '')
+        _excl_note += (
+            f' BESS container faults that stopped a PCS unit while its block was '
+            f'in operation add {ca["bess_fault_unit_hours"]:,.1f} '
+            f'{ca["unit_label"]}-h (the LC status stays healthy during such a '
+            f'fault, so the time is taken from the alarm log).'
+            if ca.get('bess_fault_unit_hours', 0) > 0 else '')
         story.append(Paragraph(
             f'<i>Hierarchy: 1 block = 2 LC = 4 PCS units = 4 BESS containers; '
             f'1 PCS unit = 1 container = 2,752 kWh. Installed nameplate across '
@@ -3384,6 +3732,12 @@ def _build_tashkent_docx(output_path, _ctx):
             f"{ca['manual_unit_hours']:,.1f} {ca['unit_label']}-h to the "
             f"fault-shutdown time."
             if ca.get('manual_unit_hours', 0) > 0 else "")
+        _excl_note += (
+            f" BESS container faults that stopped a PCS unit while its block was "
+            f"in operation add {ca['bess_fault_unit_hours']:,.1f} "
+            f"{ca['unit_label']}-h (the LC status stays healthy during such a "
+            f"fault, so the time is taken from the alarm log)."
+            if ca.get('bess_fault_unit_hours', 0) > 0 else "")
         add_paragraph(doc,
             f"Hierarchy: 1 block = 2 LC = 4 PCS units = 4 BESS containers; "
             f"1 PCS unit = 1 container = 2,752 kWh. Installed nameplate across "

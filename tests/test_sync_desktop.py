@@ -220,7 +220,8 @@ try:
     st = sc.pull_field_events()
     H.check(st['applied'] == 1 and not any(w['item_id'] == ev_id for w in sc.inbox_waiting()),
             'applies on the next sync once the project exists')
-    H.check(len(rw.get_pm_activities(77, 2026, 9)) == 1, 'and its PM hours reach the report tables')
+    H.check(len(rw.get_pm_activities(77, 2026, 9)) == 2,
+            'and its PM hours reach the report tables, one record per block (1-2)')
 
     wo_id = str(uuid.uuid4())
     requests.post(URL + '/stock/writeoff', headers=PH, json={
@@ -237,6 +238,58 @@ try:
                      ('MOB-' + wo_id,)).fetchone()[0]
     c.close()
     H.check(n_tx == 1 and not sc.inbox_waiting(), 'applied once the warehouse exists, exactly once')
+
+    print('\n=== S6: phone counts / excluded wait for the desktop (QA H-1, H-2, G4) ===')
+    import json
+    import services.availability_inputs_service as avi
+    import services.availability_service as av
+
+    def inputs77():
+        return json.dumps(rw.report_inputs(77, 2026, 9), sort_keys=True, default=str)
+
+    def post_event(ev):
+        # exactly the payload the v11 PWA sends — no new fields required
+        return requests.post(URL + '/events', headers=PH, json=ev)
+
+    before = inputs77()
+    olds = [
+        {'id': str(uuid.uuid4()), 'project_id': 77, 'kind': 'excluded', 'blocks': '',
+         'date_from': '2026-09-12', 'date_to': '2026-09-13', 'hours': 3,
+         'exclusion_type': 'Grid Outage', 'description': 'grid 14:00-17:00',
+         'created_at': '2026-09-12T12:00:00.000Z'},
+        {'id': str(uuid.uuid4()), 'project_id': 77, 'kind': 'counts', 'blocks': 'abc',
+         'date_from': '2026-09-12', 'date_to': '2026-09-12', 'hours': 5,
+         'exclusion_type': '', 'description': 'LC trip'},
+        {'id': str(uuid.uuid4()), 'project_id': 77, 'kind': 'pm', 'blocks': '',
+         'date_from': '2026-09-12', 'date_to': '2026-09-12', 'hours': 3,
+         'exclusion_type': '', 'description': 'PM activity for 3 hours per checklist'},
+        {'id': str(uuid.uuid4()), 'project_id': 77, 'kind': 'pm', 'blocks': '1',
+         'date_from': '2026-09-10', 'date_to': '2026-09-10', 'hours': 3,
+         'exclusion_type': '', 'description': 'second PM on block 1, 10.09'},
+    ]
+    H.check(all(post_event(e).status_code == 200 for e in olds),
+            'the server accepts the old phone payloads unchanged')
+    time.sleep(SETTLE)
+    st = sc.pull_field_events()
+    H.check(st['errors'] == 0 and st['applied'] == 4, 'all four taken by the desktop: {}'.format(st))
+    H.check(inputs77() == before,
+            'report_inputs identical before and after the pull (no 00:00 window, no block 0, '
+            'no whole-plant PM, no second PM on block 1)')
+    waiting = {q['event_id']: q for q in avi.pending_events(77, 2026, 9)}
+    H.check(set(e['id'] for e in olds) <= set(waiting),
+            'all four wait on the desktop: {}'.format(sorted(q['reason'] for q in waiting.values())))
+    sync_config.field_cursor = '0'
+    sc.pull_field_events()
+    H.check(inputs77() == before and len(avi.pending_events(77, 2026, 9)) == len(waiting),
+            'a full re-pull adds nothing')
+    eid = avi.confirm_excluded_event(olds[0]['id'], 'Grid Outage', '2026-09-12', '14:00',
+                                     '2026-09-12', '17:00', '1-4', 'grid lost')
+    ex = [x for x in av.get_exclusions(project_id=77, year=2026, month=9) if x['id'] == eid]
+    H.check(ex and (ex[0]['time_from'], ex[0]['time_to']) == ('14:00', '17:00') and inputs77() != before,
+            'confirmed with the real window 14:00-17:00: now it is a report input')
+    avi.reject_event(olds[1]['id'], 'not ours')
+    H.check(not any(q['event_id'] == olds[1]['id'] for q in avi.pending_events(77, 2026, 9)),
+            'rejected: gone from the waiting list, never an input')
 
     print('\n=== a full re-pull does not invent conflicts ===')
     m = str(uuid.uuid4())

@@ -833,13 +833,14 @@ class WorkLogForm(QWidget):
         mode = self.impact_combo.currentData()
         counts = (mode == "counts")
         excluded = (mode == "excluded")
-        self.downtime_h.setEnabled(counts or excluded)
+        self.downtime_h.setEnabled(counts)
         self.lc_combo.setEnabled(counts)
         self.excl_type.setEnabled(excluded)
         if counts:
             self.av_hint.setText("Counted as downtime — reduces availability in the monthly report.")
         elif excluded:
-            self.av_hint.setText("Credited back — this downtime will NOT reduce availability.")
+            self.av_hint.setText("Credited back — the exclusion window is this report's "
+                                 "Start–End time, on the block chosen above.")
         else:
             self.av_hint.setText("Choose how this event affects the monthly availability figure.")
 
@@ -865,6 +866,23 @@ class WorkLogForm(QWidget):
         date_str = self.date_edit.date().toString("yyyy-MM-dd")
         block    = self.block_combo.currentData()
         impact   = self.impact_combo.currentData()
+
+        # Availability impact is checked before anything is saved. An
+        # "excluded" window takes the report's real Start/End times — it used
+        # to run from 00:00 for the downtime hours, so a 14:00-17:00 outage
+        # was excluded as 00:00-03:00 and the real stop stayed counted.
+        t_start = self.start_time.time().toString("HH:mm")
+        t_end   = self.end_time.time().toString("HH:mm")
+        if impact == "excluded" and t_end <= t_start:
+            QMessageBox.warning(
+                self, "Exclusion window",
+                "Set the Start and End time of the downtime — the exclusion window "
+                "is taken from them (End must be after Start on the report's date).")
+            return
+        if impact == "counts" and not (0 < self.downtime_h.value() <= 24):
+            QMessageBox.warning(
+                self, "Downtime", "Downtime that counts must be more than 0 and at most 24 h.")
+            return
 
         entry_id = save_work_log(
             project_id       = pid,
@@ -931,24 +949,22 @@ class WorkLogForm(QWidget):
                 unavail_id = add_manual_unavailability(
                     block=int(plant_block), date_from=date_str, date_to=date_str,
                     downtime_h=h, lc=self.lc_combo.currentData(), cause=desc,
-                    project_id=pid, year=y, month=mo)
+                    project_id=pid, year=y, month=mo, source="work_report")
                 set_work_log_unavailability(entry_id, unavail_id)
                 extras.append(f"{h:g} h counted as unavailability")
             except Exception as e:
                 QMessageBox.warning(self, "Availability",
                     f"Work report saved, but the downtime event failed:\n{e}")
-        elif impact == "excluded" and h > 0 and plant_block:
+        elif impact == "excluded" and plant_block:
             try:
-                total_min = min(int(round(h * 60)), 1439)
-                time_to = f"{total_min // 60:02d}:{total_min % 60:02d}"
                 excl_id = add_exclusion(
                     exclusion_type=self.excl_type.currentData(),
                     date_from=date_str, date_to=date_str,
-                    time_from="00:00", time_to=time_to,
+                    time_from=t_start, time_to=t_end,
                     affected_blocks=str(plant_block), description=desc,
                     project_id=pid, year=y, month=mo)
                 set_work_log_exclusion(entry_id, excl_id)
-                extras.append(f"{h:g} h excluded ({self.excl_type.currentData()}) — not counted")
+                extras.append(f"{t_start}–{t_end} excluded ({self.excl_type.currentData()}) — not counted")
             except Exception as e:
                 QMessageBox.warning(self, "Availability",
                     f"Work report saved, but the exclusion failed:\n{e}")

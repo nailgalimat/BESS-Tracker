@@ -652,7 +652,7 @@ const App = {
     const n = this._picked ? this._picked.size : 0;
     document.getElementById('bp-count').textContent =
       n ? `${n} selected — ${this._formatBlocks([...this._picked])}`
-        : 'none selected (empty means the whole plant)';
+        : 'none selected — pick the block(s), or “All” for the whole plant';
   },
 
   blockPickAll() {
@@ -679,11 +679,11 @@ const App = {
   onEventKind() {
     const k = document.getElementById('ev-kind').value;
     document.getElementById('ev-excltype-group').style.display = (k === 'excluded') ? 'block' : 'none';
-    document.getElementById('ev-blocks-label').textContent = (k === 'counts') ? 'Block(s) *' : 'Block(s)';
+    document.getElementById('ev-blocks-label').textContent = 'Block(s) *';
     const hint = document.getElementById('ev-hint');
-    if (k === 'pm')          hint.textContent = 'PM counts as downtime — reduces availability in the monthly report (per block × duration).';
-    else if (k === 'counts') hint.textContent = 'Counted as unavailability — reduces availability.';
-    else                     hint.textContent = 'Credited back — does NOT reduce availability.';
+    if (k === 'pm')          hint.textContent = 'PM counts as downtime — the hours you enter reduce availability for each block (one record per block per day, up to 24 h).';
+    else if (k === 'counts') hint.textContent = 'Counted as unavailability once the office confirms the real times and blocks. Put the times in the description.';
+    else                     hint.textContent = 'Credited back (does NOT reduce availability) once the office confirms the real start and end time. Put the times in the description.';
   },
 
   async saveEvent() {
@@ -696,9 +696,19 @@ const App = {
     const blocks = document.getElementById('ev-blocks').value.trim();
     const hours  = parseFloat(document.getElementById('ev-hours').value) || 0;
     const desc   = document.getElementById('ev-desc').value.trim();
+    // Same rules as the desktop (report_workflow_service.validate_pm): an empty
+    // block field used to mean the whole plant — a 3-h PM without a block
+    // charged all 70 blocks. The whole plant is now the explicit "All" choice.
     if (!from) { _showErr(errEl, 'Pick a date.'); return; }
-    if (kind === 'counts' && !blocks) { _showErr(errEl, 'Block is required for downtime that counts.'); return; }
-    if ((kind === 'counts' || kind === 'excluded') && !(hours > 0)) { _showErr(errEl, 'Enter the downtime duration in hours.'); return; }
+    if (from > _today(1)) { _showErr(errEl, 'The date is in the future.'); return; }
+    if (to < from) { _showErr(errEl, 'The end date is before the start date.'); return; }
+    if (!blocks) { _showErr(errEl, 'Choose the block(s) — tap “Choose blocks”, or “All” for the whole plant.'); return; }
+    if (!this._parseBlocks(blocks).length || /[^\d,\s-]/.test(blocks)) {
+      _showErr(errEl, 'Blocks must be numbers: 3 or 1,2,3 or 1-8.'); return;
+    }
+    if (!(hours > 0)) { _showErr(errEl, 'Enter the duration in hours (more than 0).'); return; }
+    if (kind === 'pm' && hours > 24) { _showErr(errEl, 'PM hours are per block per day — at most 24.'); return; }
+    if (kind === 'pm' && hours > 12 && !confirm(`${hours} h of PM on one block in one day — is that right?`)) return;
 
     localStorage.setItem('last_project_id', pid);
     const ev = {
@@ -773,7 +783,7 @@ const App = {
       const when = r.date_from + (r.date_to && r.date_to !== r.date_from ? ' → ' + r.date_to : '');
       const bits = [];
       if (r.blocks) bits.push('Block(s) ' + _esc(r.blocks));
-      else if (r.kind === 'pm') bits.push('whole plant');
+      else bits.push('no block — the office will ask');
       if (r.hours > 0) bits.push(r.hours + ' h');
       if (r.exclusion_type) bits.push(_esc(r.exclusion_type));
       html += `<div class="ev-card">
@@ -990,6 +1000,24 @@ const App = {
       }
     }
 
+    // ── Photos that failed to upload earlier ─────────────────────────────────
+    // Photos used to go up only with an entry applied in this same push, and a
+    // failure was swallowed — so a photo that missed its moment never went.
+    // Every sync now retries each photo still waiting whose entry is on the
+    // server (the upload is idempotent by photo id).
+    try {
+      for (const img of await DB.getPendingImages()) {
+        const entry = await DB.getEntry(img.entry_id);
+        if (!entry || entry.sync_status !== 'synced') continue;
+        try {
+          const blob = await fetch(img.data_url).then(x => x.blob());
+          await API.uploadImage(img.entry_id, blob, img.filename, img.id);
+          img.upload_status = 'uploaded';
+          await DB.saveImage(img);
+        } catch (_) { /* still offline or rejected — next sync tries again */ }
+      }
+    } catch (_) { /* photo retry must never break the sync */ }
+
     // ── Pull delta from server (paginated) ────────────────────────────────────
     let cursor  = await DB.getMeta('last_cursor', null);
     let hasMore = true;
@@ -1034,9 +1062,14 @@ function _uuid() {
   });
 }
 
-function _today() {
+// The phone's own calendar date. toISOString() is UTC: from 00:00 to 05:00
+// Tashkent time it gave yesterday, so a night entry on the 1st fell into the
+// previous month's report.
+function _today(offsetDays = 0) {
   const d = new Date();
-  return d.toISOString().split('T')[0];
+  d.setDate(d.getDate() + offsetDays);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
 function _fmtDate(iso) {

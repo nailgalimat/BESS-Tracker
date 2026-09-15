@@ -40,19 +40,34 @@ if umb_pos and real_pos:
     assert min(umb_pos) > max(real_pos)
 
 print('\n=== the queue of jobs ===')
-before = [r for r in ats.get_unreported_faults(PID, 2026, 8, min_hours=0.25, limit=5000)]
-n_dry = sum(1 for r in before if 'dry node' in str(r['trigger_name']).lower())
-print('   Aug backlog: {} alarm(s); dry-node still in it: {}'.format(len(before), n_dry))
-print('   (only those with no specific fault beside them survive)')
-
+# Built on alarms planted in this copy of the database, not on whatever August
+# still holds: once the month's exclusion windows were corrected, the real
+# shadowed dry-node alarms moved inside them and there was nothing left to drop.
+# Month 12 of 2030 so no real alarm or window can touch it.
 conn = dbm.get_connection()
-tot_dry = conn.execute(
-    "SELECT COUNT(*) FROM alarm_events WHERE year=2026 AND month=8 "
-    "AND category='production' AND is_excluded=0 AND duration_min>=15 "
-    "AND trigger_name LIKE '%dry node%'").fetchone()[0]
-conn.close()
-print('   dry-node alarms that qualified before the rule: {}'.format(tot_dry))
-assert n_dry < tot_dry, 'the shadowed ones should have been dropped'
+def plant(element, block, trigger, start, minutes):
+    conn.execute("""INSERT INTO alarm_events
+        (project_id, element, block, category, trigger_name, activated, deactivated,
+         duration_min, is_excluded, year, month)
+        VALUES (?, ?, ?, 'production', ?, ?, datetime(?, ?), ?, 0, 2030, 12)""",
+        (PID, element, block, trigger, start, start, '+{} minutes'.format(minutes), minutes))
+plant('BSC 50.01', 50, 'BSC - System Fault Status: Input dry node fault', '2030-12-05 10:00:00', 120)
+plant('BSC 50.01', 50, 'BSC - System Fault Status: BSC-PCS comm fault', '2030-12-05 10:05:00', 90)
+plant('BSC 51.01', 51, 'BSC - System Fault Status: Input dry node fault', '2030-12-05 10:00:00', 120)
+conn.commit(); conn.close()
+
+queue = ats.get_unreported_faults(PID, 2030, 12, min_hours=0.25, limit=5000)
+dry = sorted(r['block'] for r in queue if 'dry node' in str(r['trigger_name']).lower())
+real = [r['block'] for r in queue if 'BSC-PCS' in str(r['trigger_name'])]
+print('   planted: dry node + BSC-PCS on block 50; dry node alone on block 51')
+print('   queue keeps dry node on blocks {} and the real fault on {}'.format(dry, real))
+assert real == [50], 'the specific fault must stay in the queue'
+assert dry == [51], 'dry node beside a real fault is its shadow; alone it is the only evidence'
+
+# and the month as it stands: every dry node still queued has nothing beside it
+aug = ats.get_unreported_faults(PID, 2026, 8, min_hours=0.25, limit=5000)
+print('   Aug backlog: {} alarm(s), dry-node in it: {}'.format(
+    len(aug), sum(1 for r in aug if 'dry node' in str(r['trigger_name']).lower())))
 
 print('\n=== the page shows the footnote ===')
 win._navigate(mwmod.PAGE_EQUIPMENT)

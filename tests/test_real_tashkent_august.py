@@ -21,8 +21,17 @@ GOLDEN = {
     # corrected against the SCADA data — starts moved to when the plant actually
     # went down, restoration of the blocks that did not come back added, and the
     # KKS windows stretched to the stop they covered. Both rounds user-approved;
-    # exclusion_edge_report is what found them.
-    'availability_pct': 99.81,
+    # exclusion_edge_report is what found them. 99.81 -> 99.85 on 2026-09-14: KKS
+    # windows widened from the morning isolation to the restart, and 04.08
+    # 11:09-17:20 blocks 14-16 recorded as the planned switching it was.
+    # 99.85 -> 99.81 the same day: PM counts as unavailability (4 planned hours
+    # per block, the rest of the stop under the KKS window — user-confirmed), and
+    # the six PM rows dated 1st-12th had been read as January-December and
+    # dropped. 24 PM x 4 h x 4 PCS = 384 unit-h + 18.4 fault = 402.4.
+    # 99.81 -> 99.80 the same day: whole-container BESS faults now count
+    # (bess_container_fault_episodes) — block 28 LC2, 30.08 07:30-14:20, one PCS
+    # unit idle while the block charged, LC status RUNNING throughout.
+    'availability_pct': 99.80,
     # calendar year to date: counter at 31 Aug minus counter at 1 Mar, plus the
     # January and February records (snapshots begin in March 2026)
     'cycles_in_year': 249.6,
@@ -72,8 +81,10 @@ ARGS = dict(
     pcs_fault_path=f('PCS fault status.xlsx'),
     site_name='ACWA BESS Tashkent',
     project_details={'Plant': 'Tashkent BESS'},
-    progress_callback=lambda *a, **k: None,
+    progress_callback=None,          # set below: the log is checked too
 )
+LOG = []
+ARGS['progress_callback'] = LOG.append
 
 # Word only: that is what the report is delivered as. The PDF renderer still
 # lays the report out (its story is built either way, so a crash in it still
@@ -126,6 +137,25 @@ shown = [t for t in triggers if t in docx_text]
 H.check(bool(shown), 'long names do appear in full, e.g. "{}"'.format(
     max(shown, key=len) if shown else '-'))
 
+print('\n=== power-loss alarms from planned stops stay out of the fault tables ===')
+# Islanding protection and SCU-DSP comm exceptions are what a PCS raises when its
+# supply goes. In August 2026 386 h of them sat in the Faults/Warnings tables —
+# raised a few minutes before each grid-outage window, and on every KKS day from
+# the morning isolation (~09:30) while the windows had the afternoon work times.
+pl_hours, pl_rows = 0.0, []
+for t in Document(docx).tables:
+    hdr = [c.text.strip() for c in t.rows[0].cells]
+    if len(hdr) > 5 and hdr[1] in ('Fault Name', 'Warning') and hdr[5] == 'Total h':
+        for row in t.rows[1:]:
+            cells = [c.text.strip() for c in row.cells]
+            if any(k in cells[1] for k in ('Islanding protection', 'SCU-DSP comm exception')):
+                h = float(cells[5].replace(',', '') or 0)
+                pl_hours += h
+                pl_rows.append('{} {} h'.format(cells[1].replace('\n', ' ')[-40:], cells[5]))
+for r in pl_rows:
+    print('   ' + r)
+H.check(pl_hours < 25, 'islanding / SCU-DSP left in the tables: {:.1f} h (was 386 h)'.format(pl_hours))
+
 print('\n=== 4.4.1 unavailability reasons: no grid-outage edges on Aug 7-12 ===')
 edge = []
 for t in Document(docx).tables:
@@ -159,10 +189,30 @@ for key, label in (('cycles_month', 'Number of Cycles in Reported Month'),
 
 print('\n=== a second run of the same month changes nothing ===')
 docx2 = os.path.join(H.WORK, 'August_2026_rerun.docx')
-generate_tashkent_report(output_path=docx2, output_format='docx', **ARGS)
+# the re-run also carries a safety incident from the Narrative tab (QA H-8)
+SAFETY = [{'incident': 'TEST-MARKER near miss at block 12', 'equipment_loss': '-',
+           'weight': 'minor', 'countermeasure': 'toolbox talk'}]
+generate_tashkent_report(output_path=docx2, output_format='docx',
+                         **dict(ARGS, safety_incidents=SAFETY))
 H.check(docx_value(docx2, 'Accumulative Number of Cycles in one Year')
         == docx_value(docx, 'Accumulative Number of Cycles in one Year'),
         'Cycles in one Year stable on re-run (it used to grow by a month per run)')
+
+
+print('\n=== safety incidents reach section 6 ===')
+_txt2 = '\n'.join([p.text for p in Document(docx2).paragraphs]
+                  + [c.text for t in Document(docx2).tables for r in t.rows for c in r.cells])
+H.check('No safety incidents in the reporting period.' in txt,
+        'nothing entered -> "No safety incidents in the reporting period."')
+H.check('TEST-MARKER near miss at block 12' in _txt2
+        and 'No safety incidents in the reporting period.' not in _txt2,
+        'an entered incident is printed instead (was always "No safety incidents")')
+
+print('\n=== a PM record covers its own stop: nothing to do in August ===')
+# August's PM was entered as manual rows inside Scheduled Maintenance windows;
+# it has no PM records, so the rule must not touch it (golden above unchanged).
+H.check(not any('PM stop' in str(m) or 'PM-covered' in str(m) or 'PM record #' in str(m) for m in LOG),
+        'no PM stop attributed in the August log')
 
 H.check(_digest(real_hist) == hist_before, 'the real KPI history file was not touched')
 

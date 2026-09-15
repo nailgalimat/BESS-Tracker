@@ -72,4 +72,16 @@ check('Feb 2027 = counter now - Dec 2026 close', v, 986.0 - 928.0, miss, [])
 print('\nCYCLES YEAR UNIT ' + ('SMOKE OK' if ok else 'FAILED'))
 H.check(ok, 'every cycles_in_year case')
 
+print('\n=== the month-over-month table ===')
+from services.bukhara_report_service import build_monthly_comparison
+stored = [rec('August 2026', 26.6), rec('June 2026', 25.7), rec('July 2026', 28.5)]
+cur = {'month': 'August 2026', 'year': 2026, 'month_num': 8, 'cycles_total': 26.63,
+       'avg_soc_pct': 48.7, 'avg_soh_pct': 99.0, 'rte_pct': 90.5,
+       'discharge_mwh': 20023, 'charge_mwh': 22125}
+tbl = build_monthly_comparison(cur, stored)
+H.check(list(tbl['month']) == ['June 2026', 'July 2026', 'August 2026'],
+        'months in date order, the current month once: {}'.format(list(tbl['month'])))
+H.check(list(tbl['cycles'].round(1)) == [25.7, 28.5, 26.6],
+        'past months show their cycles (they read "—" before)')
+
 H.finish()

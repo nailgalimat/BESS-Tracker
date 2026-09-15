@@ -10,7 +10,7 @@
   <title>BESS Field Log</title>
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="apple-touch-icon" href="/app/icons/icon-192.png" />
-  <link rel="stylesheet" href="/app/css/app.css?v=11" />
+  <link rel="stylesheet" href="/app/css/app.css?v=12" />
 </head>
 <body>
 
@@ -354,8 +354,8 @@
             onclick="App.retryEvents()">↻&nbsp; Retry sending pending records</button>
     <div id="ev-list" class="ev-list"></div>
     <p class="ev-hint">These records reach the desktop on the next sync, where
-      PM becomes a maintenance activity and downtime feeds the monthly
-      availability figure.</p>
+      PM becomes the block's PM record (one per block per day) and downtime
+      counts once the office confirms its real times and blocks.</p>
   </div>
 </div>
 
@@ -394,9 +394,9 @@
   <img id="lightbox-img" src="" alt="" />
 </div>
 
-<script src="/app/js/db.js?v=11"></script>
-<script src="/app/js/api.js?v=11"></script>
-<script src="/app/js/app.js?v=11"></script>
+<script src="/app/js/db.js?v=12"></script>
+<script src="/app/js/api.js?v=12"></script>
+<script src="/app/js/app.js?v=12"></script>
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/app/sw.js').catch(() => {});

@@ -733,9 +733,9 @@ def reapply_exclusions(project_id: int, year: int = None, month: int = None,
     frozen at what was known on the day it was imported, and re-importing
     fixes nothing because the import is idempotent.
     """
-    from services.availability_service import get_exclusions, _exclusion_windows
-    wins = _exclusion_windows(get_exclusions(project_id=project_id) or [])
+    from services.availability_service import get_exclusions, match_alarm_to_exclusions
 
+    exclusions = get_exclusions(project_id=project_id) or []
     where = ["project_id=?"]
     params = [project_id]
     if year is not None:
@@ -746,23 +746,16 @@ def reapply_exclusions(project_id: int, year: int = None, month: int = None,
     conn = get_connection()
     try:
         rows = conn.execute(
-            f"SELECT id, block, activated, is_excluded, excluded_by "
+            f"SELECT id, block, activated, deactivated, is_excluded, excluded_by "
             f"FROM alarm_events WHERE {' AND '.join(where)}", params).fetchall()
-        ts = pd.to_datetime([r['activated'] for r in rows], errors='coerce')
 
         updates = []
-        for r, t in zip(rows, ts):
-            hit_type = ''
-            if t is not None and not pd.isna(t):
-                blk = r['block']
-                for start, end, blocks, exc in wins:
-                    if not (start <= t <= end):
-                        continue
-                    if blocks is not None:
-                        if blk is None or int(blk) not in blocks:
-                            continue
-                    hit_type = exc.get('exclusion_type', '') or ''
-                    break
+        for r in rows:
+            # The report's own rule, so the Equipment page and the backlog
+            # agree with the report about which alarms a planned stop covers.
+            hit = match_alarm_to_exclusions(r['activated'], r['block'], exclusions,
+                                            deactivated_dt=r['deactivated'])
+            hit_type = (hit.get('exclusion_type', '') or '') if hit else ''
             was = (bool(r['is_excluded']), r['excluded_by'] or '')
             now = (bool(hit_type), hit_type)
             if was != now:

@@ -48,6 +48,22 @@ def _set_cell_bg(cell, rgb_hex: str):
     tc_pr.append(shd)
 
 
+def _full_width(table):
+    """Span the text column exactly, so banners and tables share both edges.
+    A left-aligned table in Word 2010 compatibility mode starts one cell
+    margin left of the text; a centred auto-width one does not — mixing the
+    two shifted every table 0.19 cm against its section banner."""
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    tblPr = table._tbl.tblPr
+    tblW = tblPr.find(qn('w:tblW'))
+    if tblW is None:
+        tblW = OxmlElement('w:tblW')
+        tblPr.insert(0, tblW)
+    tblW.set(qn('w:type'), 'pct')
+    tblW.set(qn('w:w'), '5000')                 # fiftieths of a percent: 100 %
+    return table
+
+
 def _make_doc(margin_cm=2.0):
     doc = Document()
     for section in doc.sections:
@@ -84,6 +100,7 @@ def add_heading(doc, text, level=2, color=NAVY):
 def add_section_banner(doc, text):
     """Light-blue full-width banner heading — mirrors PDF section_header look."""
     table = doc.add_table(rows=1, cols=1)
+    _full_width(table)
     cell = table.cell(0, 0)
     _set_cell_bg(cell, 'E8F0FD')
     p = cell.paragraphs[0]
@@ -138,7 +155,7 @@ def _add_runs(p, text, *, bold=False, italic=False, size=10, color=NAVY):
 def add_kpi_row(doc, items):
     """Render a row of KPI tiles as a 1-row table with a coloured top border."""
     table = doc.add_table(rows=2, cols=len(items))
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    _full_width(table)
     for i, (val, lbl, accent_hex) in enumerate(items):
         # Top cell — big value
         v_cell = table.cell(0, i)
@@ -177,7 +194,7 @@ def add_styled_table(doc, headers, rows):
     """Table with NAVY header, alternating row backgrounds, grid lines.
     Cells render plain text (HTML <b>...</b> markers are stripped)."""
     table = doc.add_table(rows=len(rows) + 1, cols=len(headers))
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    _full_width(table)
     table.autofit = True
 
     # Header
@@ -267,7 +284,7 @@ def add_cover(doc, report_month, site_name, n_blocks, period_str):
     """Cover page — banner + info table."""
     # Banner
     table = doc.add_table(rows=2, cols=1)
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    _full_width(table)
     c1 = table.cell(0, 0)
     _set_cell_bg(c1, '1A2B45')
     p1 = c1.paragraphs[0]
@@ -289,6 +306,7 @@ def add_cover(doc, report_month, site_name, n_blocks, period_str):
         ('Report type:',      'Monthly Operations & Performance Summary'),
     ]
     info = doc.add_table(rows=len(info_rows), cols=2)
+    _full_width(info)
     for i, (label, val) in enumerate(info_rows):
         c_l = info.cell(i, 0); c_v = info.cell(i, 1)
         _set_cell_bg(c_l, 'F5F7FA'); _set_cell_bg(c_v, 'F5F7FA')

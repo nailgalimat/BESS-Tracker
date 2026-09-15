@@ -366,8 +366,12 @@ def add_manual_unavailability(block: int, date_from: str, date_to: str,
                                cause: str = "",
                                project_id: Optional[int] = None,
                                year: Optional[int] = None,
-                               month: Optional[int] = None) -> int:
-    """Returns the new entry id. lc None = whole block (both LCs)."""
+                               month: Optional[int] = None,
+                               time_from: str = "", time_to: str = "",
+                               source: str = "") -> int:
+    """Returns the new entry id. lc None = whole block (both LCs). time_from /
+    time_to are informational (the report counts downtime_h); source is
+    phone | desktop | work_report, '' for older callers."""
     if year is None or month is None:          # see add_exclusion
         y, m = _report_month_of(date_from)
         year = year if year is not None else y
@@ -378,13 +382,34 @@ def add_manual_unavailability(block: int, date_from: str, date_to: str,
         cur.execute("""
             INSERT INTO manual_unavailability
                 (block, lc, date_from, date_to, downtime_h, cause,
-                 project_id, year, month)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 project_id, year, month, time_from, time_to, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (int(block), lc, date_from, date_to, float(downtime_h), cause,
-              project_id, year, month))
+              project_id, year, month, time_from or '', time_to or '', source or ''))
         new_id = cur.lastrowid
         conn.commit()
         return new_id
+    finally:
+        conn.close()
+
+
+def update_manual_unavailability(entry_id: int, block: int, date_from: str,
+                                 date_to: str, downtime_h: float,
+                                 lc: Optional[int] = None, cause: str = "",
+                                 time_from: str = "", time_to: str = ""):
+    """Edit a manual downtime row in place; the report month follows the date
+    (project and source are left as they are)."""
+    y, m = _report_month_of(date_from)
+    conn = get_connection()
+    try:
+        conn.execute("""
+            UPDATE manual_unavailability
+               SET block=?, lc=?, date_from=?, date_to=?, downtime_h=?, cause=?,
+                   time_from=?, time_to=?, year=COALESCE(?, year), month=COALESCE(?, month)
+             WHERE id=?
+        """, (int(block), lc, date_from, date_to, float(downtime_h), cause,
+              time_from or '', time_to or '', y, m, int(entry_id)))
+        conn.commit()
     finally:
         conn.close()
 
@@ -565,16 +590,27 @@ def _exclusion_windows(exclusions: List[dict]):
     return out
 
 
+ALARM_LEAD_MINUTES = 10
+
+
 def match_alarm_to_exclusions(activated_dt,
                                 block_id,
-                                exclusions: List[dict]) -> Optional[dict]:
+                                exclusions: List[dict],
+                                deactivated_dt=None,
+                                lead_minutes: float = ALARM_LEAD_MINUTES) -> Optional[dict]:
     """
     Return the first exclusion that covers (activated_dt, block_id), or None.
 
     Match rules (all must hold):
       - activated_dt is between exclusion start datetime and end datetime
         (using the same date_from + time_from / date_to + time_to fields
-         that _exclusion_hours uses, so semantics are consistent)
+         that _exclusion_hours uses, so semantics are consistent) — OR it came
+        up at most `lead_minutes` before the start and was still active when
+        the window began. A PCS sees the grid go 2-4 minutes before its LC
+        reports the fault the window is set by: in August 2026 every
+        outage's islanding alarms came up just ahead of the window and stayed
+        in the fault tables for the whole outage — 128 events, 293 h. An alarm
+        already running long before a planned stop is left alone.
       - if the exclusion lists affected_blocks, block_id must be in the
         list; if affected_blocks is empty / "all" / "all blocks", any
         block_id matches (including None — that's how plant-wide alarms
@@ -600,8 +636,17 @@ def match_alarm_to_exclusions(activated_dt,
         except (TypeError, ValueError):
             block_id_int = None
 
+    deact_ts = pd.to_datetime(deactivated_dt, errors='coerce') \
+        if deactivated_dt is not None else pd.NaT
+    lead = pd.Timedelta(minutes=float(lead_minutes or 0))
+
     for start_dt, end_dt, blocks, exc in _exclusion_windows(exclusions):
-        if not (start_dt <= activated_ts <= end_dt):
+        inside = start_dt <= activated_ts <= end_dt
+        # came up just before the stop and was still up when it began
+        leading = (lead > pd.Timedelta(0)
+                   and start_dt - lead <= activated_ts < start_dt
+                   and (pd.isna(deact_ts) or deact_ts >= start_dt))
+        if not (inside or leading):
             continue
         if blocks is None:
             return exc                 # plant-wide covers everything

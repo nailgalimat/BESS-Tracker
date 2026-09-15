@@ -282,6 +282,17 @@ class ExclusionDialog(QDialog):
                     it.setSelected(it.data(Qt.UserRole) in want)
                 self.blocks_list_widget.blockSignals(False)
 
+    def accept(self):
+        # A window that ends before it starts excludes nothing and hides the
+        # mistake; say so instead of saving it.
+        d = self.get_data()
+        if f"{d['date_to']} {d['time_to']}" <= f"{d['date_from']} {d['time_from']}":
+            QMessageBox.warning(self, "Exclusion window",
+                                "The window ends before it starts — check the "
+                                "dates and times.")
+            return
+        super().accept()
+
     def _set_full_day(self):
         self.time_from.setTime(QTime(0, 0))
         self.time_to.setTime(QTime(23, 59))

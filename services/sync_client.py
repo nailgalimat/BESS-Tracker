@@ -501,77 +501,25 @@ def pull_writeoffs() -> dict:
     return stats
 
 
-def _field_event_seen(event_id: str) -> bool:
-    conn = get_connection()
-    try:
-        return conn.execute(
-            "SELECT 1 FROM synced_field_events WHERE event_id=? LIMIT 1",
-            (event_id,)).fetchone() is not None
-    finally:
-        conn.close()
-
-
-def _mark_field_event(event_id: str, kind: str):
-    conn = get_connection()
-    try:
-        conn.execute(
-            "INSERT OR IGNORE INTO synced_field_events (event_id, kind) VALUES (?, ?)",
-            (event_id, kind))
-        conn.commit()
-    finally:
-        conn.close()
-
-
 def _apply_field_event(ev: dict) -> bool:
-    """Route one phone event into its report table. False if it was already
-    applied or is of a kind this desktop doesn't handle; raises if it cannot be
-    applied."""
-    from services.availability_service import (
-        add_manual_unavailability, add_exclusion, EXCLUSION_TYPES, parse_block_spec)
-    from services.report_workflow_service import add_pm_activity
-    if _field_event_seen(ev["id"]):
-        return False
-    pid = ev["project_id"]
-    df  = ev.get("date_from") or ""
-    dt  = ev.get("date_to") or df
-    hrs = float(ev.get("hours") or 0)
-    desc = ev.get("description") or ""
-    blocks_csv = ev.get("blocks") or ""
-    year  = int(df[:4]) if len(df) >= 4 else None
-    month = int(df[5:7]) if len(df) >= 7 else None
-    kind = ev.get("kind")
+    """Hand one phone event to availability_inputs_service.route_field_event.
+    True if it was taken now (a PM record written, or queued for the desktop);
+    False if it was handled before or is of an unknown kind; raises if it
+    cannot be handled yet.
 
-    if kind == "pm":
-        add_pm_activity(pid, year, month,
-                        affected_blocks=blocks_csv, date_from=df,
-                        date_to=dt, hours=hrs, description=desc)
-    elif kind == "counts":
-        for b in sorted(parse_block_spec(blocks_csv) or []) or [0]:
-            add_manual_unavailability(
-                block=b, date_from=df, date_to=dt, downtime_h=hrs,
-                lc=None, cause=desc or "Field-reported",
-                project_id=pid, year=year, month=month)
-    elif kind == "excluded":
-        et = ev.get("exclusion_type") or "Major Fault"
-        if et not in EXCLUSION_TYPES:
-            et = "Major Fault"
-        total_min = min(int(round(hrs * 60)), 1439)
-        time_to = f"{total_min // 60:02d}:{total_min % 60:02d}" if hrs > 0 else "23:59"
-        add_exclusion(exclusion_type=et, date_from=df, date_to=dt,
-                      time_from="00:00", time_to=time_to,
-                      affected_blocks=blocks_csv, description=desc,
-                      project_id=pid, year=year, month=month)
-    else:
-        return False
-
-    _mark_field_event(ev["id"], kind or "")
-    return True
+    "Counts" and "excluded" events no longer touch the report inputs here:
+    they wait on the Monthly Reports page until confirmed with real times and
+    blocks (they used to be written at once, 00:00 -> hours, junk blocks as
+    block 0). A PM event is written as one record per block-day unless it
+    cannot be, in which case it waits too."""
+    from services.availability_inputs_service import route_field_event
+    return route_field_event(ev) in ("applied", "queued")
 
 
 def pull_field_events() -> dict:
-    """Pull phone-captured PM / downtime / exclusion events and route each into
-    the matching report table. Deduped via synced_field_events so re-pulling
-    never double-counts. One that cannot be applied waits in the inbox and is
+    """Pull phone-captured PM / downtime / exclusion events and route each one
+    (see _apply_field_event). Deduped on the event id, so re-pulling never
+    double-counts. One that cannot be handled yet waits in the inbox and is
     retried every sync — PM hours from the phone feed the customer's
     availability, and used to vanish on a single failure."""
     stats = {"applied": 0, "errors": 0}

@@ -628,6 +628,25 @@ def initialize_database():
             if "project_id" not in _cols:      # manual_unavailability lacked it
                 c.execute(f"ALTER TABLE {_t} ADD COLUMN project_id INTEGER")
 
+        # Migration: where a PM record came from. The report's PM hours used to
+        # have five independent writers (phone event, planner completion, the
+        # Monthly Reports PM tab, Excel import, Work Report) and nothing tied a
+        # row to its origin, so the same block-day could be charged two or
+        # three times. `source` is phone | planner | import | desktop, and
+        # `source_ref` the phone event id or plan item id. Existing rows keep ''
+        # (the Availability inputs view infers their origin; nothing rewritten).
+        _pm_cols = [r[1] for r in c.execute("PRAGMA table_info(pm_activities)").fetchall()]
+        for _col in ("source", "source_ref"):
+            if _col not in _pm_cols:
+                c.execute(f"ALTER TABLE pm_activities ADD COLUMN {_col} TEXT DEFAULT ''")
+        # Manual downtime entered by hand (a block held in STANDBY after a gas
+        # alarm, say) may carry the clock times it was entered with; the report
+        # still counts downtime_h. `source` as above (phone | desktop | work_report).
+        _mu_cols = [r[1] for r in c.execute("PRAGMA table_info(manual_unavailability)").fetchall()]
+        for _col in ("time_from", "time_to", "source"):
+            if _col not in _mu_cols:
+                c.execute(f"ALTER TABLE manual_unavailability ADD COLUMN {_col} TEXT DEFAULT ''")
+
         # ── DAILY FIELD LOGS (work entries with photos) ───────────────────────
         # Separate from existing work_logs (fault/SAP tickets).
         # These are narrative daily activity logs with attached photos.
@@ -812,6 +831,33 @@ def initialize_database():
                 PRIMARY KEY (kind, item_id)
             )
         """)
+
+        # Phone events that wait for the desktop. "Counts" and "excluded"
+        # downtime from a phone used to go straight into the report inputs with
+        # invented times (a 3-h grid outage became 00:00 -> 03:00 next day on
+        # all 70 blocks; junk block text became block 0). Now they wait here
+        # until someone confirms them with real times and blocks, or rejects
+        # them. PM events that cannot be applied as they are — no block, hours
+        # out of range, or a PM record already exists for that block-day — wait
+        # here too. Nothing in this table counts towards availability.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS field_event_queue (
+                event_id    TEXT PRIMARY KEY,
+                project_id  INTEGER,
+                kind        TEXT NOT NULL,              -- pm | counts | excluded
+                year        INTEGER,
+                month       INTEGER,
+                payload     TEXT NOT NULL,              -- the event as the server sent it
+                reason      TEXT DEFAULT 'confirm',     -- confirm | duplicate | invalid
+                note        TEXT DEFAULT '',
+                status      TEXT DEFAULT 'pending',     -- pending | applied | rejected
+                applied_ref TEXT DEFAULT '',            -- e.g. 'manual:12,13' / 'exclusion:40' / 'pm:7'
+                received_at TEXT DEFAULT (datetime('now')),
+                resolved_at TEXT
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_feq_month "
+                  "ON field_event_queue(project_id, year, month, status)")
 
         # ── ENSURE MAIN WAREHOUSE EXISTS ──────────────────────────────────
         existing = c.execute(

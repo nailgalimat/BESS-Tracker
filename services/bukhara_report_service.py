@@ -494,9 +494,14 @@ def tag_alarms_with_exclusions(alarms, exclusions):
         # for a typical monthly report).
         is_excluded = []
         excluded_by = []
-        for activated, blk in zip(df['Activated'], block_ids):
+        deacts = (df['Deactivation'] if 'Deactivation' in df.columns
+                  else pd.Series(pd.NaT, index=df.index))
+        for activated, deactivated, blk in zip(df['Activated'], deacts, block_ids):
             blk_val = None if pd.isna(blk) else int(blk)
-            hit = match_alarm_to_exclusions(activated, blk_val, exclusions)
+            # deactivation lets an alarm that came up just before a stop, and
+            # was still up when it began, count as part of it
+            hit = match_alarm_to_exclusions(activated, blk_val, exclusions,
+                                            deactivated_dt=deactivated)
             if hit is not None:
                 is_excluded.append(True)
                 excluded_by.append(hit.get('exclusion_type', ''))
@@ -647,19 +652,31 @@ def build_monthly_comparison(current_kpis, history_records=None):
     can persist (e.g. in a DB or json file). For the first run, only the
     current month is returned.
     """
-    rows = []
-    if history_records:
-        for r in history_records:
-            rows.append(r)
-    rows.append({
-        'month':           current_kpis['month'],
-        'avg_soc_pct':     current_kpis.get('avg_soc_pct'),
-        'avg_soh_pct':     current_kpis.get('avg_soh_pct'),
-        'rte_pct':         current_kpis.get('rte_pct'),
-        'cycles':          current_kpis.get('cycles_total'),
-        'discharge_mwh':   current_kpis.get('discharge_mwh'),
-        'charge_mwh':      current_kpis.get('charge_mwh'),
-    })
+    # Three things the table got wrong before:
+    #  * stored months keep their cycles under 'cycles_total', and the table
+    #    reads 'cycles' — so every past month showed "—" for cycles;
+    #  * a month already in the history (any earlier run of it) was listed
+    #    twice, once from the file and once as this run;
+    #  * rows came out in whatever order the file held them.
+    def _row(r):
+        return {
+            'month':         r.get('month'),
+            'year':          r.get('year'),
+            'month_num':     r.get('month_num'),
+            'avg_soc_pct':   r.get('avg_soc_pct'),
+            'avg_soh_pct':   r.get('avg_soh_pct'),
+            'rte_pct':       r.get('rte_pct'),
+            'cycles':        r.get('cycles', r.get('cycles_total')),
+            'discharge_mwh': r.get('discharge_mwh'),
+            'charge_mwh':    r.get('charge_mwh'),
+        }
+
+    current = _row(current_kpis)
+    cur_key = history_key(current_kpis)
+    rows = [_row(r) for r in (history_records or [])
+            if cur_key is None or history_key(r) != cur_key]
+    rows.sort(key=lambda r: history_key(r) or (0, 0))
+    rows.append(current)                      # this run's figures, always last
     return pd.DataFrame(rows)
 
 
@@ -1246,6 +1263,36 @@ def _fmt_blocks_with_planned(blocks, planned_set, max_show=12):
     return s
 
 
+def elapsed_hours(starts, ends, blocks=None) -> float:
+    """Clock hours a set of events covered: overlapping events on one block
+    count once, blocks add up.
+
+    Summing each alarm row's duration counts one condition once per channel
+    that reports it. Block 28, August 2026: a CMU fault on one container showed
+    "195.3 h" of DC-DC downtime — eight DC/DC modules x two trigger texts, all
+    active over the same 42 h and 7 h.
+    """
+    s = pd.to_datetime(pd.Series(starts).reset_index(drop=True), errors='coerce')
+    e = pd.to_datetime(pd.Series(ends).reset_index(drop=True), errors='coerce')
+    b = (pd.Series(blocks).reset_index(drop=True) if blocks is not None
+         else pd.Series(0, index=s.index))
+    f = pd.DataFrame({'s': s, 'e': e, 'b': b}).dropna(subset=['s', 'e'])
+    f = f[f['e'] > f['s']]
+    total = 0.0
+    for _, g in f.groupby('b', dropna=False, sort=False):
+        cur_s = cur_e = None
+        for s_, e_ in zip(*(g.sort_values('s')[c] for c in ('s', 'e'))):
+            if cur_e is None or s_ > cur_e:
+                if cur_e is not None:
+                    total += (cur_e - cur_s).total_seconds()
+                cur_s, cur_e = s_, e_
+            elif e_ > cur_e:
+                cur_e = e_
+        if cur_e is not None:
+            total += (cur_e - cur_s).total_seconds()
+    return total / 3600.0
+
+
 def build_event_type_table(events_df, top_n=40, period_end=None):
     """
     Collapse an event-level alarm frame into ONE ROW PER FAULT TYPE for the
@@ -1299,6 +1346,7 @@ def build_event_type_table(events_df, top_n=40, period_end=None):
         dur_h = known.where(~df['_active'] & known.notna(), dur_h)
     df['_dur_h'] = dur_h.clip(lower=0).fillna(0.0)
     df['_act_dt'] = act
+    df['_end_dt'] = end_eff
 
     if '_blk' in df.columns:
         blk = pd.to_numeric(df['_blk'], errors='coerce')
@@ -1338,7 +1386,7 @@ def build_event_type_table(events_df, top_n=40, period_end=None):
             'resolution': res,
             'events':     int(len(g)),
             'units':      int(g['_elem'].nunique()),
-            'total_h':    float(g['_dur_h'].sum()),
+            'total_h':    elapsed_hours(g['_act_dt'], g['_end_dt'], g['_blk_n']),
             'blocks':     _fmt_blocks_with_planned(blocks, planned),
             'n_blocks':   len(blocks),
             'worst_block': ('' if worst is None or pd.isna(worst['_blk_n'])
@@ -1413,12 +1461,14 @@ def build_faults_summary(events_df, ws_long=None, top_n=15, drop_planned=False):
         blocks = sorted({int(b) for b in g['_blk'].dropna().unique()})
         planned = sorted({int(b) for b in
                           g.loc[g['on_planned_stop'], '_blk'].dropna().unique()})
+        act = pd.to_datetime(g['Activated'], errors='coerce')
+        dur = pd.to_timedelta(pd.to_numeric(g['duration_min'], errors='coerce'), unit='m')
         rows.append({
             'subsystem':       sub,
             'reason':          reason,
             'resolution':      res or '',
             'occurrences':     int(len(g)),
-            'total_hours':     float(g['duration_min'].sum() / 60.0),
+            'total_hours':     elapsed_hours(act, act + dur, g['_blk']),
             'blocks_affected': _fmt_blocks_with_planned(blocks, set(planned)),
             'n_planned':       len(planned),
             'any_planned':     bool(planned),
@@ -1460,7 +1510,7 @@ def build_breakdown_candidates(events_df, ws_long=None, top_n=10,
     for (blk, reason), g in df.groupby(['_blk', 'cls_reason']):
         if pd.isna(blk):
             continue
-        total_h = float(g['_dur'].sum() / 60.0)
+        total_h = elapsed_hours(g['_act'], g['_act'] + pd.to_timedelta(g['_dur'], unit='m'))
         if total_h < min_duration_h:
             continue
         first = g['_act'].min()

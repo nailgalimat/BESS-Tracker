@@ -103,6 +103,29 @@ with TestClient(main.app) as client:
                                  'version')), '/sync/entry carries the full pull shape')
     check(client.get('/sync/entry/nope', headers=H).status_code == 404, 'unknown id -> 404')
 
+    print('\n=== phone events: old payloads still accepted, the desktop decides ===')
+    # PWA v11 and older send these shapes; the new desktop queues or refuses
+    # them, but the server must keep taking them during the rollout.
+    old = [
+        {'id': str(uuid.uuid4()), 'project_id': 1, 'kind': 'pm', 'blocks': '',
+         'date_from': '2026-09-10', 'date_to': '2026-09-10', 'hours': 0,
+         'exclusion_type': '', 'description': 'PM without block', 'created_at': '2026-09-10T08:00:00.000Z'},
+        {'id': str(uuid.uuid4()), 'project_id': 1, 'kind': 'excluded', 'blocks': '1-70',
+         'date_from': '2026-09-19', 'date_to': '2026-09-20', 'hours': 3,
+         'exclusion_type': 'Grid Outage', 'description': ''},
+        {'id': str(uuid.uuid4()), 'project_id': 1, 'kind': 'counts', 'blocks': 'abc',
+         'date_from': '2026-09-12', 'date_to': '2026-09-12', 'hours': 5},
+    ]
+    codes = [client.post('/events', headers=H, json=e).status_code for e in old]
+    check(codes == [200, 200, 200], 'POST /events with v11 payloads: {}'.format(codes))
+    again = client.post('/events', headers=H, json=old[0])
+    check(again.status_code == 200 and again.json()['id'] == old[0]['id'], 'idempotent by id')
+    time.sleep(2.2)
+    got = {e['id']: e for e in client.get('/events', params={'since': '0'}, headers=H).json()['events']}
+    check(all(e['id'] in got for e in old) and got[old[0]['id']]['blocks'] == ''
+          and got[old[2]['id']]['blocks'] == 'abc',
+          'GET /events returns them as sent (fields unchanged)')
+
 print()
 print('RESULT FAIL ({} check(s))'.format(len(failures)) if failures else 'RESULT PASS')
 sys.stdout.flush()

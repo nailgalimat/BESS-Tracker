@@ -29,7 +29,7 @@ from PyQt5.QtGui import QFont, QColor, QPixmap, QIcon
 
 from services.project_service import (
     get_all_projects, get_zones_for_project,
-    get_blocks_for_zone, get_containers_for_block,
+    get_blocks_for_zone, get_containers_for_block, zone_block_to_plant,
 )
 from services.worklog_entry_service import (
     save_worklog_entry, get_worklog_entries, get_worklog_entry,
@@ -641,6 +641,41 @@ class ConflictDialog(QDialog):
         self.accept()
 
 
+def resolve_entry_conflict(parent, entry_id: str) -> bool:
+    """Settle one entry's sync conflict with the user: compare both versions
+    (ConflictDialog) and keep one through sync_client.resolve_conflict. Used by
+    the Field Log records page and by Monthly Reports, so an entry a technician
+    sent is never silently overwritten from either place. True when settled."""
+    from services import sync_client as sc
+    try:
+        server = sc.get_server_entry(entry_id)
+    except RuntimeError as ex:
+        QMessageBox.warning(parent, "Sync conflict", str(ex))
+        return False
+    if server is None:
+        # The other side no longer has it; there is nothing to compare.
+        answer = QMessageBox.question(
+            parent, "Sync conflict",
+            "The server no longer has this entry.\n\n"
+            "Send this desktop's copy back to it?  (No = remove it here too.)",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+        if answer == QMessageBox.Cancel:
+            return False
+        choice = 'mine' if answer == QMessageBox.Yes else 'server'
+    else:
+        dlg = ConflictDialog(get_worklog_entry(entry_id) or {}, server, parent=parent)
+        if dlg.exec_() != QDialog.Accepted or not dlg.choice:
+            return False
+        choice = dlg.choice
+    try:
+        msg = sc.resolve_conflict(entry_id, choice)
+    except RuntimeError as ex:
+        QMessageBox.warning(parent, "Sync conflict", str(ex))
+        return False
+    QMessageBox.information(parent, "Sync conflict", msg)
+    return True
+
+
 class LogCard(QFrame):
     """Displays one work_log_entry in the timeline."""
     edit_requested     = pyqtSignal(str)
@@ -1035,8 +1070,12 @@ class EditWorklogEntryDialog(QDialog):
                     blocks = get_blocks_for_zone(project_id, zone)
                     for block in blocks:
                         containers = get_containers_for_block(project_id, zone, block)
+                        plant = zone_block_to_plant(project_id, zone, block)
                         for c in containers:
                             label = f"Z{zone} B{block} · {c.container_type or '?'} #{c.container_index}"
+                            if plant:
+                                # the report and SCADA speak plant-wide numbers
+                                label = f"Block {plant} · " + label
                             self._cont_combo.addItem(label, userData=c.id)
             except Exception:
                 pass
@@ -1673,34 +1712,8 @@ class FieldLogRecordsPage(QWidget):
             self._load_timeline()
 
     def _on_conflict(self, entry_id: str):
-        from services import sync_client as sc
-        try:
-            server = sc.get_server_entry(entry_id)
-        except RuntimeError as ex:
-            QMessageBox.warning(self, "Sync conflict", str(ex))
-            return
-        if server is None:
-            # The other side no longer has it; there is nothing to compare.
-            answer = QMessageBox.question(
-                self, "Sync conflict",
-                "The server no longer has this entry.\n\n"
-                "Send this desktop's copy back to it?  (No = remove it here too.)",
-                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
-            if answer == QMessageBox.Cancel:
-                return
-            choice = 'mine' if answer == QMessageBox.Yes else 'server'
-        else:
-            dlg = ConflictDialog(get_worklog_entry(entry_id) or {}, server, parent=self)
-            if dlg.exec_() != QDialog.Accepted or not dlg.choice:
-                return
-            choice = dlg.choice
-        try:
-            msg = sc.resolve_conflict(entry_id, choice)
-        except RuntimeError as ex:
-            QMessageBox.warning(self, "Sync conflict", str(ex))
-            return
-        QMessageBox.information(self, "Sync conflict", msg)
-        self._load_timeline()
+        if resolve_entry_conflict(self, entry_id):
+            self._load_timeline()
 
     def _on_delete(self, entry_id: str):
         answer = QMessageBox.question(
