@@ -251,6 +251,10 @@ def route_field_event(ev: dict) -> str:
             _queue(ev, 'duplicate', str(ex))
         except rw.PMValidationError as ex:
             _queue(ev, 'invalid', str(ex))
+        except rw.MonthLockedError as ex:
+            # the month's report was sent: the PM waits, and applying it
+            # later needs the month unlocked first
+            _queue(ev, 'locked', str(ex))
     else:
         _queue(ev, 'confirm', '')
     _mark_seen(eid, kind)
@@ -384,6 +388,51 @@ def event_summary(ev: dict) -> str:
     if ev.get('description'):
         bits.append(str(ev['description'])[:60])
     return ' · '.join(bits)
+
+
+def scada_suggestion(project_id: int, ev: dict) -> Optional[dict]:
+    """What SCADA saw around a waiting phone event.
+
+    A phone event carries the time someone noticed, not the time the plant
+    tripped: the control room sent "grid outage, 2 h, blocks 63–70" at 21:20
+    for a trip at 21:12 and a last restart at 23:30. This reads the alarm data
+    already imported for the month and offers the first activation and the last
+    deactivation of the event's blocks on its day, so the window can be
+    confirmed against the plant rather than against memory.
+
+    Returns {'from', 'to', 'blocks', 'rows'} or None when there is no alarm
+    data to answer with. It suggests — it never writes.
+    """
+    try:
+        blocks = _blocks(project_id, ev.get('blocks'), [])
+    except Exception:                                   # noqa: BLE001
+        blocks = []
+    d1 = rw._iso_date(ev.get('date_from'))
+    if not d1:
+        return None
+    d2 = rw._iso_date(ev.get('date_to')) or d1
+    # a stop that starts late in the evening often ends the next morning
+    lo = (d1 - datetime.timedelta(days=1)).isoformat()
+    hi = (d2 + datetime.timedelta(days=1)).isoformat()
+    q = ("SELECT MIN(activated) AS first_on, MAX(deactivated) AS last_off, "
+         "COUNT(*) AS n, COUNT(DISTINCT block) AS nb FROM alarm_events "
+         "WHERE project_id=? AND category='production' "
+         "AND date(activated) BETWEEN date(?) AND date(?)")
+    p = [project_id, lo, hi]
+    if blocks:
+        q += " AND block IN ({})".format(','.join('?' * len(blocks)))
+        p += [int(b) for b in blocks]
+    conn = get_connection()
+    try:
+        r = conn.execute(q, p).fetchone()
+    except Exception:                                   # noqa: BLE001
+        return None
+    finally:
+        conn.close()
+    if not r or not r['n'] or not r['first_on']:
+        return None
+    return {'from': str(r['first_on'])[:16], 'to': str(r['last_off'] or '')[:16],
+            'blocks': r['nb'], 'rows': r['n']}
 
 
 # ── The month view ───────────────────────────────────────────────────────────

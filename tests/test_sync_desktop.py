@@ -291,6 +291,30 @@ try:
     H.check(not any(q['event_id'] == olds[1]['id'] for q in avi.pending_events(77, 2026, 9)),
             'rejected: gone from the waiting list, never an input')
 
+    print('\n=== the work record: PTW, plant block and hours travel both ways ===')
+    import services.work_journal_service as wj
+    k = wj.save(77, None, date='2026-09-14', kind=wj.KIND_FAULT, block=12,
+                lc='LC1', device='PCS 2', title='BSC-PCS comm fault',
+                work_done='Reseated RJ-45', internal_note='ours only',
+                ptw='PTW-2609-121', status='Done', hours=2.5,
+                time_from='08:05', time_to='10:35', impact='none')
+    sc.push_pending()
+    srow = server(k[2:])
+    H.check(srow.get('ptw_no') == 'PTW-2609-121' and srow.get('plant_block') == 12
+            and srow.get('hours') == 2.5 and srow.get('internal_note') == 'ours only',
+            'pushed: the server stores PTW, plant block, hours and the internal note')
+    # an older phone pushes the same row without the new fields: they survive
+    phone_push(k[2:], srow['version'], 'edited on an old phone')
+    pull()
+    c = dbm.get_connection()
+    back = dict(c.execute('SELECT ptw_no, plant_block, hours, internal_note, '
+                          'description FROM work_log_entries WHERE id=?',
+                          (k[2:],)).fetchone())
+    c.close()
+    H.check(back['ptw_no'] == 'PTW-2609-121' and back['plant_block'] == 12,
+            'an older client that does not know the fields cannot blank them: {}'
+            .format(back))
+
     print('\n=== a full re-pull does not invent conflicts ===')
     m = str(uuid.uuid4())
     phone_push(m, 1, 'm original')

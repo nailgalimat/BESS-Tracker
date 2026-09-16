@@ -10,9 +10,17 @@
   <title>BESS Field Log</title>
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="apple-touch-icon" href="/app/icons/icon-192.png" />
-  <link rel="stylesheet" href="/app/css/app.css?v=12" />
+  <link rel="stylesheet" href="/app/css/app.css?v=13" />
 </head>
 <body>
+
+<!-- A new version is waiting. The draft is saved first; nothing reloads until
+     the engineer taps. Before this, a deployed change reached an open phone
+     only by accident. -->
+<div id="update-banner" class="update-banner" style="display:none">
+  <span><b>New version available</b><br>Your draft is saved first</span>
+  <button class="btn btn-primary" onclick="App.applyUpdate()">Reload</button>
+</div>
 
 <!-- ═══════════════════════════════════════════════════════════
      SCREENS  (only one visible at a time via JS)
@@ -27,10 +35,6 @@
 
     <div class="card" style="margin-top:32px">
       <div class="form-group">
-        <label>Server URL</label>
-        <input id="login-url" type="url" placeholder="http://192.168.1.10:8000" autocomplete="off" />
-      </div>
-      <div class="form-group">
         <label>Username</label>
         <input id="login-user" type="text" placeholder="engineer1" autocomplete="username" />
       </div>
@@ -38,23 +42,48 @@
         <label>Password</label>
         <input id="login-pass" type="password" autocomplete="current-password" />
       </div>
+      <!-- The server is the one this app was installed from. It used to be the
+           first thing a technician was asked for, as a LAN IP address. -->
+      <details class="adv">
+        <summary>Server</summary>
+        <div class="form-group">
+          <input id="login-url" type="url" placeholder="https://…" autocomplete="off" />
+        </div>
+      </details>
       <div id="login-error" class="error-msg" style="display:none"></div>
       <button id="login-btn" class="btn btn-primary btn-block" onclick="App.login()">
         Log In
       </button>
+      <p class="hint-line">The first login needs a network. After that the app
+        works offline.</p>
     </div>
   </div>
 </div>
 
-<!-- HOME — timeline -->
+<!-- TASKS — what to do today -->
+<div id="screen-tasks" class="screen">
+  <header class="topbar">
+    <span class="topbar-title">Tasks</span>
+    <div class="topbar-actions">
+      <button class="icon-btn" onclick="App.syncNow()" title="Sync">🔄</button>
+    </div>
+  </header>
+  <div class="sync-bar" id="tasks-bar" style="display:none"></div>
+  <div class="ph-seg" id="task-seg">
+    <button class="on" data-seg="today" onclick="App.taskSeg('today')">Today</button>
+    <button data-seg="week" onclick="App.taskSeg('week')">Week</button>
+    <button data-seg="open" onclick="App.taskSeg('open')">My open</button>
+  </div>
+  <div class="screen-body" id="tasks-body"></div>
+  <button class="fab" onclick="App.openAddSheet()">＋</button>
+</div>
+
+<!-- RECORDS — the timeline, with what happened to each record -->
 <div id="screen-home" class="screen">
   <header class="topbar">
-    <span class="topbar-title">📋 Field Log</span>
+    <span class="topbar-title">Records</span>
     <div class="topbar-actions">
-      <button class="icon-btn" onclick="App.goEvents()" title="PM / downtime records">🧰</button>
-      <button class="icon-btn" onclick="App.goStock()" title="Spare parts">📦</button>
       <button class="icon-btn" onclick="App.syncNow()" title="Sync">🔄</button>
-      <button class="icon-btn" onclick="App.goSettings()" title="Settings">⚙️</button>
     </div>
   </header>
 
@@ -63,10 +92,10 @@
   <!-- Filter pills -->
   <div class="filter-row">
     <button class="pill active" data-cat="" onclick="App.filterCat(this, '')">All</button>
-    <button class="pill" data-cat="maintenance" onclick="App.filterCat(this,'maintenance')">🔧 Maint</button>
-    <button class="pill" data-cat="fault"       onclick="App.filterCat(this,'fault')">⚡ Fault</button>
-    <button class="pill" data-cat="inspection"  onclick="App.filterCat(this,'inspection')">🔍 Inspect</button>
-    <button class="pill" data-cat="repair"      onclick="App.filterCat(this,'repair')">🛠 Repair</button>
+    <button class="pill" data-cat="fault"       onclick="App.filterCat(this,'fault')">Fault</button>
+    <button class="pill" data-cat="maintenance" onclick="App.filterCat(this,'maintenance')">PM</button>
+    <button class="pill" data-cat="inspection"  onclick="App.filterCat(this,'inspection')">Inspection</button>
+    <button class="pill" data-cat="repair"      onclick="App.filterCat(this,'repair')">Repair</button>
   </div>
 
   <div id="timeline" class="timeline"></div>
@@ -74,38 +103,48 @@
   <button class="fab" onclick="App.openAddSheet()">＋</button>
 </div>
 
-<!-- CREATE LOG -->
+<!-- CREATE — one work record (fault / repair, PM, other) -->
 <div id="screen-create" class="screen">
   <header class="topbar">
-    <button class="icon-btn" onclick="App.goHome()">‹</button>
-    <span class="topbar-title">New Field Log</span>
+    <button class="icon-btn" onclick="App.goRecords()">‹</button>
+    <span class="topbar-title" id="create-title">New record</span>
     <button id="save-btn" class="topbar-save" onclick="App.saveEntry()">Save</button>
   </header>
 
   <div class="screen-body">
+    <!-- Node: chosen, never typed. "9zona 7block 2bsc" could not become a
+         plant block, so those records never reached the customer report. -->
     <div class="form-group">
-      <label>Project</label>
-      <select id="f-proj">
-        <option value="">— No project —</option>
-      </select>
+      <label>Node *</label>
+      <button type="button" id="f-node-btn" class="node-btn" onclick="App.openNodePicker('create')">
+        <span id="f-node-text">Choose the block</span>
+        <span class="node-go">›</span>
+      </button>
+      <input id="f-block" type="hidden" />
+      <input id="f-lc" type="hidden" />
+      <input id="f-device" type="hidden" />
     </div>
-    <div class="form-group">
-      <label>Date *</label>
-      <input id="f-date" type="date" />
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>Date *</label>
+        <input id="f-date" type="date" />
+      </div>
+      <div class="form-group">
+        <label>Type *</label>
+        <select id="f-cat" onchange="App.onCategory()">
+          <option value="fault">Fault / repair</option>
+          <option value="maintenance">PM</option>
+          <option value="inspection">Inspection</option>
+          <option value="commissioning">Commissioning</option>
+          <option value="repair">Repair</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
     </div>
-    <div class="form-group">
-      <label>Category *</label>
-      <select id="f-cat">
-        <option value="maintenance">🔧 Maintenance</option>
-        <option value="fault">⚡ Fault</option>
-        <option value="inspection">🔍 Inspection</option>
-        <option value="commissioning">🚀 Commissioning</option>
-        <option value="repair">🛠 Repair</option>
-        <option value="other">📝 Other</option>
-      </select>
-    </div>
-    <div class="form-group">
-      <label>Fault (optional)</label>
+
+    <div class="form-group" id="f-fault-group">
+      <label>Fault <span class="inrep">In report</span></label>
       <input id="f-fault" type="text" list="fault-list" placeholder="fault / problem — pick or type" />
       <datalist id="fault-list">
         <option value="BSC-PCS Communication"></option>
@@ -126,6 +165,7 @@
         <option value="Dry Node Input Fault"></option>
         <option value="CMU Fault"></option>
         <option value="Fan Fault"></option>
+        <option value="Antifreeze Low Level"></option>
         <option value="SCU-DSP Communication"></option>
         <option value="System Not Ready"></option>
         <option value="Grid Outage"></option>
@@ -133,37 +173,78 @@
         <option value="Fire / Smoke Alarm"></option>
       </datalist>
     </div>
+
     <div class="form-group">
-      <label>Location / Site</label>
-      <input id="f-loc" type="text" placeholder="e.g. Block 5 · LC Cabinet" />
+      <label>Status</label>
+      <div class="ph-seg small" id="f-status-seg">
+        <button type="button" data-st="open" onclick="App.pickStatus('open')">Open</button>
+        <button type="button" data-st="in_progress" onclick="App.pickStatus('in_progress')">In progress</button>
+        <button type="button" class="on" data-st="done" onclick="App.pickStatus('done')">Done</button>
+      </div>
+      <input id="f-status" type="hidden" value="done" />
+    </div>
+
+    <!-- PM only: the hours that count against availability -->
+    <div id="f-pm-group" style="display:none">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Start</label>
+          <input id="f-start" type="time" onchange="App.recalcHours()" />
+        </div>
+        <div class="form-group">
+          <label>End</label>
+          <input id="f-end" type="time" onchange="App.recalcHours()" />
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Hours — counts against availability *</label>
+        <div class="hours-row">
+          <button type="button" class="btn btn-outline" onclick="App.bumpHours(-0.25)">−</button>
+          <input id="f-hours" type="number" min="0" max="24" step="0.25" inputmode="decimal" value="0" />
+          <button type="button" class="btn btn-outline" onclick="App.bumpHours(0.25)">+</button>
+        </div>
+        <p class="hint-line" id="f-hours-hint">One PM record per block per day.</p>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>What was done * <span class="inrep">In report</span></label>
+      <textarea id="f-desc" rows="3" placeholder="What was done — the customer reads this…"></textarea>
+    </div>
+
+    <div class="form-group">
+      <label>Diagnosis / note <span class="intern">Internal</span></label>
+      <textarea id="f-note" rows="2" placeholder="What you tried, what to watch — stays with us"></textarea>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>PTW No.</label>
+        <input id="f-ptw" type="text" placeholder="optional" />
+      </div>
+      <div class="form-group">
+        <label>SAP</label>
+        <input id="f-sap" type="text" placeholder="optional" />
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Spare parts used</label>
+      <input id="f-parts" type="text" placeholder="optional" />
     </div>
     <div class="form-group">
-      <label>Equipment Serial</label>
+      <label>Equipment serial</label>
       <input id="f-serial" type="text" placeholder="optional" />
     </div>
     <div class="form-group">
-      <label>Description *</label>
-      <textarea id="f-desc" rows="4" placeholder="Describe the work or observation…"></textarea>
-    </div>
-    <div class="form-group">
-      <label>Status (optional)</label>
-      <select id="f-status">
-        <option value="">— unspecified —</option>
-        <option value="open">🔵 Open</option>
-        <option value="done">✅ Done</option>
+      <label>Project</label>
+      <select id="f-proj">
+        <option value="">— No project —</option>
       </select>
     </div>
-    <div class="form-group">
-      <label>SAP Ticket (optional)</label>
-      <input id="f-sap" type="text" placeholder="ticket / request no." />
-    </div>
-    <div class="form-group">
-      <label>Spare Parts (optional)</label>
-      <input id="f-parts" type="text" placeholder="parts used" />
-    </div>
-    <div class="form-group">
-      <label>Tags</label>
-      <input id="f-tags" type="text" placeholder="b12, alarm, pcs (comma-separated)" />
+    <div class="form-group" style="display:none">
+      <input id="f-loc" type="text" />
+      <input id="f-tags" type="text" />
     </div>
 
     <!-- Photos -->
@@ -180,24 +261,63 @@
     </div>
 
     <div id="create-error" class="error-msg" style="display:none"></div>
+    <button type="button" class="btn btn-outline btn-block" style="margin-top:6px"
+            onclick="App.repeatOnAnotherNode()">Repeat on another node</button>
+  </div>
+</div>
+
+<!-- NODE PICKER — recent · zone → block · number, then LC and device -->
+<div id="screen-node" class="screen">
+  <header class="topbar">
+    <button class="icon-btn" onclick="App.closeNodePicker()">‹</button>
+    <span class="topbar-title" id="np-title">Choose node</span>
+  </header>
+  <div class="screen-body">
+    <div class="ph-seg" id="np-tabs">
+      <button data-tab="recent" onclick="App.nodeTab('recent')">Recent</button>
+      <button class="on" data-tab="zone" onclick="App.nodeTab('zone')">Zone → Block</button>
+      <button data-tab="number" onclick="App.nodeTab('number')">Number</button>
+    </div>
+
+    <div id="np-recent" class="np-pane" style="display:none"></div>
+
+    <div id="np-zone" class="np-pane">
+      <div class="np-label">Zone</div>
+      <div id="np-zones" class="tile-grid"></div>
+      <div class="np-label" id="np-block-label">Block</div>
+      <div id="np-blocks" class="tile-grid"></div>
+    </div>
+
+    <div id="np-number" class="np-pane" style="display:none">
+      <div class="np-num" id="np-num">—</div>
+      <div class="np-num-sub" id="np-num-sub">Enter the plant block number</div>
+      <div class="keypad" id="np-keypad"></div>
+    </div>
+
+    <div class="np-label">Level</div>
+    <div class="chips" id="np-lc"></div>
+    <div class="np-label">Device (optional)</div>
+    <div class="chips" id="np-device"></div>
+
+    <button id="np-use" class="btn btn-primary btn-block" style="margin-top:14px"
+            onclick="App.useNode()">Choose a block</button>
   </div>
 </div>
 
 <!-- DETAIL -->
 <div id="screen-detail" class="screen">
   <header class="topbar">
-    <button class="icon-btn" onclick="App.goHome()">‹</button>
-    <span class="topbar-title" id="detail-title">Log Detail</span>
+    <button class="icon-btn" onclick="App.goRecords()">‹</button>
+    <span class="topbar-title" id="detail-title">Record</span>
     <button class="icon-btn danger" onclick="App.deleteEntry()" title="Delete">🗑</button>
   </header>
   <div id="detail-body" class="screen-body"></div>
 </div>
 
-<!-- SETTINGS -->
+<!-- MORE — sync, version, log out -->
 <div id="screen-settings" class="screen">
   <header class="topbar">
-    <button class="icon-btn" onclick="App.goHome()">‹</button>
-    <span class="topbar-title">Settings</span>
+    <span class="topbar-title">More</span>
   </header>
   <div class="screen-body">
     <div class="card">
@@ -214,19 +334,29 @@
         <span id="s-lastsync">—</span>
       </div>
       <div class="settings-row">
-        <span>Pending upload</span>
+        <span>Waiting to send</span>
         <span id="s-pending">—</span>
+      </div>
+      <div class="settings-row">
+        <span>App version</span>
+        <span id="s-version" class="mono">—</span>
       </div>
     </div>
 
     <button class="btn btn-primary btn-block" style="margin-top:16px" onclick="App.syncNow()">
-      🔄 Sync Now
+      🔄 Sync now
+    </button>
+    <button class="btn btn-outline btn-block" style="margin-top:12px" onclick="App.checkUpdate()">
+      ⬇ Check for update
+    </button>
+    <button class="btn btn-outline btn-block" style="margin-top:12px" onclick="App.goEvents()">
+      🧰 Downtime events
     </button>
     <button class="btn btn-outline btn-block danger" style="margin-top:12px" onclick="App.logout()">
-      🚪 Log Out
+      🚪 Log out
     </button>
     <p style="text-align:center;color:#888;font-size:12px;margin-top:24px">
-      BESS Field Log v1.0
+      BESS Field Log
     </p>
   </div>
 </div>
@@ -234,8 +364,7 @@
 <!-- STOCK — spare parts + write-off -->
 <div id="screen-stock" class="screen">
   <header class="topbar">
-    <button class="icon-btn" onclick="App.goHome()">‹</button>
-    <span class="topbar-title">📦 Spare Parts</span>
+    <span class="topbar-title">Stock</span>
     <button class="icon-btn" onclick="App.loadStock()" title="Refresh">🔄</button>
   </header>
   <div class="screen-body">
@@ -273,12 +402,12 @@
   </div>
 </div>
 
-<!-- REPORT EVENT — PM / downtime / exclusion -->
+<!-- DOWNTIME EVENT — grid outage, our stop, excluded -->
 <div id="screen-event" class="screen">
   <header class="topbar">
     <button class="icon-btn" onclick="App.goEvents()">‹</button>
-    <span class="topbar-title">Report Event</span>
-    <button id="ev-save" class="topbar-save" onclick="App.saveEvent()">Save</button>
+    <span class="topbar-title">Downtime event</span>
+    <button id="ev-save" class="topbar-save" onclick="App.saveEvent()">Send</button>
   </header>
   <div class="screen-body">
     <div class="form-group">
@@ -289,8 +418,8 @@
       <label>Type *</label>
       <select id="ev-kind" onchange="App.onEventKind()">
         <option value="pm">🧰 Preventive Maintenance (counts as downtime)</option>
-        <option value="counts">⛔ Downtime — our fault (reduces availability)</option>
-        <option value="excluded">➖ Excluded — not our fault (grid, force majeure)</option>
+        <option value="counts">⛔ Our stop — counts against availability</option>
+        <option value="excluded">➖ Excluded — grid outage, force majeure</option>
       </select>
     </div>
     <div class="form-group" id="ev-excltype-group" style="display:none">
@@ -314,6 +443,16 @@
     </div>
     <div class="form-row">
       <div class="form-group">
+        <label>Start time</label>
+        <input id="ev-time-from" type="time" />
+      </div>
+      <div class="form-group">
+        <label>End time (add later)</label>
+        <input id="ev-time-to" type="time" />
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
         <label id="ev-blocks-label">Block(s)</label>
         <!-- inputmode="numeric" used to be here: on Android that keypad has no
              comma key, so "1,2,3" simply could not be typed. Blocks are picked
@@ -331,7 +470,11 @@
       </div>
     </div>
     <div class="form-group">
-      <label>Description</label>
+      <label>PTW No.</label>
+      <input id="ev-ptw" type="text" placeholder="optional" />
+    </div>
+    <div class="form-group">
+      <label>What happened</label>
       <textarea id="ev-desc" rows="3" placeholder="What was done / what happened…"></textarea>
     </div>
     <div id="ev-error" class="error-msg" style="display:none"></div>
@@ -339,11 +482,11 @@
   </div>
 </div>
 
-<!-- PM / DOWNTIME RECORDS -->
+<!-- DOWNTIME EVENT RECORDS -->
 <div id="screen-events" class="screen">
   <header class="topbar">
-    <button class="icon-btn" onclick="App.goHome()">‹</button>
-    <span class="topbar-title">🧰 PM / downtime</span>
+    <button class="icon-btn" onclick="App.goRecords()">‹</button>
+    <span class="topbar-title">Downtime events</span>
     <div class="topbar-actions">
       <button class="icon-btn" onclick="App.goEvent()" title="New record">＋</button>
     </div>
@@ -377,15 +520,19 @@
   </div>
 </div>
 
-<!-- ADD SHEET — choose what to create -->
-<div id="add-sheet" class="modal" style="display:none" onclick="if(event.target===this)App.closeAddSheet()">
-  <div class="modal-card">
-    <h3>Add</h3>
-    <button class="btn btn-outline btn-block sheet-btn" onclick="App.closeAddSheet(); App.goCreate();">📋&nbsp; Field Log entry</button>
-    <button class="btn btn-outline btn-block sheet-btn" onclick="App.closeAddSheet(); App.goEvent();">🛠️&nbsp; PM / downtime</button>
-    <button class="btn btn-outline btn-block sheet-btn" onclick="App.closeAddSheet(); App.goStock();">📦&nbsp; Write off material</button>
-    <button class="btn btn-outline btn-block sheet-btn" onclick="App.closeAddSheet(); App.goEvents();">🧾&nbsp; See PM / downtime records</button>
-    <button class="btn btn-primary btn-block" style="margin-top:10px" onclick="App.closeAddSheet()">Cancel</button>
+<!-- ADD SHEET — what kind of record -->
+<div id="add-sheet" class="modal sheet-modal" style="display:none" onclick="if(event.target===this)App.closeAddSheet()">
+  <div class="modal-card sheet-card">
+    <div class="grab"></div>
+    <button class="sheet-item" onclick="App.closeAddSheet(); App.goCreate('fault');">
+      <b>Fault / repair</b><span>Something failed or was fixed</span></button>
+    <button class="sheet-item" onclick="App.closeAddSheet(); App.goCreate('maintenance');">
+      <b>PM</b><span>Preventive maintenance with hours and PTW</span></button>
+    <button class="sheet-item" onclick="App.closeAddSheet(); App.goEvent();">
+      <b>Downtime event</b><span>Grid outage or a stop — the office confirms the times</span></button>
+    <button class="sheet-item" onclick="App.closeAddSheet(); App.goStock();">
+      <b>Write off parts</b><span>Spare parts used from stock</span></button>
+    <button class="btn btn-outline btn-block" style="margin-top:10px" onclick="App.closeAddSheet()">Cancel</button>
   </div>
 </div>
 
@@ -394,12 +541,23 @@
   <img id="lightbox-img" src="" alt="" />
 </div>
 
-<script src="/app/js/db.js?v=12"></script>
-<script src="/app/js/api.js?v=12"></script>
-<script src="/app/js/app.js?v=12"></script>
+<!-- BOTTOM TABS -->
+<nav id="tabbar" class="tabbar" style="display:none">
+  <button class="tab on" data-tab="tasks" onclick="App.goTasks()"><span>Tasks</span></button>
+  <button class="tab" data-tab="records" onclick="App.goRecords()"><span>Records</span></button>
+  <button class="tab" data-tab="stock" onclick="App.goStock()"><span>Stock</span></button>
+  <button class="tab" data-tab="more" onclick="App.goSettings()"><span>More</span></button>
+</nav>
+
+<script>window.APP_VERSION = 'v13';</script>
+<script src="/app/js/db.js?v=13"></script>
+<script src="/app/js/api.js?v=13"></script>
+<script src="/app/js/app.js?v=13"></script>
 <script>
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/app/sw.js').catch(() => {});
+    navigator.serviceWorker.register('/app/sw.js').then(reg => {
+      App.watchForUpdate(reg);
+    }).catch(() => {});
   }
 </script>
 </body>

@@ -635,8 +635,11 @@ def initialize_database():
         # three times. `source` is phone | planner | import | desktop, and
         # `source_ref` the phone event id or plan item id. Existing rows keep ''
         # (the Availability inputs view infers their origin; nothing rewritten).
+        # `ptw_no` is the permit the work was done under. Optional: it is
+        # stored and shown wherever the record is, and the report prints it
+        # only when a month actually has one.
         _pm_cols = [r[1] for r in c.execute("PRAGMA table_info(pm_activities)").fetchall()]
-        for _col in ("source", "source_ref"):
+        for _col in ("source", "source_ref", "ptw_no"):
             if _col not in _pm_cols:
                 c.execute(f"ALTER TABLE pm_activities ADD COLUMN {_col} TEXT DEFAULT ''")
         # Manual downtime entered by hand (a block held in STANDBY after a gas
@@ -681,6 +684,35 @@ def initialize_database():
             if _col not in _wle_cols:
                 c.execute(f"ALTER TABLE work_log_entries "
                           f"ADD COLUMN {_col} TEXT DEFAULT ''")
+
+        # Migration: the unified work record (Work journal + phone).
+        #   plant_block  the block the plant and the customer speak of (1..70).
+        #                The container link numbers blocks inside a zone, and a
+        #                phone record often has no container at all — without
+        #                this a record cannot reach section 3.2 (see the
+        #                "no block" case). Set from the node picker.
+        #   node_lc / node_device  where in the block: 'LC1'/'LC2'/'' and
+        #                'PCS 2' / 'BESS 3' / '' — replaces free-text location.
+        #   ptw_no       permit to work; optional, printed for the customer.
+        #   time_from / time_to / hours   PM hours come from the phone now.
+        #   internal_note  diagnosis and what was tried: OUR text, never the
+        #                customer's (description stays the "what was done" that
+        #                goes into the report).
+        #   availability_impact  none | counts | excluded — what it does to the
+        #                month, decided on the desktop.
+        for _col, _decl in (("plant_block", "INTEGER"),
+                            ("node_lc", "TEXT DEFAULT ''"),
+                            ("node_device", "TEXT DEFAULT ''"),
+                            ("ptw_no", "TEXT DEFAULT ''"),
+                            ("time_from", "TEXT DEFAULT ''"),
+                            ("time_to", "TEXT DEFAULT ''"),
+                            ("hours", "REAL"),
+                            ("internal_note", "TEXT DEFAULT ''"),
+                            ("availability_impact", "TEXT DEFAULT 'none'")):
+            if _col not in _wle_cols:
+                c.execute(f"ALTER TABLE work_log_entries ADD COLUMN {_col} {_decl}")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_wle_project_date "
+                  "ON work_log_entries(project_id, log_date)")
 
         c.execute("""
             CREATE TABLE IF NOT EXISTS work_log_tags (
@@ -848,7 +880,7 @@ def initialize_database():
                 year        INTEGER,
                 month       INTEGER,
                 payload     TEXT NOT NULL,              -- the event as the server sent it
-                reason      TEXT DEFAULT 'confirm',     -- confirm | duplicate | invalid
+                reason      TEXT DEFAULT 'confirm',     -- confirm | duplicate | invalid | locked
                 note        TEXT DEFAULT '',
                 status      TEXT DEFAULT 'pending',     -- pending | applied | rejected
                 applied_ref TEXT DEFAULT '',            -- e.g. 'manual:12,13' / 'exclusion:40' / 'pm:7'
@@ -858,6 +890,76 @@ def initialize_database():
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_feq_month "
                   "ON field_event_queue(project_id, year, month, status)")
+
+        # ── MONTHLY REPORT: the month's data set, versions, sent / locked ─────
+        # The SCADA files of a report month, copied next to the database
+        # (report_data/, see month_dataset_service) so a re-generation never
+        # asks for them again. A newer file of the same type replaces the
+        # older one; the older row and its copy stay, because the manifest of
+        # an earlier version names it.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS month_files (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id    INTEGER NOT NULL,
+                year          INTEGER NOT NULL,
+                month         INTEGER NOT NULL,
+                data_type     TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                source_path   TEXT DEFAULT '',
+                stored_path   TEXT NOT NULL,              -- relative to report_data/
+                sha256        TEXT NOT NULL,
+                size_bytes    INTEGER DEFAULT 0,
+                recognised    TEXT DEFAULT 'auto',        -- auto | chosen
+                coverage      TEXT DEFAULT '',            -- JSON, filled by analysis
+                status        TEXT DEFAULT 'active',      -- active | replaced | removed
+                added_at      TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_month_files "
+                  "ON month_files(project_id, year, month, status)")
+
+        # Every generation is a new vN file and a manifest beside it; nothing
+        # is overwritten. sent_* is the Word-edited file that went out.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS report_versions (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id         INTEGER NOT NULL,
+                year               INTEGER NOT NULL,
+                month              INTEGER NOT NULL,
+                version            INTEGER NOT NULL,
+                docx_path          TEXT NOT NULL,         -- relative to report_data/
+                docx_sha256        TEXT DEFAULT '',
+                manifest_path      TEXT DEFAULT '',
+                manifest_sha256    TEXT DEFAULT '',
+                summary            TEXT DEFAULT '',       -- JSON: key numbers, row counts
+                generated_at       TEXT DEFAULT (datetime('now')),
+                sent_at            TEXT,
+                sent_docx_path     TEXT DEFAULT '',
+                sent_docx_sha256   TEXT DEFAULT '',
+                sent_original_name TEXT DEFAULT '',
+                UNIQUE(project_id, year, month, version),
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            )
+        """)
+        # sent / unlocked / locked, with the reason an unlock needs
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS report_month_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id  INTEGER NOT NULL,
+                year        INTEGER NOT NULL,
+                month       INTEGER NOT NULL,
+                action      TEXT NOT NULL,
+                version     INTEGER,
+                reason      TEXT DEFAULT '',
+                at          TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        # A month with a sent report is locked: its availability inputs and
+        # narrative are read-only until "Unlock month" (with a reason).
+        _rm_cols = [r[1] for r in c.execute("PRAGMA table_info(report_months)").fetchall()]
+        if "locked_at" not in _rm_cols:
+            c.execute("ALTER TABLE report_months ADD COLUMN locked_at TEXT")
 
         # ── ENSURE MAIN WAREHOUSE EXISTS ──────────────────────────────────
         existing = c.execute(

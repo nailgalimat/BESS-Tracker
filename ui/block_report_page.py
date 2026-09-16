@@ -272,6 +272,17 @@ class BlockReportPage(QWidget):
 
     def set_current_project(self, project_id):
         self._pid = project_id
+        # The report format follows the open project. It used to default to
+        # Bukhara for every site, so a Tashkent plant opened on the wrong form.
+        if project_id is not None:
+            try:
+                from services.report_workflow_service import get_project_config
+                site = (get_project_config(project_id) or {}).get('site_type')
+                if site in ('bukhara', 'tashkent'):
+                    (self.radio_bukhara if site == 'bukhara'
+                     else self.radio_tashkent).setChecked(True)
+            except Exception:                            # noqa: BLE001
+                pass
         self._refresh_exclusions()
         self._refresh_manual_unavail()
         self._refresh_balancing()
@@ -879,7 +890,10 @@ class BlockReportPage(QWidget):
             "Delete this exclusion?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if ans == QMessageBox.Yes:
-            delete_exclusion(excl_id)
+            try:
+                delete_exclusion(excl_id)
+            except Exception as e:          # a sent (locked) month refuses
+                QMessageBox.warning(self, "Not deleted", str(e))
             self._refresh_exclusions()
 
     # ── Manual Unavailability (operator-recorded downtime) ────────────────
@@ -946,7 +960,10 @@ class BlockReportPage(QWidget):
             "Delete this manual unavailability entry?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if ans == QMessageBox.Yes:
-            delete_manual_unavailability(int(id_item.text()))
+            try:
+                delete_manual_unavailability(int(id_item.text()))
+            except Exception as e:          # a sent (locked) month refuses
+                QMessageBox.warning(self, "Not deleted", str(e))
             self._refresh_manual_unavail()
 
     # ── Cycle-balancing / rested blocks ──────────────────────────────────
@@ -1054,7 +1071,10 @@ class BlockReportPage(QWidget):
             "Delete this rested / balancing period?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if ans == QMessageBox.Yes:
-            delete_balancing_period(int(id_item.text()))
+            try:
+                delete_balancing_period(int(id_item.text()))
+            except Exception as e:          # a sent (locked) month refuses
+                QMessageBox.warning(self, "Not deleted", str(e))
             self._refresh_balancing()
 
     def _validate(self) -> bool:

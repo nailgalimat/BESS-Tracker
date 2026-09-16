@@ -74,6 +74,9 @@ class Project(Base):
     # How many blocks the plant has, mirrored from the desktop so the phone can
     # offer a block picker instead of asking the engineer to type numbers.
     num_blocks   = Column(Integer, default=0)
+    # JSON [[zone, first plant block, last plant block], ...] mirrored
+    # from the desktop block map, for the phone node picker.
+    zones        = Column(Text, default="")
     updated_at   = Column(String, default=_now)
 
 
@@ -164,6 +167,17 @@ class WorkLogEntry(Base):
     status           = Column(String, default="")           # '' | open | done
     sap_ticket       = Column(String, default="")
     spare_parts      = Column(String, default="")           # parts used (free text; stock link later)
+    # The unified work record (desktop Work journal + the phone's node picker).
+    # Optional throughout: an older client neither sends nor reads them.
+    plant_block         = Column(Integer, nullable=True)     # block 1..N of the plant
+    node_lc             = Column(String, default="")         # 'LC1' | 'LC2' | ''
+    node_device         = Column(String, default="")         # 'PCS 2' | 'BESS 3' | ''
+    ptw_no              = Column(String, default="")         # permit to work
+    time_from           = Column(String, default="")         # 'HH:MM'
+    time_to             = Column(String, default="")
+    hours               = Column(Float, nullable=True)        # PM hours
+    internal_note       = Column(Text, default="")           # ours, never the customer's
+    availability_impact = Column(String, default="none")     # none|counts|excluded
 
     __table_args__ = (
         # Compound index for non-admin delta pull: WHERE user_id=? AND updated_at > ?

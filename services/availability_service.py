@@ -86,6 +86,37 @@ def _report_month_of(date_str):
         return None, None
 
 
+# A month whose report was sent is locked (report_workflow_service): every
+# writer below refuses to add, change or delete an entry of that month.
+def _guard(project_id, year=None, month=None, *dates):
+    from services.report_workflow_service import assert_month_open, assert_dates_open
+    if year is not None and month is not None:
+        assert_month_open(project_id, year, month)
+    assert_dates_open(project_id, *[d for d in dates if d])
+
+
+def _guard_project_of(table: str, row_id, year, month, date_from):
+    """An edit moving a row into a locked month is refused too."""
+    conn = get_connection()
+    try:
+        r = conn.execute(f"SELECT project_id FROM {table} WHERE id=?",
+                         (int(row_id),)).fetchone()
+    finally:
+        conn.close()
+    _guard(r['project_id'] if r else None, year, month, date_from)
+
+
+def _guard_row(table: str, row_id):
+    conn = get_connection()
+    try:
+        r = conn.execute(f"SELECT project_id, year, month, date_from FROM {table} "
+                         "WHERE id=?", (int(row_id),)).fetchone()
+    finally:
+        conn.close()
+    if r:
+        _guard(r['project_id'], r['year'], r['month'], r['date_from'])
+
+
 def get_exclusions(project_id: Optional[int] = None,
                     date_from: Optional[str] = None,
                     date_to: Optional[str] = None,
@@ -141,6 +172,7 @@ def add_exclusion(exclusion_type: str, date_from: str, date_to: str,
         y, m = _report_month_of(date_from)
         year = year if year is not None else y
         month = month if month is not None else m
+    _guard(project_id, year, month, date_from)
 
     conn = get_connection()
     try:
@@ -168,6 +200,8 @@ def update_exclusion(exclusion_id: int, exclusion_type: str, date_from: str,
     year/month are updated only when provided (None leaves them as-is)."""
     if exclusion_type not in EXCLUSION_TYPES:
         raise ValueError(f"Invalid exclusion type: {exclusion_type}")
+    _guard_row('availability_exclusions', exclusion_id)
+    _guard_project_of('availability_exclusions', exclusion_id, year, month, date_from)
     conn = get_connection()
     try:
         if year is not None or month is not None:
@@ -193,6 +227,7 @@ def update_exclusion(exclusion_id: int, exclusion_type: str, date_from: str,
 
 
 def delete_exclusion(exclusion_id: int):
+    _guard_row('availability_exclusions', exclusion_id)
     conn = get_connection()
     try:
         conn.execute(
@@ -249,6 +284,7 @@ def add_balancing_period(date_from: str, date_to: str,
                          year: Optional[int] = None,
                          month: Optional[int] = None) -> int:
     """Returns the new balancing-period id."""
+    _guard(project_id, year, month, date_from)
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -269,6 +305,8 @@ def update_balancing_period(period_id: int, date_from: str, date_to: str,
                             year: Optional[int] = None,
                             month: Optional[int] = None):
     """Update an existing balancing period in place (project_id unchanged)."""
+    _guard_row('balancing_periods', period_id)
+    _guard_project_of('balancing_periods', period_id, year, month, date_from)
     conn = get_connection()
     try:
         if year is not None or month is not None:
@@ -289,6 +327,7 @@ def update_balancing_period(period_id: int, date_from: str, date_to: str,
 
 
 def delete_balancing_period(period_id: int):
+    _guard_row('balancing_periods', period_id)
     conn = get_connection()
     try:
         conn.execute("DELETE FROM balancing_periods WHERE id=?", (period_id,))
@@ -376,6 +415,7 @@ def add_manual_unavailability(block: int, date_from: str, date_to: str,
         y, m = _report_month_of(date_from)
         year = year if year is not None else y
         month = month if month is not None else m
+    _guard(project_id, year, month, date_from)
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -400,6 +440,8 @@ def update_manual_unavailability(entry_id: int, block: int, date_from: str,
     """Edit a manual downtime row in place; the report month follows the date
     (project and source are left as they are)."""
     y, m = _report_month_of(date_from)
+    _guard_row('manual_unavailability', entry_id)
+    _guard_project_of('manual_unavailability', entry_id, y, m, date_from)
     conn = get_connection()
     try:
         conn.execute("""
@@ -415,6 +457,7 @@ def update_manual_unavailability(entry_id: int, block: int, date_from: str,
 
 
 def delete_manual_unavailability(entry_id: int):
+    _guard_row('manual_unavailability', entry_id)
     conn = get_connection()
     try:
         conn.execute("DELETE FROM manual_unavailability WHERE id=?",

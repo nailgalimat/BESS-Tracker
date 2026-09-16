@@ -118,6 +118,12 @@ class ProjectOut(BaseModel):
     name:         str
     project_type: str = "BESS"
     num_blocks:   int = 0
+    # Zones as the plant really numbers them: [[zone, first block, last
+    # block], ...]. The phone's node picker shows a zone grid with the
+    # plant block numbers on it; without the real map it would have to
+    # guess where a zone starts, and a guessed "Z4/B8" is worse than none.
+    # Empty for an older desktop.
+    zones:        str = ""
 
 
 class ProjectsSyncRequest(BaseModel):

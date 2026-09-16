@@ -37,3 +37,25 @@ Phone: Android Chrome with the Field Log PWA installed from
 Save an entry with a photo in airplane mode, turn the network on only briefly
 so the entry is sent but the photo fails, then sync again later: the photo
 appears on the desktop after the next sync.
+
+## 6. v13: tabs, node picker, send status, update banner
+1. **The v12 -> v13 step.** v13 no longer swaps itself in: an open v12 app has
+   no banner, so close the app completely once (swipe it away) and reopen —
+   the bottom tabs Tasks · Records · Stock · More must appear. From v13 on,
+   later versions announce themselves with the banner.
+2. **Login.** The Server field is folded under "Server" and already holds the
+   address the app was opened from.
+3. **Node picker.** ＋ → Fault / repair → Node → Zone → Block: zone 9 lists
+   blocks 63–70 (the desktop must have synced once so the phone has the zone
+   map); pick LC2 and BESS 3 → "Block 69 · Z9/B7 · BESS 3" on the form.
+   The Number tab: type 57 → "Block 57 · Z8/B2". Recent lists the last five.
+4. **Required block.** Save without a node → "Choose the node…", nothing saved.
+5. **PM record.** ＋ → PM: start is pre-filled, end fills the hours, PTW No.
+   saves; 0 h and 25 h are refused. On the desktop the record shows in Work and
+   its hours as a PM record on Availability (once), not as a 3.2 line.
+6. **Send status.** Airplane mode on → save a record: "Waiting to send" with a
+   Retry button. Network on → Retry → "Sent". A record edited on the desktop
+   and on the phone at the same time → "Conflict — the office decides".
+7. **Update banner.** Deploy any change with V bumped (e.g. v14) while the app is
+   open with a half-written record → "New version available" appears; tap
+   Reload → the app reloads on the new version.

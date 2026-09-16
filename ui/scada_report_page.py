@@ -806,7 +806,10 @@ class ScadaReportPage(QWidget):
             "Delete this exclusion?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if ans == QMessageBox.Yes:
-            delete_exclusion(excl_id)
+            try:
+                delete_exclusion(excl_id)
+            except Exception as e:          # a sent (locked) month refuses
+                QMessageBox.warning(self, "Not deleted", str(e))
             self._refresh_exclusions()
 
     # ── Generate ─────────────────────────────────────────────────────────

@@ -2,15 +2,29 @@
 ui/main_window.py
 ------------------
 Main window — sidebar + QStackedWidget.
-All pages listed clearly. New pages: Checklists, Stock, KPIs, Assets.
+
+The menu holds **nine** items (NAV, below), grouped the way the day runs:
+Today · Work · Plan · Equipment · Availability · Monthly report · Analysis ·
+Spare parts · Project. Every other page still exists, still works and still
+holds its data — it simply left the menu and is reached from
+Project → "Archive of old pages" (ARCHIVE, below).
+
+Page *indices* are unchanged: the stack keeps its original insertion order so
+`PAGE_* == stack index` still holds for everything that existed before, and
+new pages are appended after it. Changing the menu therefore means editing
+NAV / ARCHIVE — not renumbering pages.
+
+The header above the page carries the application context: the open project,
+one shared month (Availability, Monthly report and Analysis follow it) and the
+sync state.
 """
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QStackedWidget, QLabel, QPushButton, QSizePolicy,
+    QStackedWidget, QLabel, QPushButton, QSizePolicy, QComboBox, QSpinBox,
     QFrame, QStatusBar, QScrollArea
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QDate
 from PyQt5.QtGui import QFont
 
 from ui.daily_log_form    import DailyLogForm
@@ -33,6 +47,10 @@ from ui.equipment_page       import EquipmentPage
 from ui.planner_page         import PlannerPage
 from ui.worklog_entry_form   import FieldLogEntryPage, FieldLogRecordsPage
 from ui.project_launcher      import ProjectLauncher
+from ui.project_hub_page      import ProjectHubPage
+from ui.today_page            import TodayPage
+from ui.work_page             import WorkPage
+from ui.availability_page     import AvailabilityPage
 from ui.sync_settings_dialog import SyncSettingsDialog
 
 from ui.project_dialog        import ProjectDialog
@@ -66,6 +84,11 @@ PAGE_MONTHLY    = 17
 PAGE_LAUNCHER   = 18
 PAGE_EQUIPMENT  = 19
 PAGE_PLANNER    = 20
+# ── pages of the redesign, appended so the indices above keep their meaning ──
+PAGE_PROJECT    = 21     # Project hub: settings, people, sync, archive
+PAGE_TODAY      = 22     # Today: the seven blocks the day starts with
+PAGE_WORK       = 23     # Work: one journal of every work record
+PAGE_AVAIL      = 24     # Availability: the month's inputs
 
 PAGE_NAMES = {
     PAGE_DASHBOARD: "Dashboard",
@@ -89,21 +112,72 @@ PAGE_NAMES = {
     PAGE_LAUNCHER:  "Select Project",
     PAGE_EQUIPMENT: "Equipment",
     PAGE_PLANNER:   "Planner",
+    PAGE_PROJECT:   "Project",
+    PAGE_TODAY:     "Today",
+    PAGE_WORK:      "Work",
+    PAGE_AVAIL:     "Availability",
 }
 
-# Pages that can be scoped to the shell's "current project". Each such page
-# exposes set_current_project(project_id); the shell calls it when a project
-# is opened. Pages without the method are simply skipped (still self-scoped).
+# ── The menu ────────────────────────────────────────────────────────────────
+# (group or None, label, page index). Nine items; the group label is drawn
+# once above the first item that carries it.
+NAV = [
+    (None,     "Today",          PAGE_TODAY),
+    ("WORK",   "Work",           PAGE_WORK),
+    ("WORK",   "Plan",           PAGE_PLANNER),
+    ("PLANT",  "Equipment",      PAGE_EQUIPMENT),
+    ("PLANT",  "Availability",   PAGE_AVAIL),
+    ("REPORT", "Monthly report", PAGE_MONTHLY),
+    ("REPORT", "Analysis",       PAGE_ANALYTICS),
+    ("STOCK",  "Spare parts",    PAGE_STOCK),
+    ("SETUP",  "Project",        PAGE_PROJECT),
+]
+
+# Pages that follow the header's month.
+MONTH_PAGES = ("Availability", "Monthly report", "Analysis")
+
+# ── The archive ─────────────────────────────────────────────────────────────
+# Left the menu in the redesign; nothing deleted, all still reachable from
+# Project → "Archive of old pages". (label, page index, what it was)
+ARCHIVE = [
+    ("Overview",         PAGE_DASHBOARD,  "The old dashboard — replaced by Today"),
+    ("Daily Log",        PAGE_DAILY_LOG,  "Daily site log — now written as a work record"),
+    ("Work Reports",     PAGE_WORK_LOG,   "Desktop fault report — now the Work journal"),
+    ("Field Log",        PAGE_FIELD_LOG,  "Desktop copy of the phone entry form"),
+    ("Field Records",    PAGE_FIELD_RECS, "Phone records timeline — now inside Work"),
+    ("Checklists / PM",  PAGE_CHECKLIST,  "Commissioning checklists — moving into Plan"),
+    ("Asset Register",   PAGE_ASSETS,     "Serial numbers — now Equipment → Identity"),
+    ("Materials",        PAGE_MATERIALS,  "Material catalogue — belongs to Spare parts"),
+    ("Block Performance", PAGE_BLOCK_RPT, "Bukhara / Tashkent generator — now Monthly report"),
+    ("KPI Dashboard",    PAGE_KPI,        "KPI tiles — moving into Analysis"),
+    ("Lifecycle",        PAGE_LIFECYCLE,  "Container lifecycle — moving into Analysis"),
+    ("SCADA Report",     PAGE_SCADA,      "Older SCADA report flow"),
+    ("Reports",          PAGE_REPORTS,    "Daily-log reports"),
+    ("Work Log Report",  PAGE_WORK_RPT,   "Work-report export"),
+    ("Project Setup",    PAGE_PROJECTS,   "Report settings of the project"),
+]
+
+# Pages that can be scoped to the shell's "current project". A page either
+# exposes set_current_project(project_id) or simply owns a project combo box
+# (`proj_combo` / `project_combo`) — the shell selects the open project in it,
+# so no page asks "— Select —" again while a project is open.
 PROJECT_SCOPED_PAGES = ("projects_page", "monthly_page", "equipment_page",
                         "planner_page",
                         # both read and write exclusions / downtime, which must
                         # carry the project or they leak into another plant
-                        "block_report_page", "scada_page")
+                        "block_report_page", "scada_page",
+                        # entry pages that used to start at "— Select —"
+                        "log_form", "work_log_form", "work_log_report",
+                        "field_log_page", "field_log_records", "checklist_page",
+                        "stock_page", "kpi_page", "asset_page", "materials_page",
+                        "analytics_view", "lifecycle_view", "reports_view",
+                        "project_hub", "today_page", "work_page",
+                        "availability_page")
 
 
 class NavButton(QPushButton):
-    def __init__(self, icon, label, parent=None):
-        super().__init__(f"  {icon}   {label}", parent)
+    def __init__(self, label, parent=None):
+        super().__init__(f"   {label}", parent)
         self.setObjectName("NavButton")
         self.setCheckable(False)
         self.setFixedHeight(42)
@@ -148,14 +222,18 @@ class MainWindow(QMainWindow):
 
         logo = QWidget()
         logo.setObjectName("SidebarLogo")
+        # painted explicitly: the global QWidget rule would otherwise leave the
+        # brand white on white, which is exactly how it looked before
+        logo.setStyleSheet("#SidebarLogo{background-color:#142038;}")
         ll = QVBoxLayout(logo)
-        ll.setContentsMargins(16, 16, 16, 6)
+        ll.setContentsMargins(16, 16, 16, 10)
         ll.setSpacing(2)
-        lbl = QLabel("⚡ BESS Tracker")
-        lbl.setStyleSheet("font-size:15px;font-weight:bold;color:#FFFFFF;background:transparent;")
+        lbl = QLabel("BESS Tracker")
+        lbl.setStyleSheet("font-size:15px;font-weight:bold;color:#FFFFFF;"
+                          "background-color:transparent;")
         ll.addWidget(lbl)
-        sub = QLabel("Field Service Portal")
-        sub.setStyleSheet("font-size:10px;color:#4A6080;background:transparent;")
+        sub = QLabel("O&M workspace")
+        sub.setStyleSheet("font-size:10px;color:#8FA3BE;background-color:transparent;")
         ll.addWidget(sub)
         sl.addWidget(logo)
 
@@ -194,38 +272,17 @@ class MainWindow(QMainWindow):
         mn.setContentsMargins(0, 0, 0, 0)
         mn.setSpacing(0)
 
-        self._add_section(mn, "OPERATE")
-        self._add_nav(mn, "📊", "Overview",       PAGE_DASHBOARD)
-        self._add_nav(mn, "📋", "Daily Log",      PAGE_DAILY_LOG)
-        self._add_nav(mn, "🔧", "Work Reports",   PAGE_WORK_LOG)
-        self._add_nav(mn, "📸", "Field Log",      PAGE_FIELD_LOG)
-        self._add_nav(mn, "🗂", "Field Records",  PAGE_FIELD_RECS)
-
-        self._add_section(mn, "MAINTAIN")
-        self._add_nav(mn, "🗓", "Planner",         PAGE_PLANNER)
-        self._add_nav(mn, "🧩", "Equipment",       PAGE_EQUIPMENT)
-        self._add_nav(mn, "✅", "Checklists / PM", PAGE_CHECKLIST)
-        self._add_nav(mn, "🏷", "Asset Register",  PAGE_ASSETS)
-        self._add_nav(mn, "📦", "Spare Parts",     PAGE_STOCK)
-        self._add_nav(mn, "🧾", "Materials",       PAGE_MATERIALS)
-
-        self._add_section(mn, "REPORT")
-        self._add_nav(mn, "📅", "Monthly Reports",   PAGE_MONTHLY)
-        self._add_nav(mn, "🔋", "Block Performance", PAGE_BLOCK_RPT)
-
-        self._add_section(mn, "SETUP")
-        self._add_nav(mn, "⚙", "Project Setup",     PAGE_PROJECTS)
-
-        # Legacy analytics/report pages — still reachable, tucked away and
-        # collapsed by default so the primary nav stays lean.
-        self._add_collapsible(mn, "MORE TOOLS", [
-            ("🔍", "Lifecycle",     PAGE_LIFECYCLE),
-            ("📄", "SCADA Report",  PAGE_SCADA),
-            ("🎯", "KPI Dashboard", PAGE_KPI),
-            ("📉", "Analytics",     PAGE_ANALYTICS),
-            ("📈", "Reports",       PAGE_REPORTS),
-            ("📋", "Work Log Report", PAGE_WORK_RPT),
-        ])
+        # Nine items, grouped. Everything else lives in the Project archive.
+        self._nav_by_label = {}
+        last_group = "—"
+        for group, label, idx in NAV:
+            if group != last_group:
+                if group:
+                    self._add_section(mn, group)
+                last_group = group
+            self._add_nav(mn, label, idx)
+        # items keep their height; the spare space goes below them, not between
+        mn.addStretch(1)
 
         # Scrollable so the grouped nav never gets clipped on short windows.
         self.nav_scroll = QScrollArea()
@@ -249,21 +306,8 @@ class MainWindow(QMainWindow):
         sep.setStyleSheet("color:#243D5C;margin:0 12px;")
         sl.addWidget(sep)
 
-        for icon, label, slot in [
-            ("➕", "New Project",  self._new_project),
-            ("🔧", "Edit Project", self._edit_project),
-            ("✏️", "Edit Serials", self._edit_serials),
-            ("🔄", "Sync Settings", self._open_sync_settings),
-            ("👥", "Users",         self._open_user_mgmt),
-        ]:
-            btn = QPushButton(f"  {icon}   {label}")
-            btn.setObjectName("NavButton")
-            btn.setFixedHeight(38)
-            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.clicked.connect(slot)
-            sl.addWidget(btn)
-
+        # New / Edit project, Serials, Sync and Users used to sit here as five
+        # buttons on every screen (~230 px). They are now in Project.
         self.proj_count_lbl = QLabel("")
         self.proj_count_lbl.setAlignment(Qt.AlignCenter)
         self.proj_count_lbl.setStyleSheet(
@@ -280,7 +324,14 @@ class MainWindow(QMainWindow):
 
         root.addWidget(sidebar)
 
-        # ── Page stack ────────────────────────────────────────────────────
+        # ── Main area: context header + page stack ────────────────────────
+        main = QWidget()
+        main.setObjectName("PageArea")
+        ml = QVBoxLayout(main)
+        ml.setContentsMargins(0, 0, 0, 0)
+        ml.setSpacing(0)
+        ml.addWidget(self._build_topbar())
+
         self.stack = QStackedWidget()
         self.stack.setObjectName("PageArea")
 
@@ -306,6 +357,21 @@ class MainWindow(QMainWindow):
         self.launcher             = ProjectLauncher()        # 18
         self.equipment_page       = EquipmentPage()          # 19
         self.planner_page         = PlannerPage()            # 20
+        self.project_hub          = ProjectHubPage(          # 21
+            archive_items=ARCHIVE, settings_page=PAGE_PROJECTS)
+        self.project_hub.page_requested.connect(self._navigate)
+        self.project_hub.action_requested.connect(self._hub_action)
+        self.today_page           = TodayPage()              # 22
+        self.today_page.open_page.connect(self._go)
+        self.today_page.open_filtered.connect(self._go_filtered)
+        self.work_page            = WorkPage()               # 23
+        self.work_page.record_saved.connect(lambda _k: self.today_page.refresh())
+        # The availability inputs leave the Monthly report and become a page:
+        # the editor itself moves, so both screens cannot drift apart.
+        self.availability_page    = AvailabilityPage(self.monthly_page)   # 24
+        self.availability_page.adopt_editor(self.monthly_page.take_inputs_tab())
+        self.availability_page.open_report.connect(lambda: self._go("Monthly report"))
+        self.monthly_page.open_availability.connect(lambda: self._go("Availability"))
         # One tap from an alarm to a pre-filled Work Report, and straight back
         # to the list afterwards so the next one is one tap away too.
         self.equipment_page.work_report_requested.connect(self._report_from_alarm)
@@ -338,10 +404,15 @@ class MainWindow(QMainWindow):
             self.launcher,         # 18  (Project launcher — front door)
             self.equipment_page,   # 19  (Equipment — asset tree + history)
             self.planner_page,     # 20  (Planner — PM campaigns + daily work)
+            self.project_hub,      # 21  (Project — settings, people, archive)
+            self.today_page,       # 22  (Today — the seven blocks)
+            self.work_page,        # 23  (Work — the journal and the record card)
+            self.availability_page,# 24  (Availability — the month's inputs)
         ]:
             self.stack.addWidget(page)
 
-        root.addWidget(self.stack)
+        ml.addWidget(self.stack, 1)
+        root.addWidget(main, 1)
 
         self.status_bar = QStatusBar()
         self.status_bar.setStyleSheet(
@@ -349,6 +420,84 @@ class MainWindow(QMainWindow):
             "border-top:1px solid #E0E4EA;font-size:11px;}"
         )
         self.setStatusBar(self.status_bar)
+
+    # ── Context header ───────────────────────────────────────────────────
+    def _build_topbar(self):
+        """Project · page · shared month · sync — the application's context,
+        not a form field of the page below it."""
+        bar = QWidget()
+        bar.setObjectName("TopBar")
+        bar.setFixedHeight(48)
+        bar.setStyleSheet("#TopBar{background-color:#FFFFFF;"
+                          "border-bottom:1px solid #E0E4EA;}")
+        l = QHBoxLayout(bar)
+        l.setContentsMargins(20, 0, 16, 0)
+        l.setSpacing(10)
+
+        self.page_title_lbl = QLabel("")
+        self.page_title_lbl.setStyleSheet(
+            "font-size:16px;font-weight:bold;color:#1A2B45;background:transparent;")
+        l.addWidget(self.page_title_lbl)
+
+        self.top_project_lbl = QLabel("")
+        self.top_project_lbl.setStyleSheet(
+            "color:#6B7A8D;font-size:12px;background:transparent;")
+        l.addWidget(self.top_project_lbl)
+
+        l.addSpacing(8)
+        self.month_box = QWidget()
+        self.month_box.setStyleSheet("background:transparent;")
+        mb = QHBoxLayout(self.month_box)
+        mb.setContentsMargins(0, 0, 0, 0)
+        mb.setSpacing(6)
+        cap = QLabel("Month:")
+        cap.setStyleSheet("color:#6B7A8D;background:transparent;")
+        mb.addWidget(cap)
+        self.month_combo = QComboBox()
+        self.month_combo.addItems(["January", "February", "March", "April", "May",
+                                   "June", "July", "August", "September",
+                                   "October", "November", "December"])
+        self.month_combo.setMinimumWidth(110)
+        mb.addWidget(self.month_combo)
+        self.year_spin = QSpinBox()
+        self.year_spin.setRange(2020, 2100)
+        mb.addWidget(self.year_spin)
+        # default: the month people are actually reporting on
+        today = QDate.currentDate()
+        y, m = today.year(), today.month()
+        if today.day() <= 10:
+            y, m = (y - 1, 12) if m == 1 else (y, m - 1)
+        self.current_year, self.current_month = y, m
+        self.year_spin.setValue(y)
+        self.month_combo.setCurrentIndex(m - 1)
+        self.month_combo.currentIndexChanged.connect(self._on_month_changed)
+        self.year_spin.valueChanged.connect(self._on_month_changed)
+        l.addWidget(self.month_box)
+        self.month_box.setVisible(False)
+
+        l.addStretch()
+        self.top_sync_lbl = QLabel("")
+        self.top_sync_lbl.setStyleSheet(
+            "color:#6B7A8D;font-size:11px;background:transparent;")
+        l.addWidget(self.top_sync_lbl)
+        return bar
+
+    def _on_month_changed(self, *_):
+        self.current_year = self.year_spin.value()
+        self.current_month = self.month_combo.currentIndex() + 1
+        self._push_month()
+
+    def _push_month(self):
+        """Availability, Monthly report and Analysis share one month."""
+        for attr in ("today_page", "work_page", "monthly_page",
+                     "availability_page", "analytics_view", "kpi_page",
+                     "block_report_page"):
+            page = getattr(self, attr, None)
+            if page is not None and hasattr(page, "set_month"):
+                try:
+                    page.set_month(self.current_year, self.current_month)
+                except Exception:                        # noqa: BLE001
+                    pass
 
     def _add_section(self, layout, text):
         lbl = QLabel(text)
@@ -358,13 +507,14 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(lbl)
 
-    def _add_nav(self, layout, icon, label, page_idx):
-        btn = NavButton(icon, label)
-        btn.clicked.connect(lambda _, idx=page_idx: self._navigate(idx))
+    def _add_nav(self, layout, label, page_idx):
+        btn = NavButton(label)
+        btn.clicked.connect(lambda _, lb=label: self._go(lb))
         layout.addWidget(btn)
-        self._nav_buttons.append((btn, page_idx))
+        self._nav_buttons.append((btn, page_idx, label))
+        self._nav_by_label[label] = (btn, page_idx)
 
-    def _add_collapsible(self, layout, title, items):
+    def _add_collapsible(self, layout, title, items):   # kept: unused by NAV
         """A section header that toggles a group of nav buttons (collapsed by
         default). Keeps legacy pages reachable without cluttering the nav."""
         header = QPushButton(f"{title}    ▸")
@@ -393,18 +543,70 @@ class MainWindow(QMainWindow):
         layout.addWidget(header)
         layout.addWidget(body)
 
-    def _navigate(self, page_idx: int):
+    def _go(self, label: str):
+        """Navigate by menu item. Two items may share a page while a layer of
+        the redesign is still landing — the label decides what is highlighted."""
+        entry = self._nav_by_label.get(label)
+        if entry is None:
+            return
+        self._navigate(entry[1], nav_label=label)
+
+    def _navigate(self, page_idx: int, nav_label: str = None):
         self.stack.setCurrentIndex(page_idx)
-        for btn, idx in self._nav_buttons:
-            btn.set_active(idx == page_idx)
-        if page_idx == PAGE_DASHBOARD:
+        if nav_label is None:                    # archive / programmatic jump
+            for lb, (_b, idx) in self._nav_by_label.items():
+                if idx == page_idx:
+                    nav_label = lb
+                    break
+        for btn, _idx, lb in self._nav_buttons:
+            btn.set_active(lb == nav_label)
+        title = nav_label or PAGE_NAMES.get(page_idx, "")
+        self.page_title_lbl.setText(title)
+        in_archive = nav_label is None
+        self.top_project_lbl.setText(
+            ("· " + (self.current_project_name or "")
+             + ("  ·  Archive of old pages" if in_archive else ""))
+            if self.current_project_name else "")
+        self.month_box.setVisible(title in MONTH_PAGES)
+        if page_idx == PAGE_TODAY:
+            self.today_page.refresh()
+        elif page_idx == PAGE_WORK:
+            self.work_page.refresh()
+        elif page_idx == PAGE_AVAIL:
+            self.availability_page.refresh()
+        elif page_idx == PAGE_DASHBOARD:
             self.dashboard_page.refresh()
         elif page_idx == PAGE_FIELD_RECS:
             self.field_log_records._load_timeline()
+        # pages rebuild their project list when shown — keep the open project
+        # selected rather than letting them fall back to "— Select —"
+        try:
+            self._select_project_in_combo(self.stack.currentWidget(),
+                                          self.current_project_id)
+        except Exception:                                # noqa: BLE001
+            pass
         self.status_bar.showMessage(
-            f"  {PAGE_NAMES.get(page_idx,'')}  |  "
+            f"  {title or PAGE_NAMES.get(page_idx,'')}  |  "
             f"{len(get_all_projects())} project(s)"
         )
+
+    def _go_filtered(self, label: str, flt: dict):
+        """A count on Today opens the list that holds exactly those rows."""
+        self._go(label)
+        page = self.stack.currentWidget()
+        if hasattr(page, "apply_filter"):
+            try:
+                page.apply_filter(dict(flt or {}))
+            except Exception:                            # noqa: BLE001
+                pass
+
+    def _hub_action(self, action: str):
+        """Buttons of the Project page that open a dialog."""
+        {"new_project": self._new_project,
+         "edit_project": self._edit_project,
+         "edit_serials": self._edit_serials,
+         "sync": self._open_sync_settings,
+         "users": self._open_user_mgmt}.get(action, lambda: None)()
 
     # ── Project shell (launcher ↔ workspace) ────────────────────────────────
     def _show_launcher(self):
@@ -413,8 +615,11 @@ class MainWindow(QMainWindow):
         self.current_project_name = None
         self.proj_header.setVisible(False)
         self.module_nav.setVisible(False)
-        for btn, _idx in self._nav_buttons:
+        for btn, _idx, _lb in self._nav_buttons:
             btn.set_active(False)
+        self.page_title_lbl.setText("Select a project")
+        self.top_project_lbl.setText("")
+        self.month_box.setVisible(False)
         self.launcher.reload()
         self.stack.setCurrentIndex(PAGE_LAUNCHER)
         self.status_bar.showMessage(
@@ -428,7 +633,8 @@ class MainWindow(QMainWindow):
         self.proj_header.setVisible(True)
         self.module_nav.setVisible(True)
         self._push_current_project()
-        self._navigate(PAGE_DASHBOARD)   # open on Overview
+        self._push_month()
+        self._go("Today")                # the day starts here
 
     def _switch_project(self):
         self._show_launcher()
@@ -452,15 +658,40 @@ class MainWindow(QMainWindow):
             f"  Work report #{work_log_id} saved — next one?", 6000)
 
     def _push_current_project(self):
-        """Tell project-scoped pages which project is now active."""
+        """Tell project-scoped pages which project is now active.
+
+        A page either implements set_current_project(), or just owns a project
+        combo box — in which case the shell selects the open project in it.
+        That is what stops Work Reports, Field Log, Field Records, Run
+        Checklist and the rest from asking "— Select —" with a project open,
+        and what keeps Block Performance off Bukhara on a Tashkent site."""
         pid = self.current_project_id
+        name = self.current_project_name
         for attr in PROJECT_SCOPED_PAGES:
             page = getattr(self, attr, None)
-            if page is not None and hasattr(page, "set_current_project"):
-                try:
-                    page.set_current_project(pid)
-                except Exception:
-                    pass
+            if page is None:
+                continue
+            try:
+                if hasattr(page, "set_current_project"):
+                    try:
+                        page.set_current_project(pid, name)
+                    except TypeError:
+                        page.set_current_project(pid)
+                self._select_project_in_combo(page, pid)
+            except Exception:                            # noqa: BLE001
+                pass
+
+    @staticmethod
+    def _select_project_in_combo(page, pid):
+        """Select `pid` in whichever project combo the page owns."""
+        if pid is None:
+            return
+        for attr in ("proj_combo", "project_combo"):
+            combo = getattr(page, attr, None)
+            if isinstance(combo, QComboBox):
+                i = combo.findData(pid)
+                if i >= 0 and combo.currentIndex() != i:
+                    combo.setCurrentIndex(i)
 
     def _new_project(self):
         dlg = ProjectDialog(self)
@@ -529,6 +760,7 @@ class MainWindow(QMainWindow):
 
     def _on_sync_status_changed(self, msg: str):
         self.sync_lbl.setText(f"  {msg}")
+        self.top_sync_lbl.setText(msg)
         self.status_bar.showMessage(f"  {msg}")
 
     def _on_sync_done(self, result: dict):

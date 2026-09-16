@@ -1160,8 +1160,14 @@ class EquipmentPage(QWidget):
             # Stored alarms carry their exclusion flag from import time, so
             # the new windows mean nothing until the flags are recomputed.
             st = ats.reapply_exclusions(self._project_id, log=lambda m: None)
-        finally:
+        except RuntimeError as e:           # a sent (locked) month refuses
             QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "Windows not added",
+                                f"{made} window(s) added before this stopped: {e}")
+            return
+        finally:
+            if QApplication.overrideCursor():
+                QApplication.restoreOverrideCursor()
 
         self._load_tree()
         self._load_gaps()

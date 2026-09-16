@@ -10,6 +10,9 @@ installer/*.exe
 *.db-wal
 db_backups/
 data/monthly_history*.json
+# the month data sets: copies of the customer's SCADA exports, the generated
+# report versions and their manifests (see month_dataset_service)
+report_data/
 backend/uploads/
 field_images/
 

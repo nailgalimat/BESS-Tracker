@@ -30,6 +30,10 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from datetime import datetime
 
+# Month data set files are read once per content (see parse_cache); any
+# other path is plain pd.read_excel.
+from services.parse_cache import read_excel as _read_excel
+
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.units import mm
@@ -176,7 +180,7 @@ def _parse_date(df, date_col='Date', time_col='Time'):
 
 def load_site_kpi_5min(path):
     """Site-total 5-min telemetry (avg SOC, avg SOH, cycles, total energy, PF)."""
-    df = pd.read_excel(path)
+    df = _read_excel(path)
     df = _parse_date(df)
     return df
 
@@ -192,7 +196,7 @@ def load_lc_daily_energy(path):
                      'LC NN discharge_kwh') and the existing fleet totals
                      ('fleet_charge_kwh', 'fleet_discharge_kwh').
     """
-    df = pd.read_excel(path, sheet_name='LC_Energy')
+    df = _read_excel(path, sheet_name='LC_Energy')
     # Strip trailing label rows ('Total Charge Energy (kWh) - Blockwise' etc.)
     df = df[pd.to_datetime(df['Date'], errors='coerce').notna()].copy()
     df['Date_only'] = pd.to_datetime(df['Date']).dt.date
@@ -232,7 +236,7 @@ def load_block_5min_data(path):
     """
     xl = pd.ExcelFile(path)
     block_sheets = [s for s in xl.sheet_names if BLOCK_RE.search(s)]
-    raw = pd.read_excel(path, sheet_name=block_sheets)
+    raw = _read_excel(path, sheet_name=block_sheets)
     out = {}
     for sheet, df in raw.items():
         m = BLOCK_RE.search(sheet)
@@ -259,7 +263,7 @@ def load_block_5min_data(path):
 
 def load_battery_unit_monthly_cycles(path):
     """Read 'Total' sheet → DataFrame block / cycle_begin / cycle_end / cycle_delta."""
-    df = pd.read_excel(path, sheet_name='Total')
+    df = _read_excel(path, sheet_name='Total')
     # Clean up trailing whitespace in column names
     df.columns = [str(c).strip() for c in df.columns]
     # Standardise
@@ -283,7 +287,7 @@ def load_block_availability_statuses(path):
     """
     xl = pd.ExcelFile(path)
     block_sheets = [s for s in xl.sheet_names if BLOCK_RE.search(s)]
-    raw = pd.read_excel(path, sheet_name=block_sheets)
+    raw = _read_excel(path, sheet_name=block_sheets)
     out = {}
     for sheet, df in raw.items():
         m = BLOCK_RE.search(sheet)
@@ -306,7 +310,7 @@ def load_block_availability_statuses(path):
 
 def load_meter_daily(path):
     """POI meter daily totals (already 30 rows × 56 cols, one per day)."""
-    df = pd.read_excel(path)
+    df = _read_excel(path)
     df = _parse_date(df)
     return df
 
@@ -329,7 +333,7 @@ def load_alarms(path):
     out = {}
     for sheet in ['Production', 'Warning']:
         try:
-            df = pd.read_excel(path, sheet_name=sheet)
+            df = _read_excel(path, sheet_name=sheet)
             df['Activated'] = pd.to_datetime(df['Activated'], errors='coerce')
             df['Deactivation'] = pd.to_datetime(df['Deactivation'], errors='coerce')
             df['duration_min'] = (
@@ -2400,6 +2404,7 @@ def generate_bukhara_report(
     annexes=None,                  # list of strings appended to Section 8
     output_format='docx',          # 'docx' (default), 'pdf', or 'both'
     exclusions=None,               # list of dicts from availability_service.get_exclusions()
+    summary_out=None,              # dict: filled with the key numbers (report versions)
 ):
     def log(msg):
         if progress_callback: progress_callback(msg)
@@ -2610,6 +2615,23 @@ def generate_bukhara_report(
         log(f"Saved month record to {path}")
     except Exception as e:
         log(f"Note: could not save history record: {e}")
+
+    if summary_out is not None:
+        _g = locals()
+        def _n(v):
+            try:
+                return None if v is None or pd.isna(v) else round(float(v), 4)
+            except (TypeError, ValueError):
+                return None
+        summary_out.update({
+            'availability_pct': _n((_g.get('plant_avail') or {}).get('plant_availability_pct')),
+            'rte_pct': _n(fleet_rte), 'cycles_month': _n(avg_efc_per_block),
+            'cycles_in_year': _n(annual_accum),
+            'cycles_lifetime': _n(cycles_accum_avg or avg_efc_per_block),
+            'avg_soc_pct': _n(avg_soc_pct), 'avg_soh_pct': _n(avg_soh_pct),
+            'rows': {'3.1': len(pm_activities or []), '3.2': len(cm_activities or []),
+                     '5.2': len(breakdown_incidents or [])},
+        })
 
     return output_paths if len(output_paths) > 1 else output_path
 

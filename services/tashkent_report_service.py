@@ -34,6 +34,10 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from datetime import datetime
 
+# Month data set files are read once per content (see parse_cache); any
+# other path is plain pd.read_excel.
+from services.parse_cache import read_excel as _read_excel
+
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.units import mm
@@ -97,7 +101,7 @@ def _parse_date(df):
 def load_lc_working_status(path):
     """5-min working status per LC. Returns long-format DataFrame with columns:
     Datetime, Date_only, block_id, container_id, working_status."""
-    df = pd.read_excel(path)
+    df = _read_excel(path)
     df = _parse_date(df)
     long = []
     for c in df.columns:
@@ -117,7 +121,7 @@ def load_lc_working_status(path):
 
 def load_lc_soc(path):
     """5-min SOC per LC, long-format: Datetime, Date_only, block_id, container_id, soc_pct."""
-    df = pd.read_excel(path)
+    df = _read_excel(path)
     df = _parse_date(df)
     long = []
     for c in df.columns:
@@ -138,7 +142,7 @@ def load_lc_soc(path):
 def load_lc_soh_snapshot(path):
     """SOH last-day snapshot per LC, averaged across the day. Returns:
     DataFrame[block_id, container_id, soh_pct, snapshot_date]."""
-    df = pd.read_excel(path)
+    df = _read_excel(path)
     df = _parse_date(df)
     rows = []
     snapshot_date = df['Date_only'].iloc[0] if not df['Date_only'].empty else None
@@ -164,7 +168,7 @@ def load_lc_daily_energy(charge_path, discharge_path):
     Returns df indexed by date with 'LC NN_charge_kwh' / 'LC NN_discharge_kwh'
     where NN concatenates block.container."""
     def _read(path, kind):
-        df = pd.read_excel(path)
+        df = _read_excel(path)
         df['Date_parsed'] = pd.to_datetime(df['Date'], format='%m/%d/%Y',
                                             errors='coerce')
         device_cols = [c for c in df.columns if 'LC200' in str(c)]
@@ -200,7 +204,7 @@ def load_lc_daily_energy(charge_path, discharge_path):
 
 def load_hv_meter_daily(path):
     """30-row daily POI meter (cumulative kWh at midnight)."""
-    df = pd.read_excel(path)
+    df = _read_excel(path)
     df['Date_parsed'] = pd.to_datetime(df['Date'], errors='coerce')
     return df
 
@@ -227,7 +231,7 @@ def load_lc_total_monthly(charge_path, discharge_path):
         if not path or not os.path.exists(path):
             return None
         try:
-            df = pd.read_excel(path)
+            df = _read_excel(path)
         except Exception as e:
             print(f"Warning: could not read LC total {direction} file {path}: {e}")
             return None
@@ -297,7 +301,7 @@ def load_cmu_cycle_snapshot(first_day_path, last_day_path,
         if not path or not os.path.exists(path):
             return None
         try:
-            df = pd.read_excel(path)
+            df = _read_excel(path)
         except Exception as e:
             print(f"Warning: could not read cycle snapshot {path}: {e}")
             return None
@@ -773,7 +777,7 @@ def _load_pcs_wide_file(path, value_name):
     if not path or not os.path.exists(path):
         return pd.DataFrame()
     try:
-        pcs = pd.read_excel(path, sheet_name=0)
+        pcs = _read_excel(path, sheet_name=0)
     except Exception:
         return pd.DataFrame()
     if 'Date' not in pcs.columns or 'Time' not in pcs.columns:
@@ -1742,6 +1746,7 @@ def generate_tashkent_report(
     exclusions=None,               # list of dicts from availability_service.get_exclusions()
     balancing_periods=None,        # list of dicts from availability_service.get_balancing_periods()
     project_id=None,               # when set, this month's alarms become equipment history
+    summary_out=None,              # dict: filled with the key numbers (report versions)
 ):
     def log(msg):
         if progress_callback: progress_callback(msg)
@@ -3468,11 +3473,48 @@ def generate_tashkent_report(
     except Exception as e:
         log(f"Note: could not save history record: {e}")
 
+    if summary_out is not None:
+        summary_out.update(_key_numbers(locals()))
+
     if output_format == 'docx':
         return docx_path
     if output_format == 'both' and docx_path:
         return [pdf_path, docx_path]
     return pdf_path
+
+
+
+def _key_numbers(g):
+    """The numbers a report version is listed and compared by — read from the
+    generator's own variables, the same ones the DOCX prints. Nothing here
+    feeds the report."""
+    def num(v, nd=4):
+        try:
+            return None if v is None or pd.isna(v) else round(float(v), nd)
+        except (TypeError, ValueError):
+            return None
+    ca = g.get('contractual_avail') or {}
+    ur = g.get('unavail_reasons')
+    n_ur = 0 if ur is None or getattr(ur, 'empty', True) else int(len(ur))
+    cm, cls = g.get('cm_activities'), g.get('cls_summary')
+    avg_efc = g.get('avg_efc_per_block')
+    return {
+        'availability_pct': num(ca.get('availability_pct')),
+        'rte_pct': num(g.get('fleet_rte')),
+        'cycles_month': num(avg_efc),
+        'cycles_in_year': num(g.get('annual_accum')),
+        'cycles_lifetime': num(g.get('cycles_accum_avg') or avg_efc),
+        'avg_soc_pct': num(g.get('avg_soc_pct')),
+        'avg_soh_pct': num(g.get('avg_soh_pct')),
+        'rows': {
+            '3.1': len(g.get('pm_activities') or []),
+            '3.2': (len(cm) if cm else
+                    0 if cls is None or getattr(cls, 'empty', True) else min(7, int(len(cls)))),
+            '4.4.1': min(20, n_ur),
+            '4.4.1_total': n_ur,
+            '5.2': len(g.get('breakdown_rows') or []),
+        },
+    }
 
 
 def _build_tashkent_docx(output_path, _ctx):

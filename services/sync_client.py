@@ -256,6 +256,17 @@ def push_pending() -> dict:
                     "status":           e.get("status", ""),
                     "sap_ticket":       e.get("sap_ticket", ""),
                     "spare_parts":      e.get("spare_parts", ""),
+                    # the unified work record. An older server ignores these
+                    # keys; a newer one stores them.
+                    "plant_block":         e.get("plant_block"),
+                    "node_lc":             e.get("node_lc", "") or "",
+                    "node_device":         e.get("node_device", "") or "",
+                    "ptw_no":              e.get("ptw_no", "") or "",
+                    "time_from":           e.get("time_from", "") or "",
+                    "time_to":             e.get("time_to", "") or "",
+                    "hours":               e.get("hours"),
+                    "internal_note":       e.get("internal_note", "") or "",
+                    "availability_impact": e.get("availability_impact", "none") or "none",
                     "log_date":         e["log_date"],
                     "created_at":       e.get("created_at", _now()),
                     "deleted_at":       e.get("deleted_at"),
@@ -334,6 +345,22 @@ def push_projects():
         projects = [dict(r) for r in rows]
     finally:
         conn.close()
+    # Mirror the real zone -> plant block map too: the phone picks a node
+    # from a zone grid, and only the desktop knows that zone 4 holds
+    # blocks 24-31. An older server ignores the extra field.
+    import json as _json
+    from services.project_service import get_block_map
+    for _p in projects:
+        try:
+            to_local = get_block_map(_p["id"])["to_local"]
+            zones = {}
+            for plant, (z, _b) in to_local.items():
+                lo, hi = zones.get(z, (plant, plant))
+                zones[z] = (min(lo, plant), max(hi, plant))
+            _p["zones"] = _json.dumps([[z, lo, hi] for z, (lo, hi)
+                                       in sorted(zones.items())])
+        except Exception:                            # noqa: BLE001
+            _p["zones"] = ""
     try:
         _request("put", "/projects", json={"projects": projects})
     except RequestException:
@@ -565,6 +592,13 @@ _ENTRY_COLS = ("project_id", "container_id", "equipment_serial", "site_location"
                "spare_parts", "log_date", "created_at", "updated_at",
                "deleted_at", "version")
 
+# Fields of the unified work record. Written only when the server actually
+# sent them: a server that does not know them yet must not blank what the
+# desktop wrote — absent key means "no opinion", not "empty".
+_ENTRY_OPT_COLS = ("plant_block", "node_lc", "node_device", "ptw_no",
+                   "time_from", "time_to", "hours", "internal_note",
+                   "availability_impact")
+
 
 def _store_server_entry(conn, data: dict):
     """Write the server's copy of an entry over the local one — in place.
@@ -592,9 +626,12 @@ def _store_server_entry(conn, data: dict):
         data.get("deleted_at"),
         data.get("version", 1),
     )
-    cols = ", ".join(_ENTRY_COLS)
-    marks = ", ".join("?" for _ in _ENTRY_COLS)
-    sets = ", ".join(f"{c}=excluded.{c}" for c in _ENTRY_COLS)
+    opt = tuple(c for c in _ENTRY_OPT_COLS if c in data)
+    vals = vals + tuple(data.get(c) for c in opt)
+    all_cols = _ENTRY_COLS + opt
+    cols = ", ".join(all_cols)
+    marks = ", ".join("?" for _ in all_cols)
+    sets = ", ".join(f"{c}=excluded.{c}" for c in all_cols)
     conn.execute(f"""
         INSERT INTO work_log_entries (id, {cols}, sync_status)
         VALUES (?, {marks}, 'synced')

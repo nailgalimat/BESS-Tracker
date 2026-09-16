@@ -15,6 +15,13 @@ Three concerns:
 Unavailability (exclusions / manual / balancing) stays in availability_service
 but is now scoped by (project_id, year, month); the month-scoped getters live
 here for convenience.
+
+Two more things live here because every writer must agree on them:
+  4. the month lock — a month whose report was marked as sent is read-only
+     (assert_month_open / MonthLockedError; report_versions_service sets it),
+  5. the month's corrective works and the rule for which of them reach
+     section 3.2 (corrective_rows / cm_skip_reason / cm_lines), used by the
+     Monthly Reports page and by the pre-generation check.
 """
 
 import datetime
@@ -156,9 +163,11 @@ def ensure_report_month(project_id: int, year: int, month: int) -> int:
 
 
 def save_report_month(project_id: int, year: int, month: int, **fields):
-    """Upsert the narrative fields for a month."""
-    ensure_report_month(project_id, year, month)
+    """Upsert the narrative fields for a month (refused while it is locked)."""
     data = {k: v for k, v in fields.items() if k in _MONTH_FIELDS}
+    if data:
+        assert_month_open(project_id, year, month)
+    ensure_report_month(project_id, year, month)
     if not data:
         return
     conn = get_connection()
@@ -178,6 +187,8 @@ def delete_report_month(month_id: int):
     try:
         r = conn.execute("SELECT project_id, year, month FROM report_months "
                          "WHERE id=?", (month_id,)).fetchone()
+        if r:
+            assert_month_open(r[0], r[1], r[2])
         conn.execute("DELETE FROM report_months WHERE id=?", (month_id,))
         if r:
             pid, y, m = r[0], r[1], r[2]
@@ -189,6 +200,190 @@ def delete_report_month(month_id: int):
         conn.commit()
     finally:
         conn.close()
+
+
+# ── Sent months are locked ────────────────────────────────────────────────────
+# Once the final report of a month is marked as sent (report_versions_service),
+# the month's availability inputs — exclusion windows, manual downtime, PM
+# records, balancing periods — its data set and its narrative are read-only:
+# the customer holds numbers made from them. Every writer of those inputs calls
+# assert_month_open, so no page, dialog, import or phone event can change a sent
+# month by a side door. "Unlock month" needs a reason and is logged.
+
+class MonthLockedError(RuntimeError):
+    """The report month was marked as sent; its inputs are read-only."""
+
+
+def month_locked_at(project_id, year, month) -> Optional[str]:
+    """When (project, year, month) was locked, or None. project_id None — a
+    row that applies to every project — is locked when any project's month is."""
+    if year is None or month is None:
+        return None
+    q = ("SELECT locked_at FROM report_months WHERE year=? AND month=? "
+         "AND locked_at IS NOT NULL")
+    p = [int(year), int(month)]
+    if project_id is not None:
+        q += " AND project_id=?"
+        p.append(int(project_id))
+    conn = get_connection()
+    try:
+        r = conn.execute(q, p).fetchone()
+        return r[0] if r else None
+    finally:
+        conn.close()
+
+
+def assert_month_open(project_id, year, month):
+    """Raise MonthLockedError when the report month is locked."""
+    if month_locked_at(project_id, year, month):
+        name = (MONTHS_EN[int(month)] if 1 <= int(month) <= 12 else str(month))
+        raise MonthLockedError(
+            f"{name} {year} is locked: its report was marked as sent. Unlock the month "
+            f"(Monthly Reports → 4 · Release, with a reason) before changing its inputs.")
+
+
+def assert_dates_open(project_id, *dates):
+    """assert_month_open for the report month of each ISO date given."""
+    for d in dates:
+        dd = _iso_date(d)
+        if dd:
+            assert_month_open(project_id, dd.year, dd.month)
+
+
+def set_month_lock(project_id: int, year: int, month: int, locked: bool):
+    """Lock or unlock a month (report_versions_service logs why)."""
+    ensure_report_month(project_id, year, month)
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE report_months SET locked_at="
+            + ("datetime('now')" if locked else "NULL")
+            + " WHERE project_id=? AND year=? AND month=?", (project_id, year, month))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ── Corrective works (section 3.2) ────────────────────────────────────────────
+# The month's corrective items from BOTH the desktop Work Reports and the phone
+# Field Log, and the rule for which of them reach section 3.2. Used by the
+# Monthly Reports page and by the pre-generation check.
+
+# Field Log categories that count as corrective maintenance for the report
+CORRECTIVE_CATS = {'fault', 'repair', 'maintenance'}
+# Work still outstanding. Section 3.2 reports maintenance *performed*, so these
+# are held back — printed as plain bullets they read to the customer exactly
+# like completed work ("Antifreeze LOW LEVEL." among August's). Anything else,
+# including a blank status on a legacy entry, is treated as done as before.
+OPEN_STATUSES = {'open', 'pending', 'in progress', 'in_progress', 'in-progress'}
+# A field-log entry about PM is not corrective work: the PM record carries it
+# (Availability inputs). "PM activity for 3 hours per checklist" (10.09) used
+# to print in 3.2 as a repair.
+PM_TEXT = re.compile(r'\bPM\b|preventive', re.IGNORECASE)
+CM_SKIP_LABELS = {'open': 'open', 'conflict': 'in sync conflict',
+                  'pm': 'PM (see PM records)', 'no_block': 'no block'}
+
+
+def _is_open(row) -> bool:
+    return (row.get('status') or '').strip().lower() in OPEN_STATUSES
+
+
+def cm_skip_reason(row):
+    """Why a corrective item stays out of section 3.2, or None to print it.
+    'open' — not finished; 'conflict' — the desktop and server copies differ,
+    settle it first; 'pm' — it is PM, reported through the PM records;
+    'no_block' — no plant block to put on the line (set it with Edit record)."""
+    if _is_open(row):
+        return 'open'
+    if (row.get('sync_status') or '') == 'conflict':
+        return 'conflict'
+    if PM_TEXT.search(f"{row.get('fault') or ''} {row.get('action') or ''}"):
+        return 'pm'
+    if row.get('block') in (None, '', 0):
+        return 'no_block'
+    return None
+
+
+def corrective_rows(project_id: int, year: int, month: int) -> List[dict]:
+    """Unified corrective-maintenance items for the month, from BOTH the
+    desktop Work Reports and mobile Field Log entries (which sync down)."""
+    import calendar
+    import services.work_log_service as wls
+    from services.worklog_entry_service import get_worklog_entries
+    from services.project_service import zone_block_to_plant
+    last = calendar.monthrange(year, month)[1]
+    start = f"{year:04d}-{month:02d}-01"
+    end = f"{year:04d}-{month:02d}-{last:02d}"
+
+    # Both sources number blocks per zone (Zone 8 / Block 2); the report
+    # and the customer speak plant-wide (Block 57). Translate once here,
+    # through the block map only — a pair the map does not know gets no
+    # block rather than a guessed one.
+    def _plant(zone, block):
+        return zone_block_to_plant(project_id, zone, block)
+
+    rows = []
+    for r in wls.get_work_logs_for_month(project_id, year, month):
+        rows.append({'src': '🖥', 'id': r.get('id'), 'date': r.get('date', '') or '',
+                     'block': _plant(r.get('zone'), r.get('block')),
+                     'zone': r.get('zone'), 'local_block': r.get('block'),
+                     'cont': r.get('container_num'),
+                     'fault': r.get('fault_description', '') or '',
+                     'action': r.get('work_performed', '') or '',
+                     'sap': r.get('sap_ticket', '') or '',
+                     'status': r.get('status', '') or '', 'sync_status': ''})
+    try:
+        entries = get_worklog_entries(project_id=project_id, date_from=start, date_to=end)
+    except Exception:
+        entries = []
+    for e in entries:
+        if (e.get('category') or '') not in CORRECTIVE_CATS:
+            continue
+        rows.append({'src': '📱', 'id': e.get('id'), 'date': e.get('log_date', '') or '',
+                     # The node picker stores the plant block the customer
+                     # speaks of. Only when it is absent (a record written
+                     # before the picker) is the container's zone/block pair
+                     # translated — still through the map, never guessed.
+                     'block': e.get('plant_block') or _plant(e.get('zone_number'),
+                                                             e.get('block_number')),
+                     'zone': e.get('zone_number'),
+                     'local_block': e.get('block_number'),
+                     'cont': e.get('container_index'),
+                     'fault': e.get('fault_name', '') or '',
+                     'action': e.get('description', '') or '',
+                     'sap': e.get('sap_ticket', '') or '',
+                     'status': e.get('status', '') or '',
+                     'sync_status': e.get('sync_status', '') or '',
+                     'location': e.get('site_location', '') or ''})
+    rows.sort(key=lambda r: (r['date'] or ''))
+    return rows
+
+
+def cm_lines(rows) -> List[str]:
+    """The corrective items as the report's 3.2 lines.
+
+    Only finished corrective work with a plant block (cm_skip_reason):
+    open items, PM entries, entries in a sync conflict and entries without
+    a block stay on the page, counted, but do not go to the customer. The
+    line names the plant block only — the container index is not an LC
+    number and used to print as "Block 33/C3".
+    """
+    out = []
+    for r in rows:
+        if cm_skip_reason(r):
+            continue
+        blk = r.get('block')
+        fault = (r.get('fault') or '').strip()
+        action = (r.get('action') or '').strip()
+        sap = (r.get('sap') or '').strip()
+        loc = f"Block {blk}"
+        line = f"{loc}: {fault}" if fault else loc
+        if action:
+            line += f" — {action}"
+        if sap:
+            line += f" [{sap}]"
+        out.append(line)
+    return out
 
 
 # ── PM activities ─────────────────────────────────────────────────────────────
@@ -387,6 +582,7 @@ def record_pm(project_id: int, affected_blocks, date_from, date_to=None,
         raise ValueError("on_duplicate must be 'raise', 'update' or 'skip'")
     v = validate_pm(project_id, affected_blocks, date_from, date_to, hours, today=today)
     df, dt, h, n = v['date_from'], v['date_to'], v['hours'], v['n_blocks']
+    assert_dates_open(project_id, df)
     desc = (description or '').strip()
     y, m = int(df[:4]), int(df[5:7])
     ref = str(source_ref or '')
@@ -446,8 +642,10 @@ def update_pm_record(pm_id: int, affected_blocks, date_from, date_to=None,
     row = get_pm_record(pm_id)
     if not row:
         raise ValueError(f"No PM record {pm_id}")
+    assert_month_open(row['project_id'], row.get('year'), row.get('month'))
     v = validate_pm(row['project_id'], affected_blocks, date_from, date_to, hours, today=today)
     df, dt, h, n = v['date_from'], v['date_to'], v['hours'], v['n_blocks']
+    assert_dates_open(row['project_id'], df)
     desc = (description or '').strip() or row.get('description') or 'Preventive maintenance'
     conn = get_connection()
     try:
@@ -501,6 +699,9 @@ def update_pm_activity(pm_id: int, affected_blocks: str = '', date_from: str = '
 def delete_pm_activity(pm_id: int):
     """Delete a PM record. A planner job that pointed at it stays done but no
     longer claims the record."""
+    row = get_pm_record(pm_id)
+    if row:
+        assert_month_open(row['project_id'], row.get('year'), row.get('month'))
     conn = get_connection()
     try:
         conn.execute("DELETE FROM pm_activities WHERE id=?", (int(pm_id),))

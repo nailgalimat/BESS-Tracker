@@ -67,6 +67,16 @@ def _entry_to_dict(entry: WorkLogEntry) -> dict:
         "version":          entry.version,
         "origin_device":    entry.origin_device,
         "tags":             [t.tag for t in entry.tags],
+        # the unified work record; older clients ignore these
+        "plant_block":         entry.plant_block,
+        "node_lc":             entry.node_lc or "",
+        "node_device":         entry.node_device or "",
+        "ptw_no":              entry.ptw_no or "",
+        "time_from":           entry.time_from or "",
+        "time_to":             entry.time_to or "",
+        "hours":               entry.hours,
+        "internal_note":       entry.internal_note or "",
+        "availability_impact": entry.availability_impact or "none",
     }
 
 
@@ -341,6 +351,15 @@ def _apply_entry_change(change, device_id: str, user: User, db: Session) -> Sync
                 version          = 1,
                 origin_device    = device_id,
                 sync_status      = "synced",
+                plant_block         = payload.get("plant_block"),
+                node_lc             = payload.get("node_lc", ""),
+                node_device         = payload.get("node_device", ""),
+                ptw_no              = payload.get("ptw_no", ""),
+                time_from           = payload.get("time_from", ""),
+                time_to             = payload.get("time_to", ""),
+                hours               = payload.get("hours"),
+                internal_note       = payload.get("internal_note", ""),
+                availability_impact = payload.get("availability_impact", "none"),
             )
             db.add(entry)
             db.flush()   # get DB-assigned defaults before returning version
@@ -386,6 +405,11 @@ def _apply_entry_change(change, device_id: str, user: User, db: Session) -> Sync
             entry.sap_ticket       = payload.get("sap_ticket", entry.sap_ticket)
             entry.spare_parts      = payload.get("spare_parts", entry.spare_parts)
             entry.log_date         = payload.get("log_date", entry.log_date)
+            for _f in ("plant_block", "node_lc", "node_device", "ptw_no",
+                       "time_from", "time_to", "hours", "internal_note",
+                       "availability_impact"):
+                if _f in payload:
+                    setattr(entry, _f, payload[_f])
             entry.deleted_at       = payload.get("deleted_at")
             entry.updated_at       = now
             entry.version         += 1

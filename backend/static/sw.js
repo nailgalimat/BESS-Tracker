@@ -10,7 +10,7 @@
  * app did not open on site.
  */
 
-const V      = '12';
+const V      = '13';
 const CACHE  = 'bess-v' + V;
 const SHELL  = [
   '/app/',
@@ -26,11 +26,16 @@ const SHELL  = [
 // addAll is all-or-nothing: if any shell file fails to download, this version
 // does not install and the previous one (with its cache) stays in charge.
 self.addEventListener('install', e => {
-  e.waitUntil(
-    caches.open(CACHE)
-      .then(c => c.addAll(SHELL))
-      .then(() => self.skipWaiting())
-  );
+  // No skipWaiting() here on purpose: a new version must not swap itself in
+  // under a half-written record. It waits, the page shows "New version
+  // available", and the reload happens when the engineer taps it (the page
+  // then posts SKIP_WAITING, below).
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)));
+});
+
+// The page asks for the new version once the draft is saved.
+self.addEventListener('message', e => {
+  if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 // ── Activate: delete old caches (only once the new shell is fully cached) ────

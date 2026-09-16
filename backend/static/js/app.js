@@ -10,14 +10,25 @@ const App = {
   _currentCat:     '',
   _stagedPhotos:   [],   // { id, file, dataUrl }
   _currentEntryId: null,
+  _tab:            'tasks',
+  _taskSeg:        'today',
+  // the node being chosen: plant block, level (LC), device
+  _node:           { block: null, lc: '', device: '', zone: '' },
+  _nodeTab:        'zone',
+  _nodeNum:        '',
+  _nodeFor:        'create',
+  _swReg:          null,
 
   // ── Boot ───────────────────────────────────────────────────────────────────
   async init() {
     const token  = localStorage.getItem('access_token');
     const server = localStorage.getItem('server_url');
+    // The server is the one this app was installed from — asking a technician
+    // for a LAN IP address was the first thing the old login did.
+    const urlEl = document.getElementById('login-url');
+    if (urlEl && !urlEl.value) urlEl.value = server || window.location.origin;
     if (token && server) {
-      this._show('screen-home');
-      await this._loadTimeline();
+      await this.goTasks();
       // Background sync on startup
       if (navigator.onLine) this._syncQuiet();
     } else {
@@ -25,35 +36,402 @@ const App = {
     }
   },
 
+  // ── A new version of the app ───────────────────────────────────────────────
+  // A deployed change used to reach an open phone only by chance: the service
+  // worker installed quietly and the old code kept running. Now the phone says
+  // so, and reloads only when the engineer taps — after the draft is saved.
+  watchForUpdate(reg) {
+    if (!reg) return;
+    this._swReg = reg;
+    const show = () => { this._updateBanner(true); };
+    if (reg.waiting) show();
+    reg.addEventListener('updatefound', () => {
+      const sw = reg.installing;
+      if (!sw) return;
+      sw.addEventListener('statechange', () => {
+        if (sw.state === 'installed' && navigator.serviceWorker.controller) show();
+      });
+    });
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloading) return;
+      reloading = true;
+      window.location.reload();
+    });
+  },
+
+  _updateBanner(on) {
+    const b = document.getElementById('update-banner');
+    if (b) b.style.display = on ? 'flex' : 'none';
+  },
+
+  async applyUpdate() {
+    try { await this._saveDraft(); } catch (_) {}
+    const reg = this._swReg;
+    if (reg && reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+    else window.location.reload();
+  },
+
+  async checkUpdate() {
+    if (!this._swReg) { alert('Updates are handled by the browser here.'); return; }
+    try {
+      await this._swReg.update();
+      if (this._swReg.waiting) this._updateBanner(true);
+      else alert('This is the latest version.');
+    } catch (_) { alert('Could not check — no network.'); }
+  },
+
+  // The half-typed record survives a reload.
+  async _saveDraft() {
+    if (!document.getElementById('screen-create').classList.contains('active')) return;
+    const d = {
+      block: this._node.block, lc: this._node.lc, device: this._node.device,
+      date: document.getElementById('f-date').value,
+      cat: document.getElementById('f-cat').value,
+      fault: document.getElementById('f-fault').value,
+      desc: document.getElementById('f-desc').value,
+      note: document.getElementById('f-note').value,
+      ptw: document.getElementById('f-ptw').value,
+      sap: document.getElementById('f-sap').value,
+      hours: document.getElementById('f-hours').value,
+    };
+    localStorage.setItem('record_draft', JSON.stringify(d));
+  },
+
   // ── Screen navigation ──────────────────────────────────────────────────────
   _show(screenId) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     document.getElementById(screenId).classList.add('active');
+    const TAB = { 'screen-tasks': 'tasks', 'screen-home': 'records',
+                  'screen-stock': 'stock', 'screen-settings': 'more' };
+    const bar = document.getElementById('tabbar');
+    const tab = TAB[screenId];
+    if (bar) {
+      bar.style.display = (screenId === 'screen-login') ? 'none' : 'flex';
+      bar.querySelectorAll('.tab').forEach(t =>
+        t.classList.toggle('on', t.dataset.tab === (tab || this._tab)));
+    }
+    if (tab) this._tab = tab;
+    document.body.classList.toggle('has-tabs', screenId !== 'screen-login');
     window.scrollTo(0, 0);
   },
 
-  goHome() {
+  // ── Tabs ───────────────────────────────────────────────────────────────────
+  async goTasks() {
+    this._show('screen-tasks');
+    await this._renderTasks();
+  },
+
+  goRecords() {
     this._show('screen-home');
     this._loadTimeline();
   },
 
-  async goCreate() {
+  // kept: older buttons and code paths still call goHome()
+  goHome() { this.goRecords(); },
+
+  taskSeg(seg) {
+    this._taskSeg = seg;
+    document.querySelectorAll('#task-seg button').forEach(b =>
+      b.classList.toggle('on', b.dataset.seg === seg));
+    this._renderTasks();
+  },
+
+  async _renderTasks() {
+    const body = document.getElementById('tasks-body');
+    if (!body) return;
+    const all = (await DB.getAllEntries()).filter(e => !e.deleted_at);
+    const today = _today();
+    const weekAgo = _today(-7);
+    const open = all.filter(e => ['open', 'in_progress', 'needs_visit'].includes(e.status || ''));
+    let rows;
+    if (this._taskSeg === 'today') rows = open.filter(e => e.log_date === today);
+    else if (this._taskSeg === 'week') rows = open.filter(e => e.log_date >= weekAgo);
+    else rows = open;
+    rows.sort((a, b) => (a.log_date || '').localeCompare(b.log_date || ''));
+
+    const events = (await DB.getAllFieldEvents()).filter(e => e.sync_status !== 'synced');
+    let html = '';
+    if (events.length) {
+      html += `<div class="task-note warn">${events.length} downtime record(s) still
+               waiting to send · <b>Records</b> shows why</div>`;
+    }
+    if (!rows.length) {
+      html += `<div class="empty">Nothing open ${this._taskSeg === 'today' ? 'today' : ''}.
+               <br>Tap ＋ to write a record.</div>`;
+    }
+    for (const e of rows) {
+      const node = e.plant_block ? ('Block ' + e.plant_block) : 'No block';
+      html += `<div class="tcard">
+        <div class="tcard-top"><span class="chip ${e.status === 'needs_visit' ? 'crit' : 'warn'}">
+          ${_esc(_statusLabel(e.status))}</span><span class="hint">${_esc(e.log_date || '')}</span></div>
+        <div class="tcard-blk">${_esc(node)}${e.node_lc ? ' · ' + _esc(e.node_lc) : ''}${
+          e.node_device ? ' · ' + _esc(e.node_device) : ''}</div>
+        <div class="tcard-meta">${_esc(e.fault_name || e.description || '')}</div>
+        <button class="btn btn-outline btn-block" onclick="App._showDetail('${e.id}')">Open</button>
+      </div>`;
+    }
+    html += `<p class="hint-line">Campaign tasks planned on the desktop appear
+             here once the plan is synced to phones — not in this version.</p>`;
+    body.innerHTML = html;
+  },
+
+  async goCreate(kind, keep) {
     this._stagedPhotos = [];
     document.getElementById('photo-preview').innerHTML = '';
     document.getElementById('f-date').value    = _today();
-    document.getElementById('f-cat').value     = 'maintenance';
+    document.getElementById('f-cat').value     = kind || 'fault';
     document.getElementById('f-loc').value     = '';
     document.getElementById('f-serial').value  = '';
-    document.getElementById('f-desc').value    = '';
-    document.getElementById('f-fault').value   = '';
-    document.getElementById('f-status').value  = '';
-    document.getElementById('f-sap').value     = '';
-    document.getElementById('f-parts').value   = '';
     document.getElementById('f-tags').value    = '';
+    if (!keep) {
+      document.getElementById('f-desc').value  = '';
+      document.getElementById('f-fault').value = '';
+      document.getElementById('f-note').value  = '';
+      document.getElementById('f-ptw').value   = '';
+      document.getElementById('f-sap').value   = '';
+      document.getElementById('f-parts').value = '';
+      document.getElementById('f-start').value = '';
+      document.getElementById('f-end').value   = '';
+      document.getElementById('f-hours').value = '0';
+      this._node = { block: null, lc: '', device: '', zone: '' };
+    }
+    this.pickStatus(kind === 'maintenance' ? 'done' : 'done');
+    this._showNode();
+    this.onCategory();
     document.getElementById('create-error').style.display = 'none';
+    document.getElementById('create-title').textContent =
+      kind === 'maintenance' ? 'PM record' : 'Work record';
     this._refreshFaultList();
     await this._fillProjectSelect();
     this._show('screen-create');
+  },
+
+  onCategory() {
+    const cat = document.getElementById('f-cat').value;
+    const pm = (cat === 'maintenance');
+    document.getElementById('f-pm-group').style.display = pm ? 'block' : 'none';
+    document.getElementById('f-fault-group').style.display = pm ? 'none' : 'block';
+    if (pm && !document.getElementById('f-start').value) {
+      const now = new Date();
+      document.getElementById('f-start').value =
+        String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+    }
+  },
+
+  pickStatus(st) {
+    document.getElementById('f-status').value = st;
+    document.querySelectorAll('#f-status-seg button').forEach(b =>
+      b.classList.toggle('on', b.dataset.st === st));
+  },
+
+  bumpHours(d) {
+    const el = document.getElementById('f-hours');
+    let v = (parseFloat(el.value) || 0) + d;
+    if (v < 0) v = 0;
+    if (v > 24) v = 24;
+    el.value = String(Math.round(v * 100) / 100);
+  },
+
+  recalcHours() {
+    const a = document.getElementById('f-start').value;
+    const b = document.getElementById('f-end').value;
+    if (!a || !b) return;
+    const [h1, m1] = a.split(':').map(Number);
+    const [h2, m2] = b.split(':').map(Number);
+    let mins = (h2 * 60 + m2) - (h1 * 60 + m1);
+    if (mins < 0) mins += 24 * 60;
+    document.getElementById('f-hours').value = String(Math.round(mins / 60 * 100) / 100);
+    document.getElementById('f-hours-hint').textContent =
+      'End − start = ' + (Math.round(mins / 60 * 100) / 100) + ' h · one PM record per block per day.';
+  },
+
+  // ── Node picker ───────────────────────────────────────────────────────────
+  // "9zona 7block 2bsc" typed into a free-text location could never become a
+  // plant block, so those records never reached section 3.2. The node is
+  // chosen now: recent, zone -> block, or the number itself.
+  _showNode() {
+    const t = document.getElementById('f-node-text');
+    if (!t) return;
+    const n = this._node;
+    t.textContent = n.block
+      ? ('Block ' + n.block + (n.zone ? ' · ' + n.zone : '')
+         + (n.lc ? ' · ' + n.lc : '') + (n.device ? ' · ' + n.device : ''))
+      : 'Choose the block';
+    t.classList.toggle('chosen', !!n.block);
+  },
+
+  async _project() {
+    const projects = await DB.getMeta('projects', []);
+    const pid = document.getElementById('f-proj').value
+             || localStorage.getItem('last_project_id');
+    return (projects || []).find(p => String(p.id) === String(pid))
+        || (projects || [])[0] || null;
+  },
+
+  _zonesOf(project) {
+    if (!project) return [];
+    try {
+      const z = JSON.parse(project.zones || '[]');
+      if (Array.isArray(z) && z.length) return z;
+    } catch (_) {}
+    return [];
+  },
+
+  async openNodePicker(forWhat) {
+    this._nodeFor = forWhat || 'create';
+    const p = await this._project();
+    this._np = { project: p, zones: this._zonesOf(p), blocks: (p && p.num_blocks) || 0 };
+    if (!this._np.zones.length) this._nodeTab = this._np.blocks ? 'zone' : 'number';
+    this._renderNode();
+    this._show('screen-node');
+  },
+
+  closeNodePicker() { this._show('screen-create'); },
+
+  nodeTab(tab) {
+    this._nodeTab = tab;
+    this._renderNode();
+  },
+
+  _recentNodes() {
+    try { return JSON.parse(localStorage.getItem('recent_nodes') || '[]'); }
+    catch (_) { return []; }
+  },
+
+  _rememberNode(n) {
+    const list = this._recentNodes().filter(
+      x => !(x.block === n.block && x.lc === n.lc && x.device === n.device));
+    list.unshift({ block: n.block, lc: n.lc, device: n.device, zone: n.zone });
+    localStorage.setItem('recent_nodes', JSON.stringify(list.slice(0, 5)));
+  },
+
+  _zoneLabel(block) {
+    for (const z of ((this._np && this._np.zones) || [])) {
+      if (block >= z[1] && block <= z[2]) return 'Z' + z[0] + '/B' + (block - z[1] + 1);
+    }
+    return '';
+  },
+
+  _renderNode() {
+    const np = this._np || { zones: [], blocks: 0 };
+    document.querySelectorAll('#np-tabs button').forEach(b =>
+      b.classList.toggle('on', b.dataset.tab === this._nodeTab));
+    document.getElementById('np-recent').style.display = this._nodeTab === 'recent' ? 'block' : 'none';
+    document.getElementById('np-zone').style.display   = this._nodeTab === 'zone'   ? 'block' : 'none';
+    document.getElementById('np-number').style.display = this._nodeTab === 'number' ? 'block' : 'none';
+
+    // recent
+    const rec = this._recentNodes();
+    document.getElementById('np-recent').innerHTML = rec.length
+      ? rec.map(r => `<button class="sheet-item" onclick="App.pickRecent(${r.block},'${r.lc || ''}','${r.device || ''}')">
+            <b>Block ${r.block}${r.lc ? ' · ' + _esc(r.lc) : ''}${r.device ? ' · ' + _esc(r.device) : ''}</b>
+            <span>${_esc(r.zone || '')}</span></button>`).join('')
+      : '<p class="hint-line">Nodes you use appear here.</p>';
+
+    // zone -> block
+    const zg = document.getElementById('np-zones');
+    const bg = document.getElementById('np-blocks');
+    if (np.zones.length) {
+      const cur = this._node.zoneIdx || np.zones[0][0];
+      zg.innerHTML = np.zones.map(z =>
+        `<button class="tile${z[0] === cur ? ' on' : ''}" onclick="App.pickZone(${z[0]})">
+           <b>Z${z[0]}</b><span>${z[1]}–${z[2]}</span></button>`).join('');
+      const z = np.zones.find(x => x[0] === cur) || np.zones[0];
+      let cells = '';
+      for (let b = z[1]; b <= z[2]; b++) {
+        cells += `<button class="tile${this._node.block === b ? ' on' : ''}" onclick="App.pickBlock(${b})">
+            <b>B${b - z[1] + 1}</b><span>${b}</span></button>`;
+      }
+      bg.innerHTML = cells;
+      document.getElementById('np-block-label').textContent = 'Block in zone ' + z[0];
+    } else if (np.blocks) {
+      zg.innerHTML = '<p class="hint-line">This project has no zones mirrored yet.</p>';
+      let cells = '';
+      for (let b = 1; b <= np.blocks; b++) {
+        cells += `<button class="tile${this._node.block === b ? ' on' : ''}" onclick="App.pickBlock(${b})">
+            <b>${b}</b></button>`;
+      }
+      bg.innerHTML = cells;
+    } else {
+      zg.innerHTML = '';
+      bg.innerHTML = '<p class="hint-line">No block count yet — sync the desktop once, '
+                   + 'or use the Number tab.</p>';
+    }
+
+    // number keypad
+    const num = this._nodeNum || (this._node.block ? String(this._node.block) : '');
+    document.getElementById('np-num').textContent = num || '—';
+    const n = parseInt(num, 10);
+    const max = np.blocks || 9999;
+    const okNum = n >= 1 && n <= max;
+    document.getElementById('np-num-sub').textContent = okNum
+      ? ('Block ' + n + (this._zoneLabel(n) ? ' · ' + this._zoneLabel(n) : ''))
+      : ('Enter 1–' + (np.blocks || '…'));
+    const pad = document.getElementById('np-keypad');
+    if (!pad.dataset.built) {
+      pad.innerHTML = ['1','2','3','4','5','6','7','8','9','C','0','⌫']
+        .map(k => `<button onclick="App.nodeKey('${k}')">${k}</button>`).join('');
+      pad.dataset.built = '1';
+    }
+
+    // level + device
+    const lcs = ['LC1', 'LC2', 'Whole block'];
+    document.getElementById('np-lc').innerHTML = lcs.map(l =>
+      `<button class="pchip${this._node.lc === l ? ' on' : ''}" onclick="App.pickLc('${l}')">${l}</button>`).join('');
+    const devs = ['PCS 1', 'PCS 2', 'PCS 3', 'PCS 4', 'BESS 1', 'BESS 2', 'BESS 3',
+                  'BESS 4', 'LC cabinet', 'MV station'];
+    document.getElementById('np-device').innerHTML = devs.map(d =>
+      `<button class="pchip${this._node.device === d ? ' on' : ''}" onclick="App.pickDevice('${d}')">${d}</button>`).join('');
+
+    const chosen = this._nodeTab === 'number' ? n : this._node.block;
+    const use = document.getElementById('np-use');
+    use.disabled = !(chosen >= 1);
+    use.textContent = chosen >= 1
+      ? ('Use Block ' + chosen + (this._zoneLabel(chosen) ? ' · ' + this._zoneLabel(chosen) : '')
+         + (this._node.device || this._node.lc ? ' · ' + (this._node.device || this._node.lc) : ''))
+      : 'Choose a block';
+  },
+
+  pickZone(z) { this._node.zoneIdx = z; this._renderNode(); },
+  pickBlock(b) { this._node.block = b; this._nodeNum = String(b); this._renderNode(); },
+  pickLc(l) { this._node.lc = (this._node.lc === l ? '' : l); this._renderNode(); },
+  pickDevice(d) { this._node.device = (this._node.device === d ? '' : d); this._renderNode(); },
+  pickRecent(b, lc, dev) {
+    this._node.block = b; this._node.lc = lc || ''; this._node.device = dev || '';
+    this._nodeNum = String(b);
+    this.useNode();
+  },
+
+  nodeKey(k) {
+    if (k === 'C') this._nodeNum = '';
+    else if (k === '⌫') this._nodeNum = (this._nodeNum || '').slice(0, -1);
+    else this._nodeNum = ((this._nodeNum || '') + k).slice(0, 4);
+    const n = parseInt(this._nodeNum, 10);
+    if (n >= 1) this._node.block = n;
+    this._renderNode();
+  },
+
+  useNode() {
+    const b = this._nodeTab === 'number'
+      ? parseInt(this._nodeNum, 10) : this._node.block;
+    if (!(b >= 1)) return;
+    this._node.block = b;
+    this._node.zone = this._zoneLabel(b);
+    this._rememberNode(this._node);
+    document.getElementById('f-block').value  = String(b);
+    document.getElementById('f-lc').value     = this._node.lc || '';
+    document.getElementById('f-device').value = this._node.device || '';
+    this._showNode();
+    this._show('screen-create');
+  },
+
+  // The same defect on the next node: keep the text, drop the node.
+  repeatOnAnotherNode() {
+    const cat = document.getElementById('f-cat').value;
+    this._node = { block: null, lc: this._node.lc, device: '', zone: '' };
+    this.goCreate(cat, true);
+    this.openNodePicker('create');
   },
 
   async _fillProjectSelect() {
@@ -115,6 +493,8 @@ const App = {
   },
 
   async _fillSettingsStatus() {
+    const v = document.getElementById('s-version');
+    if (v) v.textContent = (window.APP_VERSION || 'v13');
     const last    = await DB.getMeta('last_sync_at', null);
     const pending = (await DB.getPendingEntries()).length
                   + (await DB.getPendingWriteoffs()).length
@@ -244,6 +624,14 @@ const App = {
     const date   = document.getElementById('f-date').value;
     const cat    = document.getElementById('f-cat').value;
     const desc   = document.getElementById('f-desc').value.trim();
+    const block  = parseInt(document.getElementById('f-block').value, 10) || null;
+    const lc     = document.getElementById('f-lc').value || '';
+    const device = document.getElementById('f-device').value || '';
+    const ptw    = document.getElementById('f-ptw').value.trim();
+    const note   = document.getElementById('f-note').value.trim();
+    const tFrom  = document.getElementById('f-start').value || '';
+    const tTo    = document.getElementById('f-end').value || '';
+    const hours  = parseFloat(document.getElementById('f-hours').value) || null;
     const loc    = document.getElementById('f-loc').value.trim();
     const ser    = document.getElementById('f-serial').value.trim();
     const fault  = document.getElementById('f-fault').value.trim();
@@ -255,8 +643,19 @@ const App = {
     const errEl  = document.getElementById('create-error');
 
     if (!date || !desc) {
-      _showErr(errEl, 'Date and Description are required.');
+      _showErr(errEl, 'Enter the date and what was done.');
       return;
+    }
+    // A record with no plant block cannot reach the customer's report — it is
+    // the single most common reason a phone record is lost on the desktop.
+    if (!block) {
+      _showErr(errEl, 'Choose the node — the plant block is what the report needs.');
+      return;
+    }
+    if (cat === 'maintenance') {
+      if (!(hours > 0)) { _showErr(errEl, 'Enter the PM hours (more than 0).'); return; }
+      if (hours > 24) { _showErr(errEl, 'PM hours are per block per day — at most 24.'); return; }
+      if (hours > 12 && !confirm(hours + ' h of PM on one block in one day — is that right?')) return;
     }
 
     const projectId = projVal ? parseInt(projVal, 10) : null;
@@ -272,13 +671,23 @@ const App = {
       project_id:       projectId,
       category:         cat,
       log_date:         date,
-      description:      desc,
+      description:      (cat === 'maintenance' && !/PM|preventive/i.test(desc))
+                          ? ('PM: ' + desc) : desc,
       fault_name:       fault  || '',
       status:           status || '',
       sap_ticket:       sap    || '',
       spare_parts:      parts  || '',
       site_location:    loc    || null,
       equipment_serial: ser    || null,
+      plant_block:         block,
+      node_lc:             lc,
+      node_device:         device,
+      ptw_no:              ptw,
+      internal_note:       note,
+      time_from:           tFrom,
+      time_to:             tTo,
+      hours:               hours,
+      availability_impact: 'none',
       tags,
       sync_status:      'local',
       version:          1,
@@ -307,11 +716,23 @@ const App = {
     await DB.saveEntry(entry);
     this._rememberFault(fault);        // remember a newly-typed fault/alarm
     this._stagedPhotos = [];
+    localStorage.removeItem('record_draft');
+
+    // A PM record is also the block's PM hours for the month: it goes to the
+    // desktop as a field event, which is the one writer of pm_activities.
+    if (cat === 'maintenance' && hours > 0 && projectId) {
+      await DB.saveFieldEvent({
+        id: _uuid(), project_id: projectId, kind: 'pm', blocks: String(block),
+        date_from: date, date_to: date, hours: hours, exclusion_type: '',
+        ptw_no: ptw,
+        description: (desc || 'PM as per checklist') + (ptw ? ' [' + ptw + ']' : ''),
+        created_at: now, sync_status: 'local',
+      });
+    }
 
     if (navigator.onLine) this._syncQuiet();
 
-    this._show('screen-home');
-    await this._loadTimeline();
+    this.goRecords();
   },
 
   // ── Photos ─────────────────────────────────────────────────────────────────
@@ -413,6 +834,7 @@ const App = {
   _woItem:     null,
 
   async goStock() {
+    this._tab = 'stock';
     let projects = await DB.getMeta('projects', []);
     if ((!projects || !projects.length) && navigator.onLine) {
       try { projects = await API.getProjects(); await DB.setMeta('projects', projects); } catch (_) {}
@@ -707,15 +1129,24 @@ const App = {
       _showErr(errEl, 'Blocks must be numbers: 3 or 1,2,3 or 1-8.'); return;
     }
     if (!(hours > 0)) { _showErr(errEl, 'Enter the duration in hours (more than 0).'); return; }
+    if (hours > 24 * 31) { _showErr(errEl, 'That is more hours than the month has.'); return; }
     if (kind === 'pm' && hours > 24) { _showErr(errEl, 'PM hours are per block per day — at most 24.'); return; }
     if (kind === 'pm' && hours > 12 && !confirm(`${hours} h of PM on one block in one day — is that right?`)) return;
 
     localStorage.setItem('last_project_id', pid);
+    const tFrom = (document.getElementById('ev-time-from') || {}).value || '';
+    const tTo   = (document.getElementById('ev-time-to') || {}).value || '';
+    const ptw   = ((document.getElementById('ev-ptw') || {}).value || '').trim();
+    // The times go in the text: the desktop confirms the real window against
+    // SCADA before anything counts, and it must see what the phone meant.
+    const when = (tFrom || tTo) ? ('Reported ' + (tFrom || '?') + '–' + (tTo || 'open') + '. ') : '';
     const ev = {
       id: _uuid(), project_id: parseInt(pid, 10), kind, blocks,
       date_from: from, date_to: to, hours,
       exclusion_type: kind === 'excluded' ? document.getElementById('ev-excltype').value : '',
-      description: desc, created_at: new Date().toISOString(), sync_status: 'local',
+      time_from: tFrom, time_to: tTo, ptw_no: ptw,
+      description: when + desc + (ptw ? ' [' + ptw + ']' : ''),
+      created_at: new Date().toISOString(), sync_status: 'local',
     };
     await DB.saveFieldEvent(ev);
     // Go to the records list, not home — the engineer must be able to see the
@@ -963,6 +1394,15 @@ const App = {
           spare_parts:      e.spare_parts       || '',
           site_location:    e.site_location     || '',
           equipment_serial: e.equipment_serial  || '',
+          plant_block:         e.plant_block         || null,
+          node_lc:             e.node_lc             || '',
+          node_device:         e.node_device         || '',
+          ptw_no:              e.ptw_no              || '',
+          time_from:           e.time_from           || '',
+          time_to:             e.time_to             || '',
+          hours:               (e.hours === undefined ? null : e.hours),
+          internal_note:       e.internal_note       || '',
+          availability_impact: e.availability_impact || 'none',
           tags:             e.tags              || [],
           deleted_at:       e.deleted_at        || null,
           updated_at:       e.updated_at,
@@ -1104,31 +1544,67 @@ const _CAT_LABELS = {
 };
 function _catLabel(cat) { return _CAT_LABELS[cat] || cat; }
 
+// What happened to this record, in the engineer's words. Before this, a record
+// was either "synced" or a grey dot, and an upload that the server refused
+// looked exactly like one still on its way.
+const _SEND = {
+  local:    ['Waiting to send', 'warn'],
+  pending:  ['Waiting to send', 'warn'],
+  synced:   ['Sent', 'ok'],
+  error:    ['Error', 'crit'],
+  conflict: ['Conflict — the office decides', 'crit'],
+};
+
+function _sendChip(entry) {
+  const [text, kind] = _SEND[entry.sync_status] || ['Waiting to send', 'warn'];
+  return `<span class="chip ${kind}">${text}</span>`;
+}
+
+function _statusLabel(st) {
+  return { open: 'Open', in_progress: 'In progress', needs_visit: 'Needs visit',
+           done: 'Done' }[st] || (st || 'Open');
+}
+
+function _nodeText(entry) {
+  if (entry.plant_block) {
+    return 'Block ' + entry.plant_block
+      + (entry.node_lc ? ' · ' + entry.node_lc : '')
+      + (entry.node_device ? ' · ' + entry.node_device : '');
+  }
+  // an old record, written before the node picker
+  return entry.site_location ? ('📍 ' + entry.site_location) : 'No block';
+}
+
 function _renderCard(entry) {
   const proj = entry.project_id != null
-    ? `<span class="card-loc">🔋 ${_esc(_projName(entry.project_id))}</span>` : '';
-  const loc  = entry.site_location
-    ? `<span class="card-loc">📍 ${_esc(entry.site_location)}</span>` : '';
+    ? `<span class="card-loc">${_esc(_projName(entry.project_id))}</span>` : '';
   const desc = entry.description
     ? `<p class="card-desc">${_esc(entry.description).slice(0, 160)}${entry.description.length > 160 ? '…' : ''}</p>` : '';
-  const tags = (entry.tags || []).map(t => `<span class="tag">${_esc(t)}</span>`).join('');
-  const dot  = entry.sync_status === 'conflict'
-    ? '<span class="sync-dot conflict" title="Sync conflict — server version applied">⚠</span>'
-    : entry.sync_status !== 'synced'
-      ? '<span class="sync-dot" title="Not yet synced">●</span>'
-      : '';
+  const fault = entry.fault_name ? `<div class="card-fault">${_esc(entry.fault_name)}</div>` : '';
+  const bits = [];
+  if (entry.hours) bits.push(entry.hours + ' h');
+  if (entry.ptw_no) bits.push(_esc(entry.ptw_no));
+  if (entry.status) bits.push(_statusLabel(entry.status));
+  const err = (entry.sync_status === 'error' && entry.last_error)
+    ? `<div class="card-err">${_esc(entry.last_error)}</div>` : '';
+  const retry = (entry.sync_status === 'error' || entry.sync_status === 'local'
+                 || entry.sync_status === 'pending')
+    ? `<button class="retry-btn" onclick="event.stopPropagation();App.syncNow()">Retry</button>` : '';
 
   return `
     <div class="log-card" data-id="${entry.id}">
       <div class="card-head">
         <span class="cat-badge cat-${entry.category}">${_catLabel(entry.category)}</span>
-        ${dot}
+        ${_sendChip(entry)}
       </div>
-      ${proj}
-      ${loc}
+      <div class="card-node">${_esc(_nodeText(entry))}</div>
+      ${fault}
       ${desc}
-      ${tags ? `<div class="tag-row">${tags}</div>` : ''}
+      ${bits.length ? `<div class="card-bits">${bits.join(' · ')}</div>` : ''}
+      ${proj}
+      ${err}
       <div class="card-actions">
+        ${retry}
         <button class="del-btn danger-link" data-id="${entry.id}">Delete</button>
       </div>
     </div>`;

@@ -58,6 +58,15 @@ def _new_id() -> str:
 
 # ── Create ────────────────────────────────────────────────────────────────────
 
+# The record fields the Work journal and the phone added on top of the
+# original Field Log entry: where in the plant, the permit, the hours, the
+# internal note and what it does to availability. All optional, all defaulted,
+# so an older client that does not send them is unaffected.
+RECORD_FIELDS = ("plant_block", "node_lc", "node_device", "ptw_no",
+                 "time_from", "time_to", "hours", "internal_note",
+                 "availability_impact")
+
+
 def save_worklog_entry(
     project_id: int,
     log_date: str,
@@ -71,13 +80,17 @@ def save_worklog_entry(
     status: str = "",
     sap_ticket: str = "",
     spare_parts: str = "",
+    **record
 ) -> str:
     """
     Insert a new work_log_entry.  Returns the new UUID string.
-    The fault_name / status / sap_ticket / spare_parts fields are optional.
+    The fault_name / status / sap_ticket / spare_parts fields are optional,
+    as are the RECORD_FIELDS passed as keywords.
     """
     entry_id = _new_id()
     now = _now()
+    extra = {k: v for k, v in record.items() if k in RECORD_FIELDS}
+    cols = ", ".join(extra)
     conn = get_connection()
     try:
         conn.execute("""
@@ -85,11 +98,14 @@ def save_worklog_entry(
                 (id, project_id, container_id, equipment_serial,
                  site_location, category, description,
                  fault_name, status, sap_ticket, spare_parts, log_date,
-                 created_at, updated_at, version, sync_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'local')
-        """, (entry_id, project_id, container_id, equipment_serial,
-              site_location, category, description,
-              fault_name, status, sap_ticket, spare_parts, log_date, now, now))
+                 created_at, updated_at, version, sync_status{extra_cols})
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'local'{extra_q})
+        """.format(extra_cols=(", " + cols) if cols else "",
+                   extra_q=(", " + ", ".join("?" * len(extra))) if extra else ""),
+              (entry_id, project_id, container_id, equipment_serial,
+               site_location, category, description,
+               fault_name, status, sap_ticket, spare_parts, log_date, now, now)
+              + tuple(extra.values()))
 
         if tags:
             _save_tags_cursor(conn, entry_id, tags)
@@ -133,6 +149,9 @@ def get_worklog_entries(
                 e.equipment_serial, e.site_location,
                 e.created_at, e.updated_at, e.sync_status,
                 e.version, e.deleted_at,
+                e.plant_block, e.node_lc, e.node_device, e.ptw_no,
+                e.time_from, e.time_to, e.hours, e.internal_note,
+                e.availability_impact,
                 COALESCE(p.name, '(Mobile)') AS project_name,
                 e.project_id, e.container_id,
                 c.zone_number, c.block_number, c.container_index,
@@ -206,7 +225,7 @@ def update_worklog_entry(entry_id: str, tags: Optional[List[str]] = None, **fiel
         "log_date", "category", "description",
         "equipment_serial", "site_location", "container_id", "project_id",
         "fault_name", "status", "sap_ticket", "spare_parts",
-    }
+    } | set(RECORD_FIELDS)
     updates = {k: v for k, v in fields.items() if k in allowed}
     now = _now()
     updates["updated_at"] = now

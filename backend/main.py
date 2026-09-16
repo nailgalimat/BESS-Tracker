@@ -123,6 +123,19 @@ async def lifespan(app: FastAPI):
             if _c not in _cols:
                 _conn.exec_driver_sql(
                     f"ALTER TABLE work_log_entries ADD COLUMN {_c} TEXT DEFAULT ''")
+        # The unified work record: where in the plant (the phone's node picker
+        # sends the plant block, not free text), the permit, the hours and the
+        # internal note. All optional — a client that does not send them keeps
+        # working exactly as before, and a client that does not read them
+        # ignores the extra fields.
+        for _c, _d in (("plant_block", "INTEGER"), ("node_lc", "TEXT DEFAULT ''"),
+                       ("node_device", "TEXT DEFAULT ''"), ("ptw_no", "TEXT DEFAULT ''"),
+                       ("time_from", "TEXT DEFAULT ''"), ("time_to", "TEXT DEFAULT ''"),
+                       ("hours", "REAL"), ("internal_note", "TEXT DEFAULT ''"),
+                       ("availability_impact", "TEXT DEFAULT 'none'")):
+            if _c not in _cols:
+                _conn.exec_driver_sql(
+                    f"ALTER TABLE work_log_entries ADD COLUMN {_c} {_d}")
         # How many blocks the plant has, mirrored from the desktop. The phone
         # needs it to offer a block picker — typing "1,2,3" is impossible on a
         # numeric keypad, which has no comma key.
@@ -131,6 +144,11 @@ async def lifespan(app: FastAPI):
         if "num_blocks" not in _pcols:
             _conn.exec_driver_sql(
                 "ALTER TABLE projects ADD COLUMN num_blocks INTEGER DEFAULT 0")
+        # The plant zones, so the phone node picker can show a real
+        # zone -> block grid instead of guessing where a zone starts.
+        if "zones" not in _pcols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE projects ADD COLUMN zones TEXT DEFAULT ''")
 
     # Ensure uploads directory exists
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)

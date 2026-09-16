@@ -623,3 +623,130 @@ html, body {
 }
 .bp-cell.on{ background:#1A2B45; border-color:#1A2B45; color:#FFFFFF; }
 .bp-cell:active{ transform:scale(.96); }
+
+/* ── Redesign: tabs, node picker, record status ───────────────────────────
+   Four tabs at the bottom instead of four unlabelled emoji in the header;
+   the node is tapped, never typed; every record says what happened to it. */
+
+body.has-tabs .screen-body,
+body.has-tabs .timeline { padding-bottom: 86px; }
+body.has-tabs .fab      { bottom: calc(78px + var(--safe-bot)); }
+
+.tabbar{
+  position:fixed; left:0; right:0; bottom:0; z-index:20;
+  display:flex; background:#FFFFFF; border-top:1px solid #E2E7EE;
+  padding-bottom: var(--safe-bot);
+}
+.tabbar .tab{
+  flex:1; border:none; background:transparent; color:#6B7A8D;
+  padding:11px 0 12px; font-size:12px; font-weight:600;
+}
+.tabbar .tab.on{ color:#1A2B45; box-shadow: inset 0 2px 0 #1A2B45; }
+
+/* update banner */
+.update-banner{
+  position:fixed; left:10px; right:10px; top:calc(8px + var(--safe-top));
+  z-index:60; display:flex; align-items:center; gap:10px;
+  background:#1A2B45; color:#FFFFFF; border-radius:10px;
+  padding:10px 12px; font-size:13px; box-shadow:0 6px 20px rgba(0,0,0,.25);
+}
+.update-banner .btn{ padding:6px 12px; font-size:13px; }
+
+/* segmented control */
+.ph-seg{ display:flex; gap:6px; padding:8px 14px 0; }
+.ph-seg.small{ padding:0; }
+.ph-seg button{
+  flex:1; border:1px solid #D5DEE8; background:#FFFFFF; color:#33465E;
+  border-radius:9px; padding:9px 0; font-size:13px; font-weight:600;
+}
+.ph-seg button.on{ background:#1A2B45; border-color:#1A2B45; color:#FFFFFF; }
+
+/* the node button on the record form */
+.node-btn{
+  width:100%; display:flex; align-items:center; justify-content:space-between;
+  border:1px solid #D5DEE8; background:#FFFFFF; border-radius:10px;
+  padding:13px 14px; font-size:15px; color:#6B7A8D; text-align:left;
+}
+.node-btn #f-node-text.chosen{ color:#1A2B45; font-weight:700; }
+.node-go{ color:#9AA7B6; font-size:20px; }
+
+/* node picker */
+.np-pane{ padding-top:6px; }
+.np-label{ font-size:12px; color:#6B7A8D; margin:12px 0 6px; font-weight:600;
+           text-transform:uppercase; letter-spacing:.4px; }
+.tile-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(62px,1fr));
+            gap:7px; }
+.tile{
+  border:1px solid #D5DEE8; background:#FFFFFF; border-radius:10px;
+  padding:9px 0; min-height:52px; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:2px;
+}
+.tile b{ font-size:15px; color:#1A2B45; }
+.tile span{ font-size:11px; color:#6B7A8D; }
+.tile.on{ background:#1A2B45; border-color:#1A2B45; }
+.tile.on b, .tile.on span{ color:#FFFFFF; }
+.np-num{ text-align:center; font-size:46px; font-weight:700; color:#1A2B45;
+         line-height:1.1; margin-top:8px; }
+.np-num-sub{ text-align:center; font-size:13px; color:#6B7A8D; margin-bottom:10px; }
+.keypad{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+.keypad button{
+  border:1px solid #D5DEE8; background:#FFFFFF; border-radius:12px;
+  font-size:22px; font-weight:600; color:#1A2B45; padding:14px 0;
+}
+.keypad button:active{ background:#EEF2F7; }
+.chips{ display:flex; flex-wrap:wrap; gap:6px; }
+.pchip{
+  border:1px solid #D5DEE8; background:#FFFFFF; color:#33465E;
+  border-radius:16px; padding:8px 13px; font-size:13px;
+}
+.pchip.on{ background:#1A2B45; border-color:#1A2B45; color:#FFFFFF; }
+
+/* the "+" sheet */
+.sheet-modal{ align-items:flex-end; }
+.sheet-card{ width:100%; border-radius:16px 16px 0 0; padding:10px 14px 18px; }
+.grab{ width:38px; height:4px; border-radius:2px; background:#D5DEE8;
+       margin:2px auto 12px; }
+.sheet-item{
+  display:flex; flex-direction:column; align-items:flex-start; gap:2px;
+  width:100%; border:1px solid #E2E7EE; background:#FFFFFF; border-radius:12px;
+  padding:13px 14px; margin-bottom:8px; text-align:left;
+}
+.sheet-item b{ font-size:15px; color:#1A2B45; }
+.sheet-item span{ font-size:12px; color:#6B7A8D; }
+
+/* what happened to a record */
+.chip{ display:inline-block; border-radius:10px; padding:2px 8px;
+       font-size:11px; font-weight:600; }
+.chip.ok  { background:#E7F6EC; color:#1E8E3E; }
+.chip.warn{ background:#FFF4DB; color:#8A6D1F; }
+.chip.crit{ background:#FDECEC; color:#B4232A; }
+.chip.pend{ background:#F3EAFE; color:#6B21A8; }
+.card-node{ font-size:15px; font-weight:700; color:#1A2B45; margin-top:6px; }
+.card-fault{ font-size:14px; color:#33465E; margin-top:2px; }
+.card-bits{ font-size:12px; color:#6B7A8D; margin-top:4px; }
+.card-err{ font-size:12px; color:#B4232A; background:#FDECEC; border-radius:6px;
+           padding:6px 8px; margin-top:6px; }
+.retry-btn{ border:1px solid #D5DEE8; background:#FFFFFF; color:#1A2B45;
+            border-radius:8px; padding:4px 12px; font-size:12px; margin-right:auto; }
+
+/* tasks */
+.tcard{ background:#FFFFFF; border:1px solid #E2E7EE; border-radius:12px;
+        padding:12px 13px; margin-bottom:10px; }
+.tcard-top{ display:flex; align-items:center; gap:8px; }
+.tcard-blk{ font-size:17px; font-weight:700; color:#1A2B45; margin-top:6px; }
+.tcard-meta{ font-size:13px; color:#6B7A8D; margin:2px 0 10px; }
+.task-note{ border-radius:10px; padding:10px 12px; font-size:13px;
+            margin-bottom:10px; }
+.task-note.warn{ background:#FFF4DB; color:#8A6D1F; }
+
+/* form details */
+.hours-row{ display:grid; grid-template-columns:52px 1fr 52px; gap:8px;
+            align-items:center; }
+.hours-row input{ text-align:center; font-size:20px; font-weight:700; }
+.inrep, .intern{ border-radius:8px; padding:1px 6px; font-size:10px;
+                 font-weight:600; margin-left:6px; }
+.inrep { background:#E3F2FD; color:#1565C0; }
+.intern{ background:#FFF4D6; color:#6B4E00; }
+.hint-line{ font-size:12px; color:#6B7A8D; margin:6px 2px 0; line-height:1.4; }
+.adv summary{ font-size:13px; color:#6B7A8D; cursor:pointer; margin:4px 0 8px; }
+.mono{ font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
