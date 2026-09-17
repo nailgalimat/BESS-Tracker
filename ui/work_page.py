@@ -15,12 +15,12 @@ Log, Field Records and the Daily Log. One record shape, one list, one card.
 """
 import datetime
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QDate
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QLineEdit, QTextEdit, QCheckBox, QTableWidget, QTableWidgetItem, QSplitter,
     QAbstractItemView, QScrollArea, QFrame, QMessageBox, QHeaderView,
-    QDoubleSpinBox, QSizePolicy, QGridLayout,
+    QDoubleSpinBox, QSizePolicy, QGridLayout, QDateEdit,
 )
 
 import services.work_journal_service as wj
@@ -31,6 +31,9 @@ TABS = [('all', 'All'), ('open', 'Open'), ('scada', 'Needs a record (SCADA)'),
 
 STATUSES = ['Needs visit', 'Open', 'In progress', 'Done']
 IMPACTS = [('none', 'None'), ('counts', 'Counts'), ('excluded', 'Excluded')]
+# the phone's node picker offers the same devices
+DEVICES = ['', 'PCS 1', 'PCS 2', 'PCS 3', 'PCS 4', 'BESS 1', 'BESS 2', 'BESS 3',
+           'BESS 4', 'LC cabinet', 'MV station']
 
 _CHIP = ("QLabel{border-radius:8px;padding:1px 8px;font-size:11px;}")
 
@@ -407,6 +410,13 @@ class WorkPage(QWidget):
         self._fields['status'].setCurrentText(row['status'])
         add("Status", self._fields['status'])
 
+        self._fields['date'] = QDateEdit()
+        self._fields['date'].setCalendarPopup(True)
+        self._fields['date'].setDisplayFormat("dd.MM.yyyy")
+        d = QDate.fromString((row['date'] or '')[:10], "yyyy-MM-dd")
+        self._fields['date'].setDate(d if d.isValid() else QDate.currentDate())
+        add("Date", self._fields['date'])
+
         self._fields['block'] = QLineEdit(str(row['block'] or ''))
         self._fields['block'].setPlaceholderText("plant block, e.g. 57")
         blk_row = QHBoxLayout()
@@ -418,12 +428,25 @@ class WorkPage(QWidget):
         self._fields['lc'].addItems(['', 'LC1', 'LC2', 'Whole block'])
         self._fields['lc'].setCurrentText(row['lc'] or '')
         blk_row.addWidget(self._fields['lc'])
-        self._fields['device'] = QLineEdit(row['device'] or '')
-        self._fields['device'].setPlaceholderText("PCS 2 / BESS 3 …")
+        self._fields['device'] = QComboBox()
+        self._fields['device'].setEditable(True)
+        self._fields['device'].addItems(DEVICES)
+        self._fields['device'].setCurrentText(row['device'] or '')
+        self._fields['device'].lineEdit().setPlaceholderText("device")
         blk_row.addWidget(self._fields['device'])
         holder = QWidget()
         holder.setLayout(blk_row)
         add("Node", holder)
+
+        # the serial follows the node from the project's container list;
+        # a typed one (a swapped unit) is kept
+        self._fields['serial'] = QLineEdit(row.get('serial') or '')
+        self._fields['serial'].setPlaceholderText("from the project when the node names one container")
+        self._auto_serial_val = None
+        add("Serial No.", self._fields['serial'])
+        self._fields['block'].editingFinished.connect(self._auto_serial)
+        self._fields['device'].currentTextChanged.connect(self._auto_serial)
+        self._auto_serial(prime=True)
 
         if row.get('location') and not row['block']:
             loc_row = QHBoxLayout()
@@ -514,7 +537,15 @@ class WorkPage(QWidget):
         done.clicked.connect(lambda: self._quick_status('Done'))
         done.setEnabled(not ro)
         btns.addWidget(done)
+        dele = SecondaryButton("Delete")
+        dele.setStyleSheet("color:#C62828;")
+        dele.clicked.connect(self._delete_card)
+        dele.setEnabled(not ro and row.get('key') is not None)
+        btns.addWidget(dele)
         self.card_l.addLayout(btns)
+
+        if row.get('key') and not row['old_format']:
+            self._photos_section(row)
 
         # seen before + guidance (ours, never the customer's)
         if self._pid is not None and row['title']:
@@ -536,6 +567,84 @@ class WorkPage(QWidget):
                                   "border:1px solid #E0E4EA;border-radius:4px;padding:6px;")
                 self.card_l.addWidget(txt)
         self.card_l.addStretch()
+
+    def _photos_section(self, row):
+        """Thumbnails (click to view), the record's photo folder, save a copy."""
+        from services.image_service import get_images_for_log
+        imgs = get_images_for_log(row['ref'])
+        if not imgs:
+            return
+        self._label(f"Photos · {len(imgs)}")
+        from ui.worklog_entry_form import PhotoThumb
+        strip = QHBoxLayout()
+        strip.setSpacing(6)
+        for img in imgs[:8]:
+            th = PhotoThumb(img.get('thumbnail_path') or img.get('file_path') or '',
+                            image_id=img.get('id', ''),
+                            upload_status=img.get('upload_status', 'local'))
+            th.clicked.connect(lambda _=None, i=img: self._open_photo(row, i))
+            strip.addWidget(th)
+        if len(imgs) > 8:
+            strip.addWidget(QLabel(f"+{len(imgs) - 8}"))
+        strip.addStretch()
+        holder = QWidget()
+        holder.setLayout(strip)
+        scroll = QScrollArea()
+        scroll.setWidget(holder)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setFixedHeight(holder.sizeHint().height() + 18)
+        self.card_l.addWidget(scroll)
+
+        pb = QHBoxLayout()
+        opn = SecondaryButton("Open photo folder")
+        opn.setToolTip(f"{wj.photos_root()}\\{self._name}\\{wj.photo_folder_name(row)}")
+        opn.clicked.connect(lambda: self._open_photo_folder(row))
+        pb.addWidget(opn)
+        sv = SecondaryButton("Save photos to…")
+        sv.clicked.connect(lambda: self._save_photos(row))
+        pb.addWidget(sv)
+        pb.addStretch()
+        self.card_l.addLayout(pb)
+
+    def _open_photo(self, row, img):
+        import os
+        path = img.get('file_path') or ''
+        if not os.path.isfile(path):
+            from services.image_service import download_remote_image
+            path = download_remote_image(img['id'], row['ref']) or ''
+        if not os.path.isfile(path):
+            QMessageBox.information(self, "Photo on the server",
+                                    "This photo is not on this computer yet. "
+                                    "It arrives with the next sync.")
+            return
+        from ui.worklog_entry_form import ImageViewerDialog
+        ImageViewerDialog(path, self).exec_()
+
+    def _open_photo_folder(self, row):
+        import os
+        try:
+            res = wj.mirror_record_photos(self._name, row)
+        except Exception as e:                           # noqa: BLE001
+            QMessageBox.warning(self, "Photo folder", str(e))
+            return
+        if res:
+            os.startfile(res['folder'])
+
+    def _save_photos(self, row):
+        import os
+        from PyQt5.QtWidgets import QFileDialog
+        from services.image_service import export_entry_images
+        root = QFileDialog.getExistingDirectory(self, "Save photos to")
+        if not root:
+            return
+        res = export_entry_images(row['ref'], os.path.join(root, wj.photo_folder_name(row)))
+        msg = f"Saved {res['saved']} of {res['total']} photo(s) to\n{res['dest']}"
+        if res['failed']:
+            msg += f"\n\nNot saved: {len(res['failed'])} (still on the server — sync first)."
+        if QMessageBox.question(self, "Photos saved", msg + "\n\nOpen the folder?",
+                                QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+            os.startfile(res['dest'])
 
     def _show_alarm_card(self, alarm):
         self._clear_card()
@@ -566,9 +675,11 @@ class WorkPage(QWidget):
         blk = f['block'].text().strip()
         return {
             'status': f['status'].currentText(),
+            'date': f['date'].date().toString("yyyy-MM-dd"),
             'block': int(blk) if blk.isdigit() else None,
             'lc': f['lc'].currentText(),
-            'device': f['device'].text().strip(),
+            'device': f['device'].currentText().strip(),
+            'serial': f['serial'].text().strip(),
             'title': f['title'].text().strip(),
             'work_done': f['work_done'].toPlainText().strip(),
             'internal_note': f['internal_note'].toPlainText().strip(),
@@ -586,7 +697,6 @@ class WorkPage(QWidget):
         row = next((r for r in self._shown if r['key'] == self._key), None)
         data = self._collect()
         data['kind'] = row['kind'] if row else wj.KIND_FAULT
-        data['date'] = row['date'] if row else datetime.date.today().isoformat()
         try:
             key = wj.save(self._pid, self._key, **data)
         except wj.ReadOnlyRecord as e:
@@ -607,6 +717,51 @@ class WorkPage(QWidget):
         self._fields['block'].setText(str(s['block']))
         if s.get('lc'):
             self._fields['lc'].setCurrentText(s['lc'])
+        self._auto_serial()
+
+    def _auto_serial(self, *_, prime=False):
+        """Put the project's serial for the node into the card. Only a blank
+        field or one this card filled is replaced — never a typed number."""
+        f = self._fields
+        if self._pid is None or 'serial' not in f:
+            return
+        blk = f['block'].text().strip()
+        _cid, serial = wj.container_for_node(
+            self._pid, int(blk) if blk.isdigit() else None,
+            f['device'].currentText())
+        cur = f['serial'].text().strip()
+        if prime and cur and cur == serial:
+            self._auto_serial_val = serial
+            return
+        if cur and cur != self._auto_serial_val:
+            return
+        f['serial'].setText(serial)
+        self._auto_serial_val = serial
+
+    def _delete_card(self):
+        if not self._key:
+            return
+        row = next((r for r in self._shown if r['key'] == self._key), None)
+        what = (f"{row['date']} · {row['node']} · "
+                f"{row['title'] or row['work_done'][:50]}") if row else ''
+        if QMessageBox.question(
+                self, "Delete record",
+                f"Delete this record?\n\n{what}\n\nIt leaves the journal and the "
+                "monthly report, and the phones after the next sync.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        try:
+            wj.delete(self._key)
+        except wj.ReadOnlyRecord as e:
+            QMessageBox.information(self, "Old format", str(e))
+            return
+        except Exception as e:                           # noqa: BLE001
+            QMessageBox.warning(self, "Not deleted", str(e))
+            return
+        deleted, self._key = self._key, None
+        self.record_saved.emit(deleted)
+        self.refresh()
+        self._show_card(None)
 
     def _quick_status(self, status):
         if not self._fields:
@@ -626,9 +781,14 @@ class WorkPage(QWidget):
                  'internal_note': '', 'status': 'Open', 'ptw': '', 'sap': '',
                  'hours': None, 'time_from': '', 'time_to': '', 'impact': 'none',
                  'sync': 'local', 'category': 'fault', 'container_id': None,
+                 'serial': '',
                  'node': 'New record', 'age_days': 0}
         blank.update(prefill or {})
         self._key = None
+        # drop the highlight, or a click on the same row would not reopen it
+        self.table.blockSignals(True)
+        self.table.clearSelection()
+        self.table.blockSignals(False)
         self._show_card(blank)
 
     def _repeat(self):
@@ -663,4 +823,6 @@ class WorkPage(QWidget):
         for i, r in enumerate(self._shown):
             if r['key'] == key:
                 self.table.selectRow(i)
+                if self._key != key:          # the row was already selected
+                    self._on_select()
                 return

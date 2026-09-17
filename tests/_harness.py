@@ -8,6 +8,8 @@ user's data or reach the live server no matter what it does:
   sync         a config with sync switched off, via BESS_SYNC_CONFIG — the real
                sync_config.json is enabled and holds live tokens, and opening
                the main window starts a sync worker
+  photos       the readable photo folders a sync writes, via BESS_PHOTOS_DIR
+               (the real ones are under Documents/BESS Tracker Photos)
   network      any HTTP request to a host other than localhost raises
   KPI history  data/monthly_history*.json are copied and the copies used — the
                report generator writes its month back, and that file is
@@ -53,6 +55,10 @@ SYNC_CONFIG = os.path.join(WORK, 'sync_config.json')
 with open(SYNC_CONFIG, 'w') as _f:
     json.dump({'enabled': False}, _f)
 os.environ['BESS_SYNC_CONFIG'] = SYNC_CONFIG
+
+# ── photo folders ────────────────────────────────────────────────────────────
+# a sync lays photos out in readable folders under Documents — never in a test
+os.environ['BESS_PHOTOS_DIR'] = os.path.join(WORK, 'photos')
 
 
 # ── database snapshot ────────────────────────────────────────────────────────

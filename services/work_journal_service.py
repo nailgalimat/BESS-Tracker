@@ -109,6 +109,177 @@ def zone_label(project_id: int, plant_block) -> str:
     return f'Z{z}/B{b}' if z else ''
 
 
+# The node's device → the project container it names. A block holds one LC
+# cabinet, one PCS / converter (its four units share that serial) and four
+# batteries in container_index order (BESS 1..4). "LC1" alone or "MV station"
+# names no single container.
+_DEV = re.compile(r'^\s*(BESS|PCS|LC)\b\s*(\d+)?', re.IGNORECASE)
+_DEV_TYPE = {'BESS': 'Battery', 'PCS': 'PCS / Converter', 'LC': 'LC Cabinet'}
+
+
+def container_for_node(project_id: int, plant_block, device: str):
+    """(container_id, serial) of the container the node names, or (None, '')."""
+    m = _DEV.match(device or '')
+    if not plant_block or not m:
+        return None, ''
+    z, b = plant_block_to_zone(project_id, int(plant_block))
+    if z is None:
+        return None, ''
+    kind = m.group(1).upper()
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, serial_number FROM containers WHERE project_id=? "
+            "AND zone_number=? AND block_number=? AND container_type=? "
+            "ORDER BY container_index", (project_id, z, b, _DEV_TYPE[kind])).fetchall()
+    finally:
+        conn.close()
+    n = int(m.group(2)) if (kind == 'BESS' and m.group(2)) else 1
+    if (kind == 'BESS' and not m.group(2)) or not 1 <= n <= len(rows):
+        return None, ''
+    return rows[n - 1][0], (rows[n - 1][1] or '').strip()
+
+
+# ── Photos in readable folders ───────────────────────────────────────────────
+# The app keeps photos under field_images/<record id>/. A person looks for
+# "13 Sep, block 33, the compressor", so every record with photos also gets a
+# copy in <photos root>/<project>/<date Block N LC device - fault>/. A hidden
+# .record file names the record, so an edited record's folder is renamed, not
+# duplicated. Files there are never deleted by the app.
+_BAD_CH = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+_MARKER = '.record'
+
+
+def photos_root() -> str:
+    import os
+    return os.environ.get('BESS_PHOTOS_DIR') or os.path.join(
+        os.path.expanduser('~'), 'Documents', 'BESS Tracker Photos')
+
+
+def _clean(s: str, maxlen: int) -> str:
+    s = re.sub(r'\s+', ' ', _BAD_CH.sub(' ', s or '')).strip(' .')
+    return s[:maxlen].rstrip(' .')
+
+
+def photo_folder_name(row: dict) -> str:
+    """'2026-09-13 Block 33 LC1 BESS 3 - Compressor alarm'"""
+    bits = [row.get('date') or 'no date',
+            f"Block {row['block']}" if row.get('block') else 'No block']
+    bits += [x for x in (row.get('lc'), row.get('device')) if x]
+    what = row.get('title') or row.get('work_done') or ''
+    what = re.sub(r'^PM:\s*(?=PM\b)', '', what)          # "PM: PM as per …"
+    name = ' '.join(bits) + (f' - {what}' if what else '')
+    return _clean(name, 90) or str(row['ref'])
+
+
+def _folder_index(root: str) -> dict:
+    """{record id: folder name} from the .record markers under root."""
+    import os
+    out = {}
+    if os.path.isdir(root):
+        for d in os.listdir(root):
+            try:
+                with open(os.path.join(root, d, _MARKER), encoding='utf-8') as f:
+                    out[f.read().strip()] = d
+            except OSError:
+                pass
+    return out
+
+
+def _record_dir(root: str, row: dict, index: dict = None) -> str:
+    import os
+    if index is None:
+        index = _folder_index(root)
+    want = photo_folder_name(row)
+    ref = str(row['ref'])
+    have = index.get(ref)
+    # a second record with the same date, node and text is numbered "(2)"
+    if have is not None and re.fullmatch(re.escape(want) + r'( \(\d+\))?', have):
+        return os.path.join(root, have)
+    target, k = os.path.join(root, want), 2
+    while os.path.exists(target):
+        target, k = os.path.join(root, f'{want} ({k})'), k + 1
+    if have is not None:
+        try:
+            os.rename(os.path.join(root, have), target)
+        except OSError:                      # open in Explorer: keep the old name
+            return os.path.join(root, have)
+        index[ref] = os.path.basename(target)
+        return target
+    os.makedirs(target)
+    index[ref] = os.path.basename(target)
+    marker = os.path.join(target, _MARKER)
+    with open(marker, 'w', encoding='utf-8') as f:
+        f.write(str(row['ref']))
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetFileAttributesW(marker, 2)     # hidden
+    except Exception:                                            # noqa: BLE001
+        pass
+    return target
+
+
+def mirror_record_photos(project_name: str, row: dict, indexes: dict = None) -> Optional[dict]:
+    """Copy one record's photos into its readable folder. None if it has none.
+    Returns {'folder', 'copied', 'missing'}; a photo still on the server is
+    'missing' until a sync downloads it."""
+    import os
+    import shutil
+    from services.image_service import get_images_for_log
+    if row.get('old_format'):
+        return None
+    imgs = get_images_for_log(row['ref'])
+    if not imgs:
+        return None
+    root = os.path.join(photos_root(), _clean(project_name, 60) or 'Project')
+    if indexes is not None and root not in indexes:
+        indexes[root] = _folder_index(root)
+    folder = _record_dir(root, row, None if indexes is None else indexes[root])
+    # {file: size} from one directory read; phones often name every photo
+    # "image.jpg", so a same-named file of another size is another photo
+    present = {e.name: e.stat().st_size for e in os.scandir(folder) if e.is_file()}
+    copied = missing = 0
+    for img in imgs:
+        src = img.get('file_path') or ''
+        name = _clean(img.get('filename') or os.path.basename(src), 80) or f"{img['id']}.jpg"
+        stem, ext = os.path.splitext(name)
+        alt = f"{stem}_{str(img['id'])[:8]}{ext}"
+        if alt in present or (name in present and present[name] == img.get('size_bytes')):
+            continue
+        if not os.path.isfile(src):
+            missing += 1
+            continue
+        size = os.path.getsize(src)
+        if name in present:
+            if present[name] == size:
+                continue
+            name = alt
+        shutil.copy2(src, os.path.join(folder, name))
+        present[name] = size
+        copied += 1
+    return {'folder': folder, 'copied': copied, 'missing': missing}
+
+
+def mirror_photos() -> dict:
+    """Every project's records with photos → readable folders. Run after a
+    sync; only what is not there yet is copied."""
+    from services.project_service import get_all_projects
+    out = {'records': 0, 'copied': 0, 'missing': 0}
+    seen, indexes = set(), {}
+    for p in get_all_projects():
+        for row in records(p.id, include_old=False):
+            if row['ref'] in seen:
+                continue
+            seen.add(row['ref'])
+            res = mirror_record_photos(p.name if row.get('project_id') else 'No project',
+                                       row, indexes)
+            if res:
+                out['records'] += 1
+                out['copied'] += res['copied']
+                out['missing'] += res['missing']
+    return out
+
+
 def node_text(row: dict) -> str:
     """'Block 57 · Z8/B2 · LC1 · PCS 2' — as much of it as is known."""
     bits = []
@@ -176,6 +347,8 @@ def records(project_id: int, date_from: str = None, date_to: str = None,
                 'sync': (r.get('sync_status') or 'local'),
                 'category': r.get('category') or '',
                 'container_id': r.get('container_id'),
+                'serial': (r.get('equipment_serial') or '').strip(),
+                'project_id': r.get('project_id'),
             }
             row['node'] = node_text(row)
             row['age_days'] = _age_days(row['date'], today)
@@ -213,6 +386,7 @@ def records(project_id: int, date_from: str = None, date_to: str = None,
                     'impact': r.get('availability_impact') or 'none',
                     'sync': 'old', 'category': 'fault',
                     'container_id': r.get('container_id'),
+                    'serial': (r.get('serial_number') or '').strip(),
                 }
                 row['node'] = node_text(row)
                 row['age_days'] = _age_days(row['date'], today)
@@ -339,9 +513,6 @@ def save(project_id: int, key: str = None, **fields) -> str:
         'fault_name': fields.get('title') or '',
         'status': STATUS_TO_DB.get(fields.get('status') or 'Open', 'open'),
         'sap_ticket': fields.get('sap') or '',
-        'spare_parts': fields.get('parts') or '',
-        'site_location': fields.get('location') or '',
-        'container_id': fields.get('container_id'),
         'plant_block': int(fields['block']) if fields.get('block') else None,
         'node_lc': fields.get('lc') or '',
         'node_device': fields.get('device') or '',
@@ -352,6 +523,19 @@ def save(project_id: int, key: str = None, **fields) -> str:
         'internal_note': fields.get('internal_note') or '',
         'availability_impact': fields.get('impact') or 'none',
     }
+    # What the card does not show stays as it is on an edit — the phone's
+    # location text, its parts and its container link used to be blanked.
+    for src, col in (('location', 'site_location'), ('parts', 'spare_parts'),
+                     ('container_id', 'container_id'), ('serial', 'equipment_serial')):
+        if src in fields:
+            payload[col] = fields[src] if col == 'container_id' else (fields[src] or '').strip()
+    # the node names one project container: link it, and take its serial
+    # unless one was typed (a swapped unit carries a new number)
+    cid, serial = container_for_node(project_id, fields.get('block'), fields.get('device'))
+    if cid is not None:
+        payload['container_id'] = cid
+        if not payload.get('equipment_serial'):
+            payload['equipment_serial'] = serial
     if key:
         wes.update_worklog_entry(key[2:], **payload)
         return key

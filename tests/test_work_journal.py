@@ -179,4 +179,136 @@ H.check(page._fields['title'].text() == 'DC-DC Converter Fault'
         and page._fields['impact'].currentData() == 'none',
         'a record made from the fault is pre-filled, and does not count the stop twice')
 
+# ── the serial follows the node; an edit keeps what the card does not show ──
+c = dbm.get_connection()
+for idx, typ, sn in ((2, 'PCS / Converter', 'PCS-24'), (3, 'Battery', 'BAT-24-1'),
+                     (4, 'Battery', 'BAT-24-2'), (5, 'Battery', 'BAT-24-3'),
+                     (6, 'Battery', 'BAT-24-4')):       # plant block 12 = zone 2 / block 4
+    c.execute("INSERT INTO containers (project_id, zone_number, block_number, "
+              "container_index, container_type, serial_number) VALUES (?,2,4,?,?,?)",
+              (PID, idx, typ, sn))
+c.execute("INSERT INTO work_log_entries (id, project_id, container_id, site_location, "
+          "spare_parts, category, description, fault_name, status, log_date, created_at, "
+          "updated_at, version, sync_status) VALUES ('ph1', ?, ?, '2zone 1block', "
+          "'fuse 10A', 'fault', 'Fuse replaced', 'Fuse blown', 'done', '2026-09-10', "
+          "'2026-09-10', '2026-09-10', 3, 'synced')", (PID, CID))
+c.commit(); c.close()
+
+for dev, want in (('BESS 3', 'BAT-24-3'), ('BESS 1', 'BAT-24-1'), ('PCS 2', 'PCS-24'),
+                  ('LC cabinet', 'SN24'), ('MV station', ''), ('BESS', ''),
+                  ('BESS 5', ''), ('', '')):
+    got = wj.container_for_node(PID, 12, dev)[1]
+    H.check(got == want, 'node Block 12 · {!r} → serial {!r} (want {!r})'.format(dev, got, want))
+H.check(wj.container_for_node(PID, None, 'BESS 1') == (None, ''), 'no block, no serial')
+
+
+def entry(eid):
+    conn = dbm.get_connection()
+    try:
+        return dict(conn.execute("SELECT * FROM work_log_entries WHERE id=?", (eid,)).fetchone())
+    finally:
+        conn.close()
+
+
+card = dict(date='2026-09-10', kind=wj.KIND_FAULT, lc='', title='Fuse blown',
+            work_done='Fuse replaced', status='Done')
+wj.save(PID, 'e:ph1', block=9, device='', **card)
+e = entry('ph1')
+H.check(e['site_location'] == '2zone 1block' and e['spare_parts'] == 'fuse 10A'
+        and e['container_id'] == CID,
+        'a desktop edit keeps the phone location, parts and container link ({!r}, {!r}, {})'
+        .format(e['site_location'], e['spare_parts'], e['container_id']))
+wj.save(PID, 'e:ph1', block=12, device='BESS 3', **card)
+e = entry('ph1')
+H.check(e['equipment_serial'] == 'BAT-24-3' and e['container_id'] != CID
+        and e['sync_status'] == 'pending',
+        'naming BESS 3 on block 12 links that battery and takes its serial ({})'
+        .format(e['equipment_serial']))
+wj.save(PID, 'e:ph1', block=12, device='BESS 3', serial='SWAP-001', **card)
+H.check(entry('ph1')['equipment_serial'] == 'SWAP-001', 'a typed serial is kept')
+wj.save(PID, 'e:ph1', block=12, device='BESS 3', serial='BAT-24-3',
+        **dict(card, date='2026-09-09'))
+H.check(entry('ph1')['log_date'] == '2026-09-09', 'the date can be corrected')
+
+# the card: the serial fills in as the node is chosen; delete asks, then removes
+page._set_tab('all')
+page._select_key('e:ph1')
+H.check(page._fields['serial'].text() == 'BAT-24-3', 'the card shows the serial')
+page._fields['device'].setCurrentText('PCS 2')
+H.check(page._fields['serial'].text() == 'PCS-24',
+        'changing the device refills it ({})'.format(page._fields['serial'].text()))
+page._fields['serial'].setText('TYPED-1')
+page._fields['device'].setCurrentText('BESS 4')
+H.check(page._fields['serial'].text() == 'TYPED-1', 'but never over a typed number')
+page._new_record()
+page._fields['block'].setText('12')
+page._fields['device'].setCurrentText('BESS 4')
+H.check(page._fields['serial'].text() == 'BAT-24-4', 'a new record fills it too')
+
+from PyQt5.QtWidgets import QMessageBox
+page._select_key('e:ph1')
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.No)
+page._delete_card()
+H.check(entry('ph1')['deleted_at'] is None, 'Delete answered "No" keeps the record')
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+page._delete_card()
+e = entry('ph1')
+H.check(e['deleted_at'] and e['sync_status'] == 'pending'
+        and 'e:ph1' not in [r['key'] for r in page._shown],
+        'Delete removes it from the list and queues the delete for the phones ({}, {}, {})'.format(e["deleted_at"], e["sync_status"], page._key))
+
+# ── photos: shown on the card, and laid out in folders a person can find ────
+import os
+from PyQt5.QtGui import QImage, QColor
+from PyQt5.QtWidgets import QLabel
+jpg = os.path.join(H.WORK, 'IMG_0001.jpg')
+im = QImage(40, 30, QImage.Format_RGB32)
+im.fill(QColor('#3366aa'))
+im.save(jpg, 'JPG')
+c = dbm.get_connection()
+c.execute("INSERT INTO work_log_images (id, work_log_id, file_path, thumbnail_path, "
+          "filename, size_bytes, upload_status) VALUES ('img1', ?, ?, ?, 'IMG_0001.jpg', ?, "
+          "'uploaded')", (key[2:], jpg, jpg, os.path.getsize(jpg)))
+c.commit(); c.close()
+
+H.check(wj.photos_root().startswith(H.WORK), 'tests keep photo folders in the work dir')
+row = [r for r in wj.records(PID, today=TODAY) if r['key'] == key][0]
+name = wj.photo_folder_name(row)
+H.check(name == '2026-09-14 Block 12 LC1 PCS 2 - BSC-PCS comm fault',
+        'folder name: date, block, LC, device, fault ({})'.format(name))
+H.check(wj.photo_folder_name(dict(row, title='A/B: "x"?', block=None, lc='', device=''))
+        == '2026-09-14 No block - A B x', 'characters Windows refuses are dropped')
+res = wj.mirror_photos()
+folder = os.path.join(wj.photos_root(), 'TK', name)
+H.check(os.path.isfile(os.path.join(folder, 'IMG_0001.jpg')) and res['copied'] == 1,
+        'a sync copies the photo into its folder ({})'.format(res))
+H.check(wj.mirror_photos()['copied'] == 0, 'a second pass copies nothing')
+# phones name many photos alike: another "IMG_0001.jpg" is another photo
+jpg2 = os.path.join(H.WORK, 'other', 'IMG_0001.jpg')
+os.makedirs(os.path.dirname(jpg2))
+im = QImage(120, 90, QImage.Format_RGB32)
+im.fill(QColor('#aa3366'))
+im.save(jpg2, 'JPG')
+c = dbm.get_connection()
+c.execute("INSERT INTO work_log_images (id, work_log_id, file_path, thumbnail_path, "
+          "filename, size_bytes, upload_status) VALUES ('img2abcdef', ?, ?, ?, 'IMG_0001.jpg', ?, "
+          "'uploaded')", (key[2:], jpg2, jpg2, os.path.getsize(jpg2)))
+c.commit(); c.close()
+res = wj.mirror_photos()
+H.check(res['copied'] == 1 and os.path.isfile(os.path.join(folder, 'IMG_0001_img2abcd.jpg')),
+        'a same-named photo is kept under its own name ({})'.format(sorted(os.listdir(folder))))
+H.check(wj.mirror_photos()['copied'] == 0, 'and is not copied again')
+wj.save(PID, key, date=row['date'], kind=row['kind'], block=12, lc='LC1', device='PCS 2',
+        title='PCS comm board replaced', work_done=row['work_done'], status='Done')
+wj.mirror_photos()
+renamed = os.path.join(wj.photos_root(), 'TK',
+                       '2026-09-14 Block 12 LC1 PCS 2 - PCS comm board replaced')
+H.check(os.path.isfile(os.path.join(renamed, 'IMG_0001.jpg')) and not os.path.exists(folder),
+        'an edited record\'s folder is renamed, not duplicated')
+
+page.refresh()
+page._select_key(key)
+texts = [w.text() for w in page.card.findChildren(QLabel)]
+H.check(any('Photos · 2' in t for t in texts), 'the card shows the record\'s photos')
+
 H.finish()

@@ -55,6 +55,16 @@ for lb in labels:
     active = [l for b, _i, l in win._nav_buttons if b.property('active') == 'true']
     H.check(active == [lb], '"{}" is the highlighted item (active: {})'.format(lb, active))
 
+# Analysis loads its data: a stale second copy of the analytics functions
+# (without _df) once shadowed the real ones and a PyQt slot error closed the exe
+try:
+    win.analytics_view._refresh_all()
+    ok = True
+except Exception as ex:                                  # noqa: BLE001
+    ok = False
+    print('   ', type(ex).__name__, ex)
+H.check(ok, 'Analysis loads its tables and chart')
+
 # ── every archived page still opens ──────────────────────────────────────
 for lb, idx, _hint in mw.ARCHIVE:
     win._navigate(idx)

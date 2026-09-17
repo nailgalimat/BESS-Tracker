@@ -897,6 +897,13 @@ def sync_now() -> SyncResult:
     pull_stats  = pull_delta()
     ev_stats = pull_field_events()
     download_pending_remote_images()
+    # the phones' photos, also in folders a person can find (date, block, fault)
+    try:
+        from services.work_journal_service import mirror_photos
+        mirror_photos()
+    except Exception as ex:                          # noqa: BLE001
+        import logging
+        logging.getLogger("bess.sync").warning(f"photo folders: {ex}")
 
     sync_config.last_sync_at = _now()
     sync_config.save()
