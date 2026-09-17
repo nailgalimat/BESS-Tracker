@@ -140,6 +140,61 @@ def container_for_node(project_id: int, plant_block, device: str):
     return rows[n - 1][0], (rows[n - 1][1] or '').strip()
 
 
+# ── Excel export ─────────────────────────────────────────────────────────────
+
+_EXPORT_COLS = [('Date', 'date', 11), ('Block', 'block', 7), ('Zone', 'zone_label', 8),
+                ('LC', 'lc', 11), ('Device', 'device', 11), ('Serial No.', 'serial', 15),
+                ('Type', 'kind', 7), ('Fault', 'title', 34),
+                ('What was done', 'work_done', 50), ('Status', 'status', 11),
+                ('PTW No.', 'ptw', 14), ('SAP', 'sap', 12), ('Start', 'time_from', 7),
+                ('End', 'time_to', 7), ('Hours', 'hours', 7),
+                ('Availability', 'impact', 12), ('Source', 'source', 10)]
+_EXPORT_TEXT = {'source': {'phone': 'Phone', 'desktop': 'Desktop', 'old': 'Old format'},
+                'impact': {'none': '', 'counts': 'Counts', 'excluded': 'Excluded'}}
+
+
+def export_excel(rows: List[dict], path: str, include_internal: bool = False) -> int:
+    """The listed records as one sheet, no photos. The internal diagnosis
+    note is ours: it goes in only when asked for. Returns the row count."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    cols = list(_EXPORT_COLS)
+    if include_internal:
+        cols.insert(9, ('Internal note', 'internal_note', 40))
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Work records'
+    for c, (head, _k, width) in enumerate(cols, 1):
+        cell = ws.cell(row=1, column=c, value=head)
+        cell.font = Font(bold=True, color='FFFFFF')
+        cell.fill = PatternFill('solid', fgColor='1A2B45')
+        cell.alignment = Alignment(vertical='center')
+        ws.column_dimensions[get_column_letter(c)].width = width
+    wrap = Alignment(wrap_text=True, vertical='top')
+    top = Alignment(vertical='top')
+    for i, r in enumerate(rows, 2):
+        for c, (_h, k, _w) in enumerate(cols, 1):
+            v = r.get(k)
+            if k in _EXPORT_TEXT:
+                v = _EXPORT_TEXT[k].get(v, v)
+            if k == 'date' and v:
+                try:
+                    v = datetime.date.fromisoformat(v[:10])
+                except ValueError:
+                    pass
+            cell = ws.cell(row=i, column=c, value='' if v is None else v)
+            if isinstance(v, str) and v.startswith('='):
+                cell.data_type = 's'           # phone text, not a formula
+            if isinstance(v, datetime.date):
+                cell.number_format = 'dd.mm.yyyy'
+            cell.alignment = wrap if k in ('title', 'work_done', 'internal_note') else top
+    ws.freeze_panes = 'A2'
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(cols))}{max(1, len(rows) + 1)}"
+    wb.save(path)
+    return len(rows)
+
+
 # ── Photos in readable folders ───────────────────────────────────────────────
 # The app keeps photos under field_images/<record id>/. A person looks for
 # "13 Sep, block 33, the compressor", so every record with photos also gets a

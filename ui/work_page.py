@@ -75,6 +75,11 @@ class WorkPage(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         self.header = PageHeader("Work", "Every record of work — phone and desktop in one list")
+        self.export_btn = SecondaryButton("Export to Excel")
+        self.export_btn.setToolTip("The records in the list as shown — tab, filters and "
+                                   "period apply. No photos.")
+        self.export_btn.clicked.connect(self._export_excel)
+        self.header.add_action(self.export_btn)
         self.new_btn = PrimaryButton("New record")
         self.new_btn.clicked.connect(self._new_record)
         self.header.add_action(self.new_btn)
@@ -567,6 +572,47 @@ class WorkPage(QWidget):
                                   "border:1px solid #E0E4EA;border-radius:4px;padding:6px;")
                 self.card_l.addWidget(txt)
         self.card_l.addStretch()
+
+    def _export_excel(self):
+        import os
+        from PyQt5.QtWidgets import QFileDialog
+        if self._tab == 'scada':
+            QMessageBox.information(self, "Export to Excel",
+                                    "Open a records tab (All, Open, No block…) to export.")
+            return
+        rows = list(self._shown)
+        if not rows:
+            QMessageBox.information(self, "Export to Excel", "No records in the list.")
+            return
+        ans = QMessageBox.question(
+            self, "Export to Excel",
+            f"{len(rows)} record(s), as the list shows them.\n\n"
+            "Include the internal diagnosis notes?\n"
+            "Choose No if the file may go to the customer.",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.No)
+        if ans == QMessageBox.Cancel:
+            return
+        period = (f"{self._year}-{self._month:02d}"
+                  if self.period_cb.currentData() == 'month' and self._year else "all time")
+        name = f"Work records {self._name} {period}.xlsx".replace('/', '-')
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export to Excel",
+            os.path.join(os.path.expanduser('~'), 'Documents', name), "Excel (*.xlsx)")
+        if not path:
+            return
+        try:
+            n = wj.export_excel(rows, path, include_internal=(ans == QMessageBox.Yes))
+        except PermissionError:
+            QMessageBox.warning(self, "Not saved",
+                                "The file is open in Excel. Close it and export again.")
+            return
+        except Exception as e:                           # noqa: BLE001
+            QMessageBox.warning(self, "Not saved", str(e))
+            return
+        if QMessageBox.question(self, "Exported",
+                                f"{n} record(s) saved to\n{path}\n\nOpen the file?",
+                                QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+            os.startfile(path)
 
     def _photos_section(self, row):
         """Thumbnails (click to view), the record's photo folder, save a copy."""

@@ -306,6 +306,28 @@ renamed = os.path.join(wj.photos_root(), 'TK',
 H.check(os.path.isfile(os.path.join(renamed, 'IMG_0001.jpg')) and not os.path.exists(folder),
         'an edited record\'s folder is renamed, not duplicated')
 
+# ── Excel export: the listed rows, no photos, internal notes only on request ──
+from openpyxl import load_workbook
+wj.save(PID, None, date='2026-09-08', kind=wj.KIND_FAULT, block=3,
+        title='=HYPERLINK("http://x")', work_done='text from a phone', status='Open')
+rows = wj.records(PID, today=TODAY)
+xlsx = os.path.join(H.WORK, 'work.xlsx')
+n = wj.export_excel(rows, xlsx)
+ws = load_workbook(xlsx).active
+head = [c.value for c in ws[1]]
+H.check(n == len(rows) == ws.max_row - 1, 'every listed record is a row ({})'.format(n))
+H.check(head[:6] == ['Date', 'Block', 'Zone', 'LC', 'Device', 'Serial No.']
+        and 'Internal note' not in head, 'columns without the internal note: {}'.format(head))
+body = {c.value for r in ws.iter_rows(min_row=2) for c in r}
+H.check(not any('board swap' in str(v) for v in body), 'no internal text leaks into the file')
+cell = [r for r in ws.iter_rows(min_row=2) if r[1].value == 3][0]
+H.check(cell[7].data_type == 's' and cell[7].value.startswith('=HYPERLINK'),
+        'phone text starting with "=" stays text, not a formula')
+H.check(isinstance(ws['A2'].value, datetime.datetime), 'dates are real Excel dates')
+wj.export_excel(rows, xlsx, include_internal=True)
+ws = load_workbook(xlsx).active
+H.check('Internal note' in [c.value for c in ws[1]], 'the internal note column on request')
+
 page.refresh()
 page._select_key(key)
 texts = [w.text() for w in page.card.findChildren(QLabel)]
