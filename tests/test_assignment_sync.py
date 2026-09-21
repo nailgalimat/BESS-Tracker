@@ -173,6 +173,15 @@ try:
             and srow['assigned_name'] == 'tech1',
             'a reassignment from a phone is ignored, the edit still applies ({})'
             .format(srow['assigned_to'] == P1['id']))
+    # The deadline is part of the same decision. A technician who could move
+    # their own due_date could simply move a late job out of the office's view.
+    moved = push_phone(P1, eid, srow['version'], {
+        'description': 'PM: coolant topped up, level checked',
+        'due_date': '2026-12-31', 'log_date': '2026-09-21'})
+    srow = sc.get_server_entry(eid)
+    H.check(moved['outcome'] == 'applied' and srow['due_date'] == '2026-09-21',
+            'a technician cannot move their own deadline ({})'.format(srow['due_date']))
+
     dele = requests.post(URL + '/sync/push', headers=P1['h'], json={
         'device_id': P1['device'], 'idempotency_key': str(uuid.uuid4()),
         'changes': [{'entity': 'work_log', 'id': eid, 'action': 'delete',
@@ -217,6 +226,37 @@ try:
                              'log_date': '2026-09-21'})
     H.check(sc.get_server_entry(mine)['assigned_to'] == '',
             'a technician cannot assign work, not even on a new record')
+
+    print('\n=== the office is told when the server drops the assignment ===')
+    # A new exe against an old server: the record is accepted and assigned_to
+    # is silently dropped, so "sent to tech1" is a lie and no phone ever shows
+    # the job. In the harness sync is off, so switch it on in memory only —
+    # sync_config.save is neutered and nothing reaches the real config file.
+    sync_config.enabled = True
+    ok_key = wj.save(PID, None, date='2026-09-23', kind=wj.KIND_FAULT, block=6,
+                     title='Check the coolant pump',
+                     work_done='Check the coolant pump', status='Open',
+                     assignee=P1['id'], assignee_name='tech1',
+                     assigned_by='admin', due='2026-09-23')
+    H.check(sc.verify_assignment([ok_key[2:]], P1['id']) == '',
+            'a server that keeps who the job is for raises nothing')
+
+    old_key = wj.save(PID, None, date='2026-09-24', kind=wj.KIND_FAULT, block=7,
+                      title='Replace the door seal',
+                      work_done='Replace the door seal', status='Open',
+                      assignee=P1['id'], assignee_name='tech1',
+                      assigned_by='admin', due='2026-09-24')
+    sc.push_pending()
+    import sqlite3
+    _s = sqlite3.connect(os.path.join(H.WORK, 'server.db'))
+    _s.execute("UPDATE work_log_entries SET assigned_to='' WHERE id=?",
+               (old_key[2:],))
+    _s.commit(); _s.close()
+    msg = sc.verify_assignment([old_key[2:]], P1['id'])
+    H.check('older version' in msg and 'no phone' in msg,
+            'an older server that drops it is reported in plain words: "{}"'
+            .format(msg))
+    sync_config.enabled = False
 finally:
     srv.terminate()
     try:

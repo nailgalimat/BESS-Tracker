@@ -174,7 +174,14 @@ class ChecklistRun(Base):
     serial        = Column(String, default="")
     notes         = Column(Text,   default="")
     filled_by     = Column(String, default="")
+    # When this row last changed here — the desktop's pull cursor walks it, so
+    # it only ever moves forward.
     updated_at    = Column(String, default=_now, nullable=False, index=True)
+    # When the writer actually wrote it: the phone's own stamp for a checklist
+    # filled at 12:30 in a container and uploaded at 14:00. This is what the
+    # two sides compare; stamping at upload time let a late sync overwrite an
+    # office correction made while the phone was out of signal.
+    client_updated_at = Column(String, nullable=True)
     deleted_at    = Column(String, nullable=True)
 
 

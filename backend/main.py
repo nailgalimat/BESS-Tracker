@@ -176,6 +176,9 @@ async def lifespan(app: FastAPI):
                                     ("notes", "TEXT DEFAULT ''"),
                                     ("filled_by", "TEXT DEFAULT ''"),
                                     ("updated_at", "TEXT"),
+                                    # the writer's own stamp, see
+                                    # routers/checklists.py
+                                    ("client_updated_at", "TEXT"),
                                     ("deleted_at", "TEXT")))):
             _have = {r[1] for r in _conn.exec_driver_sql(
                 f"PRAGMA table_info({_tbl})").fetchall()}
@@ -185,6 +188,13 @@ async def lifespan(app: FastAPI):
                 if _c not in _have:
                     _conn.exec_driver_sql(
                         f"ALTER TABLE {_tbl} ADD COLUMN {_c} {_d}")
+        # create_all only makes indexes for tables it creates, so the other
+        # half of a technician's delta pull — WHERE assigned_to=? AND
+        # updated_at > ? — ran unindexed on every server that already had
+        # work_log_entries, which is all of them.
+        _conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS idx_wle_assigned_updated_at "
+            "ON work_log_entries (assigned_to, updated_at)")
 
     # Ensure uploads directory exists
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)

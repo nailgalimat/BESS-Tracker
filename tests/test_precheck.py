@@ -54,7 +54,12 @@ for blocks, date, hours in (('7', '2026-08-12', 3), ('', '2026-08-13', 4), ('8',
               (PID, Y, M, blocks, date, date, hours, 'legacy'))
 for eid, status, sync, text in (('wle-noblock', 'done', 'synced', 'Antifreeze low level'),
                                 ('wle-conflict', 'done', 'conflict', 'LCU VFD1 board replaced'),
-                                ('wle-open', 'open', 'synced', 'Q1 breaker to inspect')):
+                                ('wle-open', 'open', 'synced', 'Q1 breaker to inspect'),
+                                # a PM campaign the office has just published:
+                                # open, one per block, and none of it is a 3.2
+                                # line — it is reported as hours in 3.1
+                                ('wle-pm-1', 'open', 'synced', 'PM round — August 2026 — block 4'),
+                                ('wle-pm-2', 'open', 'synced', 'PM round — August 2026 — block 5')):
     c.execute("INSERT INTO work_log_entries (id, project_id, category, description, log_date, "
               "sync_status, fault_name, status) VALUES (?,?,?,?,?,?,?,?)",
               (eid, PID, 'repair', text, '2026-08-20', sync, text, status))
@@ -110,6 +115,16 @@ H.check(len(by.get('manual', [])) == 1 and 'not a block of this plant' in by['ma
 cm = {q['title']: q for q in by.get('cm', [])}
 H.check(set(cm) == {'3.2 record without a plant block', '3.2 record in sync conflict',
                     '3.2 record still open'}, '3.2: no block, conflict, open')
+# Publishing a campaign used to fill this list with one "3.2 record still
+# open" per block — 70 questions about PM work that 3.2 never prints, because
+# cm_skip_reason tested 'open' before it tested PM.
+H.check(len(by.get('cm', [])) == 3
+        and not any('PM round' in q['detail'] for q in by.get('cm', [])),
+        'a published PM campaign asks no 3.2 questions at all: {}'.format(
+            [q['detail'][:40] for q in by.get('cm', [])]))
+H.check(rw.cm_skip_reason({'status': 'open', 'fault': 'PM round — August 2026',
+                           'action': '', 'block': 4}) == 'pm',
+        'an open PM job is skipped as PM, not as unfinished work')
 gap = by.get('gap', [])
 H.check(len(gap) == 1 and 'no data 01–09.08, 12–31.08' in gap[0]['detail'],
         'data gap on LC working status: {}'.format(gap[0]['detail'] if gap else '-'))

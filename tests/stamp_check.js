@@ -30,7 +30,13 @@ function recordingCanvas() {
   const canvas = {
     width: 0, height: 0,
     getContext: () => ctx,
-    toDataURL: (type, q) => { calls.encoded = { type, q }; return 'data:image/jpeg;base64,AAAA'; },
+    // a real re-encode comes back as tens of kilobytes of base64; the length
+    // matters, because a phone low on memory answers "data:," instead
+    toDataURL: (type, q) => {
+      calls.encoded = { type, q };
+      return canvas._out !== undefined
+        ? canvas._out : 'data:image/jpeg;base64,' + 'A'.repeat(4000);
+    },
   };
   return { canvas, calls };
 }
@@ -117,6 +123,22 @@ function sandbox(canvasHolder) {
   ctx3.createImageBitmap = () => Promise.resolve({ width: 800, height: 600, close() {} });
   const geo = await ctx3.App._location();
   check(geo === null, 'a browser without geolocation returns nothing, and does not throw');
+
+  // A phone low on memory does not throw from toDataURL — it hands back
+  // "data:,". That was stored as the photo, replacing a good one with an
+  // empty one; it has to read as a failure so the caller keeps the original.
+  for (const broken of ['data:,', '', 'data:image/jpeg;base64,']) {
+    const h4 = recordingCanvas();
+    h4.canvas._out = broken;
+    const ctx4 = sandbox(h4);
+    ctx4.createImageBitmap = () => Promise.resolve({ width: 800, height: 600, close() {} });
+    let threw = false;
+    try {
+      await ctx4.App._stampPhoto(staged, { project: 'TK', node: 'Block 7' });
+    } catch (_) { threw = true; }
+    check(threw, 'a canvas that returns ' + JSON.stringify(broken)
+                 + ' is a failure, not a photo');
+  }
 
   console.log(failures ? 'RESULT FAIL (' + failures + ' check(s))' : 'RESULT PASS');
   process.exit(0);

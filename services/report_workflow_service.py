@@ -292,13 +292,20 @@ def cm_skip_reason(row):
     """Why a corrective item stays out of section 3.2, or None to print it.
     'open' — not finished; 'conflict' — the desktop and server copies differ,
     settle it first; 'pm' — it is PM, reported through the PM records;
-    'no_block' — no plant block to put on the line (set it with Edit record)."""
+    'no_block' — no plant block to put on the line (set it with Edit record).
+
+    PM is tested first because it is the only reason that is about the record
+    itself rather than its state: a PM job is reported as hours in 3.1 and is
+    never a 3.2 line, open or closed. Testing 'open' first filled the
+    pre-generation check with one "3.2 record still open" per block the moment
+    a campaign was published — 70 questions about work that 3.2 never prints.
+    """
+    if PM_TEXT.search(f"{row.get('fault') or ''} {row.get('action') or ''}"):
+        return 'pm'
     if _is_open(row):
         return 'open'
     if (row.get('sync_status') or '') == 'conflict':
         return 'conflict'
-    if PM_TEXT.search(f"{row.get('fault') or ''} {row.get('action') or ''}"):
-        return 'pm'
     if row.get('block') in (None, '', 0):
         return 'no_block'
     return None
@@ -561,7 +568,7 @@ def _pm_holders(conn, project_id: int, date: str, n_blocks: int, exclude_id=None
 def record_pm(project_id: int, affected_blocks, date_from, date_to=None,
               hours=None, description: str = '', source: str = 'desktop',
               source_ref: str = '', on_duplicate: str = 'raise',
-              today: datetime.date = None) -> dict:
+              today: datetime.date = None, ptw_no: str = '') -> dict:
     """The one way a PM record is written. Validates (validate_pm), splits a
     multi-block entry into one record per block, and stamps year/month from the
     date.
@@ -607,10 +614,11 @@ def record_pm(project_id: int, affected_blocks, date_from, date_to=None,
                 cur = conn.execute("""
                     INSERT INTO pm_activities
                         (project_id, year, month, affected_blocks, date_from, date_to,
-                         hours, description, source, source_ref)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                         hours, description, source, source_ref, ptw_no)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     (project_id, y, m, str(b), df, dt, h,
-                     desc or 'Preventive maintenance', source, ref))
+                     desc or 'Preventive maintenance', source, ref,
+                     (ptw_no or '').strip()))
                 created.append(cur.lastrowid)
             elif what == 'own' or on_duplicate == 'update':
                 if len(pm_blocks(r.get('affected_blocks'), n)) != 1:
@@ -618,9 +626,13 @@ def record_pm(project_id: int, affected_blocks, date_from, date_to=None,
                         f"block {b} is part of PM record #{r['id']} covering blocks "
                         f"{r.get('affected_blocks')} - edit that record instead"])
                 conn.execute("""
-                    UPDATE pm_activities SET hours=?, date_to=?, description=?
+                    UPDATE pm_activities SET hours=?, date_to=?, description=?,
+                           ptw_no=?
                      WHERE id=?""",
-                    (h, dt, desc or r.get('description') or 'Preventive maintenance', r['id']))
+                    (h, dt, desc or r.get('description') or 'Preventive maintenance',
+                     # a permit given now fills one that was missing; it never
+                     # blanks the number already on the record
+                     (ptw_no or '').strip() or (r.get('ptw_no') or ''), r['id']))
                 if r['id'] not in updated:
                     updated.append(r['id'])
             else:
@@ -634,7 +646,7 @@ def record_pm(project_id: int, affected_blocks, date_from, date_to=None,
 
 def update_pm_record(pm_id: int, affected_blocks, date_from, date_to=None,
                      hours=None, description: str = '',
-                     today: datetime.date = None) -> dict:
+                     today: datetime.date = None, ptw_no: str = None) -> dict:
     """Edit a PM record with the same rules as record_pm. More than one block
     splits it: this record keeps the first, new records (same source) take the
     rest. A block-day held by another record raises PMDuplicateError and
@@ -654,21 +666,24 @@ def update_pm_record(pm_id: int, affected_blocks, date_from, date_to=None,
         if dups:
             raise PMDuplicateError(dups)
         first, rest = v['blocks'][0], v['blocks'][1:]
+        # ptw_no=None means "leave it": only a dialog that shows the field
+        # passes it, and an empty string from that dialog does clear it.
+        ptw = row.get('ptw_no') or '' if ptw_no is None else ptw_no.strip()
         conn.execute("""
             UPDATE pm_activities
                SET affected_blocks=?, date_from=?, date_to=?, hours=?, description=?,
-                   year=?, month=?
+                   year=?, month=?, ptw_no=?
              WHERE id=?""",
-            (str(first), df, dt, h, desc, int(df[:4]), int(df[5:7]), row['id']))
+            (str(first), df, dt, h, desc, int(df[:4]), int(df[5:7]), ptw, row['id']))
         created = []
         for b in rest:
             cur = conn.execute("""
                 INSERT INTO pm_activities
                     (project_id, year, month, affected_blocks, date_from, date_to,
-                     hours, description, source, source_ref)
-                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                     hours, description, source, source_ref, ptw_no)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 (row['project_id'], int(df[:4]), int(df[5:7]), str(b), df, dt, h, desc,
-                 row.get('source') or '', row.get('source_ref') or ''))
+                 row.get('source') or '', row.get('source_ref') or '', ptw))
             created.append(cur.lastrowid)
         conn.commit()
     finally:
@@ -780,6 +795,28 @@ def pm_as_strings(project_id: int, year: int, month: int) -> List[str]:
     return out
 
 
+def pm_as_rows(project_id: int, year: int, month: int) -> List[dict]:
+    """The month's PM as the customer's 3.1 table: one row per record, with
+    the permit it was done under. The bullet list said the same thing in
+    prose; the customer asked for the permit number, and a number reads
+    better in a column than inside a sentence."""
+    out = []
+    for e in pm_ledger(project_id, year, month):
+        if not e['counted']:
+            continue
+        r = e['row']
+        df = (r.get('date_from') or '')[:10]
+        dt = (r.get('date_to') or df)[:10]
+        out.append({
+            'date': df if dt == df else f'{df} - {dt}',
+            'blocks': ','.join(map(str, e['counted'])),
+            'ptw': (r.get('ptw_no') or '').strip(),
+            'work': (r.get('description') or 'PM').strip(),
+            'hours': fmt_hours(r.get('hours')),
+        })
+    return out
+
+
 def report_inputs(project_id: int, year: int, month: int) -> dict:
     """Everything the monthly report takes from the database for one
     project-month: the project's capacities and targets, and every input that
@@ -803,6 +840,7 @@ def report_inputs(project_id: int, year: int, month: int) -> dict:
         redundancy_threshold_pct=cfg.get('redundancy_threshold_pct') or 100,
         yearly_cycle_target=cfg.get('yearly_cycle_target') or 365.0,
         pm_activities=pm_as_strings(project_id, year, month) or None,
+        pm_rows=pm_as_rows(project_id, year, month) or None,
         exclusions=av.get_exclusions(
             project_id=project_id, year=year, month=month) or None,
         manual_unavailability=manual or None,

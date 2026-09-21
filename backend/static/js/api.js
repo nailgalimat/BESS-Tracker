@@ -126,8 +126,12 @@ const API = (() => {
   /** The checklists planned for this project, with the templates they need:
       { templates: [{ uuid, name, kind, items: [...] }], runs: [{ uuid, … }] }.
       One call, because one is all an engineer on site gets. */
-  async function getChecklists(projectId) {
-    return _req('GET', `/checklists/assigned?project_id=${encodeURIComponent(projectId)}`);
+  /** One page of the checklists assigned to this project. `after` is the
+      cursor from the previous page — keep asking while has_more is true. */
+  async function getChecklists(projectId, after) {
+    let path = `/checklists/assigned?project_id=${encodeURIComponent(projectId)}`;
+    if (after) path += `&after=${encodeURIComponent(after)}`;
+    return _req('GET', path);
   }
 
   /** Send back what was ticked. payload = { results: { item_id: {result, comment} },

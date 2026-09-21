@@ -249,13 +249,37 @@ const DB = (() => {
     return all.filter(r => r.sync_status && r.sync_status !== 'synced');
   }
 
-  async function updateChecklist(uuid, patch) {
-    const s = await store('checklists', 'readwrite');
-    const rec = await wrap(s.get(uuid));
-    if (!rec) return null;
-    const next = Object.assign({}, rec, patch);
-    await wrap((await store('checklists', 'readwrite')).put(next));
-    return next;
+  /** Patch one checklist run, read and write in ONE transaction.
+   *
+   *  Two transactions meant an answer ticked between the read and the write
+   *  was thrown away. And `expectUpdatedAt` guards the longer race: the
+   *  upload takes seconds, and an answer ticked while it was in flight used
+   *  to be marked 'synced' and never left the phone. Pass the stamp the
+   *  record had when the upload started; if it has moved, the patch is
+   *  skipped and the run stays waiting to send.
+   */
+  async function updateChecklist(uuid, patch, expectUpdatedAt) {
+    const db = await open();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('checklists', 'readwrite');
+      const s  = tx.objectStore('checklists');
+      const get = s.get(uuid);
+      get.onsuccess = () => {
+        const rec = get.result;
+        if (!rec) { res(null); return; }
+        if (expectUpdatedAt !== undefined && expectUpdatedAt !== null
+            && String(rec.updated_at || '') !== String(expectUpdatedAt)) {
+          res(rec);                  // changed underneath — leave it as it is
+          return;
+        }
+        const next = Object.assign({}, rec, patch);
+        const put = s.put(next);
+        put.onsuccess = () => res(next);
+        put.onerror   = e => rej(e.target.error);
+      };
+      get.onerror = e => rej(e.target.error);
+      tx.onerror  = e => rej(e.target.error);
+    });
   }
 
   // ── Meta (cursor, settings) ─────────────────────────────────────────────────

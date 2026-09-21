@@ -141,6 +141,15 @@ try:
 except Exception as e:                                   # noqa: BLE001
     print('   note   node not available or failed:', e)
 
+# ── the offline store itself, actually executed ──────────────────────────
+try:
+    p = subprocess.run(['node', os.path.join(H.MVP, 'tests', 'db_check.js')],
+                       capture_output=True, text=True, shell=True, timeout=180)
+    print((p.stdout or p.stderr).rstrip())
+    H.check('RESULT PASS' in (p.stdout or ''), 'the offline-store check passes')
+except Exception as e:                                   # noqa: BLE001
+    print('   note   node not available or failed:', e)
+
 # ── the desktop side of a phone record ───────────────────────────────────
 import database.db_manager as dbm
 import services.work_journal_service as wj

@@ -200,6 +200,12 @@ class PMDialog(QDialog):
         self.desc = QTextEdit(); self.desc.setMaximumHeight(70)
         self.desc.setPlaceholderText("What was done (e.g. PM as per the checklist)…")
         form.addRow("Description:", self.desc)
+        # the permit the work was done under; printed in the customer's 3.1
+        # when it is there, and the column is left out of the report when it
+        # is not
+        self.ptw = QLineEdit()
+        self.ptw.setPlaceholderText("optional — goes into the customer's report")
+        form.addRow("PTW No.:", self.ptw)
         lay.addLayout(form)
         lay.addWidget(_info_label(
             "One record per block per day — several blocks become one record each. "
@@ -225,6 +231,7 @@ class PMDialog(QDialog):
         except (TypeError, ValueError):
             pass
         self.desc.setPlainText(e.get('description', '') or '')
+        self.ptw.setText(e.get('ptw_no', '') or '')
 
     def get_data(self):
         return {
@@ -233,6 +240,7 @@ class PMDialog(QDialog):
             'date_to':   self.date_to.date().toString("yyyy-MM-dd"),
             'hours':     float(self.hours.value()),
             'description': self.desc.toPlainText().strip(),
+            'ptw_no':    self.ptw.text().strip(),
         }
 
     def accept(self):
@@ -1062,7 +1070,8 @@ class MonthlyReportsPage(QWidget):
         d = dlg.get_data()
         self._write_pm(lambda mode: rw.record_pm(
             self._pid, d['affected_blocks'], d['date_from'], d['date_to'], d['hours'],
-            d['description'], source='desktop', on_duplicate=mode), d['hours'])
+            d['description'], source='desktop', on_duplicate=mode,
+            ptw_no=d['ptw_no']), d['hours'])
         self._refresh_inputs()
 
     def _edit_pm(self):
@@ -1075,7 +1084,8 @@ class MonthlyReportsPage(QWidget):
         d = dlg.get_data()
         try:
             rw.update_pm_record(int(pm_id), d['affected_blocks'], d['date_from'],
-                                d['date_to'], d['hours'], d['description'])
+                                d['date_to'], d['hours'], d['description'],
+                                ptw_no=d['ptw_no'])
         except rw.PMDuplicateError as e:
             QMessageBox.warning(self, "PM already recorded",
                                 f"{e}\n\nEdit or delete that record instead.")
@@ -1169,12 +1179,13 @@ class MonthlyReportsPage(QWidget):
             dlg = PMDialog(self, project_id=self._pid, title="Phone PM — apply", info=info,
                            existing={'date_from': ev.get('date_from'), 'date_to': ev.get('date_to'),
                                      'affected_blocks': ev.get('blocks'), 'hours': ev.get('hours'),
-                                     'description': ev.get('description')})
+                                     'description': ev.get('description'),
+                                     'ptw_no': ev.get('ptw_no')})
             if dlg.exec_() != QDialog.Accepted: return
             d = dlg.get_data()
             self._write_pm(lambda mode: avi.apply_pm_event(
                 q['event_id'], d['affected_blocks'], d['date_from'], d['date_to'], d['hours'],
-                d['description'], on_duplicate=mode), d['hours'])
+                d['description'], on_duplicate=mode, ptw_no=d['ptw_no']), d['hours'])
         elif q['kind'] == 'counts':
             info = (f"From a phone: {said}.\nConfirm the blocks, dates and hours as they "
                     "really were; saving adds the downtime to the report.")

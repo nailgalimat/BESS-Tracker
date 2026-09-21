@@ -221,6 +221,51 @@ function sandbox(server) {
   check(!held._store.checklists['run-12'].deleted_at,
         'but not while this phone still holds answers nobody else has');
 
+  // ── the phone sends WHEN it was filled, not when it found signal ─────────
+  // The office may have corrected the checklist while this phone was out of
+  // reach; the server can only put the two in order if the phone says when it
+  // wrote its copy.
+  check(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(posted[0].payload.updated_at || ''),
+        'what is posted carries the phone\'s own stamp: '
+        + posted[0].payload.updated_at);
+
+  // ── every page of the assigned list, not the first 200 ───────────────────
+  // Three checklists on each of 70 blocks is 210 runs. The server pages at
+  // 200, and the phone has to keep asking — the blocks past the cut used to
+  // reach no phone at all, with nothing on screen to say so.
+  const MANY = [];
+  for (let i = 0; i < 210; i++) {
+    MANY.push(Object.assign({}, RUN, {
+      uuid: 'run-' + String(i).padStart(3, '0'), plant_block: i + 1,
+      results: { 11: { result: '', comment: '' } },
+    }));
+  }
+  const asked = [];
+  const paged = Object.assign({}, server, {
+    async getChecklists(pid, after) {
+      asked.push(after || '');
+      const from = MANY.findIndex(r => r.uuid > (after || '')) ;
+      const page = MANY.slice(from < 0 ? MANY.length : from, (from < 0 ? 0 : from) + 200);
+      return JSON.parse(JSON.stringify({
+        templates: [TPL], runs: page,
+        cursor: page.length ? page[page.length - 1].uuid : (after || ''),
+        has_more: page.length === 200,
+      }));
+    },
+  });
+  const big = sandbox(paged);
+  await big.App.goChecklists();
+  check(Object.keys(big._store.checklists).length === 210,
+        'the phone keeps asking until the list is complete: '
+        + Object.keys(big._store.checklists).length + ' of 210 in '
+        + asked.length + ' call(s)');
+  check(asked.length >= 2 && asked[1],
+        'and the second call carries the cursor from the first: '
+        + JSON.stringify(asked.slice(0, 2)));
+  check(!!big._store.checklists['run-209']
+        && !big._store.checklists['run-209'].deleted_at,
+        'a checklist on the last page is there, and is not pruned as cancelled');
+
   console.log(failures ? 'RESULT FAIL (' + failures + ' check(s))' : 'RESULT PASS');
   process.exit(0);
 })();

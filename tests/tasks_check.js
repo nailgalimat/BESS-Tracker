@@ -9,6 +9,16 @@
  * assignment untouched, a PM job keeps saying PM in the customer's line, the
  * work survives with no network, and the Today / Week / My open segments still
  * do what they did.
+ *
+ * Then the three failures a QA pass found:
+ *
+ *   C1  a job filled in offline was wiped by the first version conflict — the
+ *       push came back "conflict" and the very same sync applied the server's
+ *       copy over the only copy of the technician's text, hours and PTW
+ *   M1  a second tap on Save wrote a second record, and a second line in the
+ *       customer's 3.2
+ *   M2  a job deleted on an older build vanished from Tasks and stayed on the
+ *       server: the server answered outcome 'error' and nothing looked at it
  */
 const fs = require('fs');
 const path = require('path');
@@ -235,6 +245,122 @@ function sandbox(server, entries) {
   check(kept.status === 'done' && kept.sync_status === 'local'
         && kept.description.includes('no signal'),
         'work done offline is kept on the phone, marked to send');
+
+  // ── C1: a filled job survives a version conflict ─────────────────────────
+  // The office publishes the job (v1), the phone pulls it, the technician
+  // fills it in offline (still v1), the office edits the same record (v2).
+  // The push comes back "conflict" — and the same sync then applied the
+  // server's v2 straight over the work. It is the only copy there is.
+  const office = {
+    async getProjects() { return []; },
+    async pushChanges(changes) {
+      return { results: changes.map(c => ({ id: c.id, outcome: 'conflict' })) };
+    },
+    async pullDelta() {
+      return {
+        changes: [{ entity: 'work_log', id: 'job-1', updated_at: '2026-09-21T09:00:00Z',
+                    data: { ...JOB, version: JOB.version + 1, status: 'open',
+                            hours: null, time_from: '', time_to: '',
+                            ptw_no: 'PTW-NEW', internal_note: '',
+                            description: 'PM round — do block 5 today please' } }],
+        cursor: '2', has_more: false,
+      };
+    },
+    async uploadImage() { return {}; },
+  };
+  const cx = sandbox(office, [JOB]);
+  cx.navigator.onLine = false;             // filled in a container, no signal
+  await cx.App.openTask('job-1');
+  cx._els['task-desc'].value = 'Coolant topped up, filter cleaned';
+  cx._els['task-start'].value = '09:10';
+  cx._els['task-end'].value = '10:40';
+  cx.App.recalcTaskHours();
+  cx._els['task-ptw'].value = 'PTW-2609-140';
+  await cx.App.completeTask();
+  cx.navigator.onLine = true;              // back within reach of the mast
+  const res = await cx.App._doSync();
+  const onSite = cx._store.entries['job-1'];
+  check(onSite.description.includes('Coolant topped up') && onSite.hours === 1.5
+        && onSite.ptw_no === 'PTW-2609-140' && onSite.status === 'done',
+        'the work done on site is still there after the conflict: '
+        + JSON.stringify([onSite.description.slice(0, 24), onSite.hours, onSite.ptw_no]));
+  check(onSite.sync_status === 'conflict' && res.conflicts === 1,
+        'the record is flagged as a conflict, and the sync says so');
+  check(onSite.server_changed === true,
+        'and it knows the office has changed it since');
+  const renderCard = vm.runInContext('_renderCard', cx);
+  check(renderCard(onSite).includes('The office changed this'),
+        'the card says so in words the technician can act on');
+
+  // a conflict the office has NOT touched again is left exactly as it was
+  const quiet = sandbox({ ...office, async pullDelta() {
+    return { changes: [], cursor: '2', has_more: false }; } }, [JOB]);
+  quiet.navigator.onLine = false;
+  await quiet.App.openTask('job-1');
+  quiet._els['task-desc'].value = 'done, nothing else';
+  await quiet.App.completeTask();
+  quiet.navigator.onLine = true;
+  await quiet.App._doSync();
+  check(quiet._store.entries['job-1'].server_changed === undefined,
+        'a conflict nobody else touched is not dressed up as one');
+
+  // ── M1: one tap, one record ──────────────────────────────────────────────
+  let release;
+  const slow = sandbox(server, []);
+  const held = new Promise(r => { release = r; });
+  const realSave = slow.DB.saveEntry;
+  slow.DB.saveEntry = async e => { await held; return realSave(e); };
+  const field = id => slow.document.getElementById(id);
+  field('f-date').value = today();
+  field('f-desc').value = 'Fuse replaced on BESS 2';
+  field('f-block').value = '5';
+  const first = slow.App.saveEntry();
+  check(field('save-btn').disabled === true,
+        'Save is dead while the record is being written');
+  const second = slow.App.saveEntry();       // the impatient second tap
+  release();
+  await first; await second;
+  check(Object.keys(slow._store.entries).length === 1,
+        'a double tap writes ONE record, not two: '
+        + Object.keys(slow._store.entries).length);
+  check(field('save-btn').disabled === false,
+        'and the button comes back afterwards');
+
+  // ── M2: a delete the server refuses ──────────────────────────────────────
+  const refuse = {
+    async getProjects() { return []; },
+    async pushChanges(changes) {
+      return { results: changes.map(c => ({ id: c.id, outcome: 'error',
+                                            message: 'Not your entry' })) };
+    },
+    async pullDelta() { return { changes: [], cursor: '1', has_more: false }; },
+    async uploadImage() { return {}; },
+  };
+  const dx = sandbox(refuse, [JOB]);
+  await dx.App._deleteById('job-1');
+  check(dx._store.entries['job-1'].deleted_at,
+        'the phone marks the job deleted and queues it');
+  await dx.App._doSync();
+  const backAgain = dx._store.entries['job-1'];
+  check(!backAgain.deleted_at,
+        'the server refuses it, so the job comes back — it did not stop '
+        + 'being real work');
+  check(backAgain.version === JOB.version,
+        'on the version the server holds: ' + backAgain.version);
+  check(backAgain.sync_status === 'error'
+        && /Not your entry/.test(backAgain.last_error || ''),
+        'and it says why: ' + backAgain.last_error);
+  await dx.App.goTasks();
+  check(dx._els['tasks-body'].innerHTML.includes('Block 5'),
+        'the job is on the Tasks tab again, not silently gone');
+
+  // the Delete button is hidden by who the job is FOR — the office account
+  // often has no username, so assigned_by is legitimately empty
+  const noName = { ...JOB, assigned_by: '' };
+  check(!renderCard(noName).includes('>Delete<'),
+        'a job from an office account with no username still cannot be deleted');
+  check(renderCard(MINE).includes('>Delete<'),
+        "while the technician's own record still can be");
 
   console.log(failures ? 'RESULT FAIL (' + failures + ' check(s))' : 'RESULT PASS');
   process.exit(0);

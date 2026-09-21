@@ -1231,7 +1231,11 @@ class PlannerPage(QWidget):
         if not self._project_id:
             return
         import services.checklist_pm_service as cs
-        tpls = cs.templates(self._project_id)
+        try:
+            tpls = cs.templates(self._project_id)
+        except Exception as e:                        # noqa: BLE001
+            QMessageBox.critical(self, 'Could not read the checklists', str(e))
+            return
         if not tpls:
             QMessageBox.information(
                 self, 'No checklist yet',
@@ -1247,6 +1251,12 @@ class PlannerPage(QWidget):
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             made = cs.plan_runs(self._project_id, **v)
+        except Exception as e:                        # noqa: BLE001
+            # A database error here used to escape the slot, and Qt kills the
+            # app when that happens. The global hook catches it now, but the
+            # page that failed should still say so where it happened.
+            QMessageBox.critical(self, 'Could not plan the checklists', str(e))
+            return
         finally:
             QApplication.restoreOverrideCursor()
         self._load_checklists()
@@ -1393,7 +1403,12 @@ class PlannerPage(QWidget):
             QMessageBox.information(self, 'Nothing to send',
                                     'There are no jobs in this view.')
             return
-        users = team.users()
+        try:
+            users = team.users()
+        except Exception as e:                        # noqa: BLE001
+            QMessageBox.critical(self, 'Could not read the technician list',
+                                 str(e))
+            return
         if not users:
             QMessageBox.information(
                 self, 'No technicians yet',
@@ -1414,21 +1429,39 @@ class PlannerPage(QWidget):
 
     def _publish(self, items, user_id, user_name):
         from services.sync_config import sync_config
+        import services.sync_client as sc
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             res = pl.publish_jobs(self._project_id, [it['id'] for it in items],
                                   assignee_id=user_id, assignee_name=user_name,
                                   assigned_by=sync_config.username or '')
-        finally:
+            # An older server accepts the record and silently drops who it is
+            # for, so "Sent to Ivan" would be a lie and nothing would reach
+            # any phone. Ask the server once — one message for the batch, not
+            # a dialog per job.
+            warning = sc.verify_assignment([k[2:] for k in res.get('keys', [])],
+                                           user_id)
+        except Exception as e:                        # noqa: BLE001
+            QApplication.restoreOverrideCursor()      # before the dialog blocks
+            QMessageBox.critical(self, 'Could not send the jobs', str(e))
+            self._reload()
+            return None
+        else:
             QApplication.restoreOverrideCursor()
         self._reload()
-        QMessageBox.information(
-            self, 'Sent',
-            f"{res['published']} job(s) are now work records for {user_name}"
-            + (f", {res['reassigned']} already published were reassigned"
-               if res['reassigned'] else '')
-            + '.\n\nThey reach the phone on its next sync, and show in Work '
-              'here as assigned.')
+        if warning:
+            QMessageBox.warning(
+                self, 'Sent here, but not to the phone',
+                f"{res['published']} job(s) were written for {user_name} in "
+                f"this app.\n\n{warning}")
+        else:
+            QMessageBox.information(
+                self, 'Sent',
+                f"{res['published']} job(s) are now work records for {user_name}"
+                + (f", {res['reassigned']} already published were reassigned"
+                   if res['reassigned'] else '')
+                + '.\n\nThey reach the phone on its next sync, and show in Work '
+                  'here as assigned.')
         return res
 
     def _reopen_selected(self):

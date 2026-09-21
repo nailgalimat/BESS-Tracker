@@ -247,10 +247,13 @@ def initialize_database():
         # ── CHECKLIST TEMPLATES ───────────────────────────────────────────
         # A template defines what checks to perform for a given container type
         # or a custom named scope (e.g. "Block commissioning - LC+PCS+4xBESS")
+        # `name` is NOT unique on its own: two customers issue checklists with
+        # the same file name ("01) PCS Checklist"). It is unique per project —
+        # see the index further down.
         c.execute("""
             CREATE TABLE IF NOT EXISTS checklist_templates (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                name           TEXT    NOT NULL UNIQUE,
+                name           TEXT    NOT NULL,
                 description    TEXT    DEFAULT '',
                 container_type TEXT    DEFAULT '',  -- e.g. 'Battery', 'PCS / Converter', or '' for multi
                 scope          TEXT    DEFAULT 'container', -- 'container' or 'block'
@@ -766,6 +769,70 @@ def initialize_database():
                 c.execute(f"ALTER TABLE checklist_templates ADD COLUMN {_col} {_decl}")
         c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_checklist_templates_uuid "
                   "ON checklist_templates(uuid) WHERE uuid IS NOT NULL")
+
+        # A template belongs to a project. `name` used to be UNIQUE on its own,
+        # so importing Bukhara's "01) PCS Checklist" took over the Tashkent
+        # row — its project, its workbook copy and its items moved with it, the
+        # Tashkent runs already filled in pointed at the wrong workbook, and
+        # the export then wrote into the other customer's file. SQLite cannot
+        # drop a column constraint, so a database that still carries the old
+        # one is rebuilt here, once. COALESCE keeps the pre-project rows (NULL
+        # project) unique among themselves, which a plain index would not.
+        _legacy_name_unique = False
+        for _idx in c.execute("PRAGMA index_list(checklist_templates)").fetchall():
+            if _idx['origin'] != 'u':
+                continue
+            _on = [r[2] for r in c.execute(
+                f"PRAGMA index_info({_idx['name']!r})").fetchall()]
+            if _on == ['name']:
+                _legacy_name_unique = True
+        if _legacy_name_unique:
+            _keep = [r[1] for r in c.execute(
+                "PRAGMA table_info(checklist_templates)").fetchall()]
+            conn.commit()                 # a PRAGMA is a no-op inside a transaction
+            c.execute("PRAGMA foreign_keys = OFF")
+            # legacy_alter_table: the plain rename, with no re-parse of the
+            # other tables that still reference the table just dropped
+            c.execute("PRAGMA legacy_alter_table = ON")
+            # The CREATE below runs in autocommit while the copy that follows
+            # does not, so a rebuild interrupted half way leaves the scratch
+            # table behind. Without this the next start would fail on "table
+            # already exists" and the app would not boot at all.
+            c.execute("DROP TABLE IF EXISTS checklist_templates_new")
+            c.execute("""
+                CREATE TABLE checklist_templates_new (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name           TEXT    NOT NULL,
+                    description    TEXT    DEFAULT '',
+                    container_type TEXT    DEFAULT '',
+                    scope          TEXT    DEFAULT 'container',
+                    created_at     TEXT    DEFAULT (datetime('now')),
+                    uuid           TEXT,
+                    project_id     INTEGER,
+                    kind           TEXT    DEFAULT '',
+                    source_file    TEXT    DEFAULT '',
+                    source_sha     TEXT    DEFAULT '',
+                    progress_row   INTEGER,
+                    updated_at     TEXT
+                )
+            """)
+            _new = [r[1] for r in c.execute(
+                "PRAGMA table_info(checklist_templates_new)").fetchall()]
+            _cols = ', '.join(x for x in _keep if x in _new)
+            c.execute(f"INSERT INTO checklist_templates_new ({_cols}) "
+                      f"SELECT {_cols} FROM checklist_templates")
+            c.execute("DROP TABLE checklist_templates")
+            c.execute("ALTER TABLE checklist_templates_new "
+                      "RENAME TO checklist_templates")
+            conn.commit()
+            c.execute("PRAGMA legacy_alter_table = OFF")
+            c.execute("PRAGMA foreign_keys = ON")
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS "
+                      "idx_checklist_templates_uuid ON checklist_templates(uuid) "
+                      "WHERE uuid IS NOT NULL")
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS "
+                  "idx_checklist_templates_project_name "
+                  "ON checklist_templates(COALESCE(project_id, -1), name)")
 
         _ci_cols = [r[1] for r in c.execute(
             "PRAGMA table_info(checklist_items)").fetchall()]

@@ -440,14 +440,17 @@ def _apply_entry_change(change, device_id: str, user: User, db: Session) -> Sync
             entry.log_date         = payload.get("log_date", entry.log_date)
             for _f in ("plant_block", "node_lc", "node_device", "ptw_no",
                        "time_from", "time_to", "hours", "internal_note",
-                       "availability_impact", "due_date"):
+                       "availability_impact"):
                 if _f in payload:
                     setattr(entry, _f, payload[_f])
             # Reassigning is the office's call: a technician's push carries the
             # assignment back unchanged, and must not be able to hand the job
-            # to somebody else — or to take it off themselves.
+            # to somebody else — or to take it off themselves. The deadline
+            # belongs to the same decision: a technician who could move
+            # due_date could simply move a late job out of the office's view.
             if _may_assign(user):
-                for _f in ("assigned_to", "assigned_name", "assigned_by"):
+                for _f in ("assigned_to", "assigned_name", "assigned_by",
+                           "due_date"):
                     if _f in payload:
                         setattr(entry, _f, payload[_f])
             entry.deleted_at       = payload.get("deleted_at")

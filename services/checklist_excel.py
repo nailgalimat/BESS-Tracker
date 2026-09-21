@@ -133,6 +133,12 @@ def _shift_attr_ref(attrs, at, n):
                   lambda m: f'ref="{_shift_range(m.group(1), at, n, True)}"', attrs)
 
 
+# Excel's hard limit on the characters in one cell. A longer string makes
+# Excel call the whole file damaged and offer to repair it, which for the
+# customer means the checklist did not arrive.
+_MAX_CELL_CHARS = 32767
+
+
 def _cell_xml(ref: str, style: str, value):
     """One <c> element, keeping the template cell's style (the checkbox format
     in column E is carried by the style, not by the value)."""
@@ -140,8 +146,11 @@ def _cell_xml(ref: str, style: str, value):
         return f'<c r="{ref}"{style} t="b"><v>{int(value)}</v></c>'
     if value in (None, ''):
         return f'<c r="{ref}"{style}/>'
+    text = str(value)
+    if len(text) > _MAX_CELL_CHARS:
+        text = text[:_MAX_CELL_CHARS - 1] + '…'
     return (f'<c r="{ref}"{style} t="inlineStr"><is>'
-            f'<t xml:space="preserve">{escape(str(value))}</t></is></c>')
+            f'<t xml:space="preserve">{escape(text)}</t></is></c>')
 
 
 def _set_cell(sheet_xml: str, ref: str, value) -> str:
@@ -286,9 +295,13 @@ def write_filled(src_path: str, out_path: str, header: dict, results: dict,
         sheet = next(n for n in parts if n.startswith('xl/worksheets/sheet'))
 
     # added rows first: they move the rows below them, so the results written
-    # afterwards land on the right ones
+    # afterwards land on the right ones. Two items added to the same group
+    # share an after_row, and each insert goes immediately after it — so they
+    # have to be written last-first, or the customer's file shows them in
+    # reverse order. Sorting on after_row alone left that to chance.
     shifted = {}
-    for extra in sorted(added or [], key=lambda a: a['after_row'], reverse=True):
+    for _n, extra in sorted(enumerate(added or []),
+                            key=lambda t: (t[1]['after_row'], t[0]), reverse=True):
         at = _insert_row(parts, sheet, extra['after_row'], {
             COL['no']: extra.get('no', ''),
             COL['equipment']: extra.get('equipment', ''),

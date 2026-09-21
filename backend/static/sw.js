@@ -10,7 +10,7 @@
  * app did not open on site.
  */
 
-const V      = '16';
+const V      = '17';
 const CACHE  = 'bess-v' + V;
 const SHELL  = [
   '/app/',

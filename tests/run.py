@@ -20,6 +20,14 @@ FAST_TIMEOUT, REAL_TIMEOUT = 600, 3600
 
 
 def main():
+    # A failing test's output is printed here verbatim, and it can carry
+    # anything the app shows — an emoji from the phone's HTML killed the whole
+    # run on a cp1251 console.
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):
+        pass
     real = '--real' in sys.argv
     words = [a for a in sys.argv[1:] if not a.startswith('--')]
     files = sorted(glob.glob(os.path.join(HERE, 'test_*.py')))
@@ -45,8 +53,15 @@ def main():
         except subprocess.TimeoutExpired as e:
             out = ((e.stdout or '') if isinstance(e.stdout, str) else '') + \
                   '\nTIMEOUT after {} s'.format(timeout)
-        status = ('PASS' if 'RESULT PASS' in out else
-                  'SKIP' if 'RESULT SKIP' in out else 'FAIL')
+        # The LAST RESULT line, not the first one anywhere in the output: a
+        # test that runs node sub-checks prints their RESULT lines verbatim,
+        # so a nested "RESULT PASS" quietly marked the whole test green even
+        # when its own last line said FAIL. The test's own line is always the
+        # last, because _harness.finish() leaves through os._exit.
+        verdicts = [ln for ln in out.splitlines() if ln.startswith('RESULT ')]
+        last = verdicts[-1] if verdicts else ''
+        status = ('PASS' if last.startswith('RESULT PASS') else
+                  'SKIP' if last.startswith('RESULT SKIP') else 'FAIL')
         dt = time.time() - t0
         results.append((name, status))
         print('{:<34} {}  ({:.0f} s)'.format(name, status, dt), flush=True)

@@ -267,6 +267,11 @@ class ChecklistRunsSyncRequest(BaseModel):
 class ChecklistAssignedResponse(BaseModel):
     templates: List[ChecklistTemplateOut]
     runs:      List[ChecklistRunOut]
+    # Paged by run uuid: the phone asks again with ?after=<cursor> while
+    # has_more is true. A site with three checklists on each of 70 blocks is
+    # more than one page, and a truncated list used to be silent.
+    cursor:    str  = ""
+    has_more:  bool = False
 
 
 class ChecklistResultsIn(BaseModel):
@@ -282,9 +287,11 @@ class ChecklistResultsIn(BaseModel):
 
 
 class ChecklistRunPullResponse(BaseModel):
-    runs:     List[ChecklistRunOut]
-    cursor:   str
-    has_more: bool
+    runs:        List[ChecklistRunOut]
+    cursor:      str
+    # the second half of the cursor — a whole publish shares one timestamp
+    cursor_uuid: str = ""
+    has_more:    bool
 
 
 # ── Sync ──────────────────────────────────────────────────────────────────────

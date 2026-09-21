@@ -244,7 +244,8 @@ def route_field_event(ev: dict) -> str:
         try:
             rw.record_pm(pid, ev.get('blocks'), ev.get('date_from'), ev.get('date_to'),
                          ev.get('hours'), ev.get('description') or '',
-                         source='phone', source_ref=eid)
+                         source='phone', source_ref=eid,
+                         ptw_no=ev.get('ptw_no') or '')
             _mark_seen(eid, kind)
             return 'applied'
         except rw.PMDuplicateError as ex:
@@ -327,13 +328,18 @@ def _pending_or_raise(event_id: str, kind: str = None) -> dict:
 
 
 def apply_pm_event(event_id: str, affected_blocks, date_from, date_to, hours,
-                   description: str = '', on_duplicate: str = 'raise') -> dict:
+                   description: str = '', on_duplicate: str = 'raise',
+                   ptw_no: str = None) -> dict:
     """Apply a waiting PM event as corrected on the desktop (record_pm rules;
     raises PMDuplicateError / PMValidationError for the dialog to answer)."""
     q = _pending_or_raise(event_id, 'pm')
     res = rw.record_pm(q['project_id'], affected_blocks, date_from, date_to, hours,
                        description, source='phone', source_ref=str(event_id),
-                       on_duplicate=on_duplicate)
+                       on_duplicate=on_duplicate,
+                       # the permit as the desktop confirmed it, else the one
+                       # the technician typed on the phone
+                       ptw_no=(ptw_no if ptw_no is not None
+                               else (q.get('event') or {}).get('ptw_no') or ''))
     ref = 'pm:' + ','.join(map(str, res['created'] + res['updated']))
     _resolve(event_id, 'applied', ref)
     return res

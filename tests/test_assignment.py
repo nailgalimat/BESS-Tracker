@@ -228,4 +228,81 @@ marks = [plan.tbl.item(i, 4).text() for i in range(plan.tbl.rowCount())]
 H.check(sum(1 for m in marks if m.startswith('📱')) == 5,
         'the schedule marks what has been sent: {}'.format(marks))
 
+# ── the app must not say "sent" when the server dropped the assignment ──
+# An older server accepts the record and silently drops assigned_to, so the
+# office reads "sent to tech1" and no phone ever shows the job. One message
+# for the batch, not a dialog per job — and it must be a warning, not the
+# cheerful one.
+import services.sync_client as sc
+
+shown = []
+QMessageBox.information = staticmethod(
+    lambda *a, **k: (shown.append(('info', a[1], a[2])), QMessageBox.Ok)[1])
+QMessageBox.warning = staticmethod(
+    lambda *a, **k: (shown.append(('warn', a[1], a[2])), QMessageBox.Ok)[1])
+
+again = pl.generate_pm_campaign(PID, 'PM round — November 2026', [11, 12],
+                                '2026-09-29', blocks_per_day=2,
+                                hours_per_block=4.0)
+plan._reload()
+items = [{'id': i} for i in again['item_ids']]
+
+checked = {}
+sc.verify_assignment = lambda ids, uid: checked.setdefault('ids', list(ids)) and ''
+shown.clear()
+plan._publish(items, 'u-tech1', 'tech1')
+H.check(len(shown) == 1 and shown[0][0] == 'info',
+        'a server that keeps the assignment gets the plain "Sent" message: {}'
+        .format([s[0] for s in shown]))
+H.check(len(checked.get('ids', [])) == 2
+        and all('-' in i and not i.startswith('e:') for i in checked['ids']),
+        'the check is handed the record ids, not the plan keys: {}'.format(
+            checked.get('ids')))
+
+sc.verify_assignment = lambda ids, uid: (
+    'The server took the jobs but not who they are for, so no phone will '
+    'show them.')
+shown.clear()
+res = plan._publish(items, 'u-tech2', 'tech2')
+H.check(len(shown) == 1 and shown[0][0] == 'warn',
+        'a server that drops it gets ONE warning, not one per job: {}'.format(
+            [s[0] for s in shown]))
+H.check('no phone will show them' in shown[0][2],
+        'and the warning says plainly what happened: {}'.format(shown[0][2][-80:]))
+H.check(res and res['reassigned'] == 2,
+        'the jobs are still written here — the warning is about the server')
+
+# ── a slot that fails says so where it happened ─────────────────────────
+# PyQt kills the app when an exception escapes a slot. The global hook keeps
+# it alive now, but the page still has to tell the user in place.
+shown.clear()
+crit = []
+QMessageBox.critical = staticmethod(
+    lambda *a, **k: (crit.append((a[1], a[2])), QMessageBox.Ok)[1])
+
+
+def boom(*a, **k):
+    raise RuntimeError('database is locked')
+
+
+_real_publish = pl.publish_jobs
+pl.publish_jobs = boom
+try:
+    plan._publish(items, 'u-tech1', 'tech1')     # must not raise
+finally:
+    pl.publish_jobs = _real_publish
+H.check(len(crit) == 1 and 'database is locked' in crit[0][1],
+        'a database error while sending is shown, not thrown at Qt: {}'.format(crit))
+
+import services.checklist_pm_service as _cs
+crit.clear()
+_real_tpls = _cs.templates
+_cs.templates = boom
+try:
+    plan._plan_checklists()
+finally:
+    _cs.templates = _real_tpls
+H.check(len(crit) == 1 and 'database is locked' in crit[0][1],
+        'and so is one while planning checklists: {}'.format(crit))
+
 H.finish()

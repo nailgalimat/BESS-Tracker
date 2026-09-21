@@ -780,7 +780,24 @@ const App = {
   },
 
   // ── Create / Save ──────────────────────────────────────────────────────────
+  /** Save the record. One tap, one record: the button is dead until this
+      returns. Stamping a photo and waiting up to 10 s for a fix made the gap
+      long enough that a second tap was normal, and it wrote a second record —
+      and a second line in the customer's 3.2. */
   async saveEntry() {
+    if (this._saving) return;
+    this._saving = true;
+    const btn = document.getElementById('save-btn');
+    if (btn) btn.disabled = true;
+    try {
+      await this._saveEntry();
+    } finally {
+      this._saving = false;
+      if (btn) btn.disabled = false;
+    }
+  },
+
+  async _saveEntry() {
     const date   = document.getElementById('f-date').value;
     const cat    = document.getElementById('f-cat').value;
     const desc   = document.getElementById('f-desc').value.trim();
@@ -1000,7 +1017,14 @@ const App = {
     ctx.fillRect(0, h - strip, w, strip);
     ctx.fillStyle = '#FFFFFF';
     wrapped.forEach((t, i) => ctx.fillText(t, pad, h - strip + pad + i * lh));
-    return cv.toDataURL('image/jpeg', 0.82);
+    const out = cv.toDataURL('image/jpeg', 0.82);
+    // A phone low on memory does not throw here — it hands back "data:," and
+    // the stamped "photo" would silently replace a good one. Anything this
+    // short is not a photo; throwing lets the caller keep the original.
+    if (!out || out.indexOf('data:image/') !== 0 || out.length < 100) {
+      throw new Error('the phone could not re-encode this photo');
+    }
+    return out;
   },
 
   // ── Detail view ────────────────────────────────────────────────────────────
@@ -1585,34 +1609,51 @@ const App = {
             ptw_no:    run.ptw_no || '',
             serial:    run.serial || '',
             filled_by: run.filled_by || localStorage.getItem('username') || '',
+            // When this was filled in, not when the phone found signal: the
+            // office may have corrected it in between, and the server needs
+            // the real order to know which copy is the later one.
+            updated_at: run.updated_at || '',
           });
-          await DB.updateChecklist(run.uuid, { sync_status: 'synced', last_error: '' });
+          // Only mark it sent if it is still the checklist that was sent. An
+          // upload takes seconds, and an answer ticked in the meantime used
+          // to be marked "sent" without ever leaving the phone.
+          await DB.updateChecklist(run.uuid, { sync_status: 'synced', last_error: '' },
+                                   run.updated_at);
           sent++;
         } catch (e) {
           error = error || (e && e.message) || 'Upload failed';
-          await DB.updateChecklist(run.uuid, { sync_status: 'error', last_error: error });
+          await DB.updateChecklist(run.uuid, { sync_status: 'error', last_error: error },
+                                   run.updated_at);
         }
       }
       const pid = parseInt(document.getElementById('cl-proj').value, 10)
                || parseInt(localStorage.getItem('last_project_id'), 10);
       if (pid) {
-        const got = await API.getChecklists(pid);
+        // Every page, not the first 200. Three checklists on each of 70
+        // blocks is 210 runs, and the blocks past the cut simply never
+        // reached the phone — with nothing on screen to say so.
         const tpls = {};
-        for (const t of (got.templates || [])) tpls[t.uuid] = t;
+        const seen = new Set();
+        let after = '', complete = false;
+        for (let page = 0; page < 50; page++) {
+          const got = await API.getChecklists(pid, after);
+          for (const t of (got.templates || [])) tpls[t.uuid] = t;
+          for (const r of (got.runs || [])) {
+            seen.add(r.uuid);
+            const local = await DB.getChecklist(r.uuid);
+            if (local && local.sync_status && local.sync_status !== 'synced') continue;
+            await DB.saveChecklist(Object.assign({}, r, { sync_status: 'synced' }));
+          }
+          after = got.cursor || '';
+          if (!got.has_more || !after) { complete = true; break; }
+        }
         await DB.setMeta('checklist_templates', tpls);
         this._clTpls = tpls;
-        const seen = new Set();
-        for (const r of (got.runs || [])) {
-          seen.add(r.uuid);
-          const local = await DB.getChecklist(r.uuid);
-          if (local && local.sync_status && local.sync_status !== 'synced') continue;
-          await DB.saveChecklist(Object.assign({}, r, { sync_status: 'synced' }));
-        }
         // A checklist the office cancelled is gone from the assigned list, so
         // it goes from the phone too — unless this phone still holds answers
-        // nobody else has. A truncated list (the server pages at 200) prunes
-        // nothing: that would hide checklists that are simply on page two.
-        if ((got.runs || []).length < 200) {
+        // nobody else has. A list that was cut short prunes nothing: that
+        // would hide checklists that are simply on a page we never asked for.
+        if (complete) {
           for (const r of await DB.getAllChecklists()) {
             if (r.project_id !== pid || seen.has(r.uuid) || r.deleted_at) continue;
             if (r.sync_status && r.sync_status !== 'synced') continue;
@@ -1960,6 +2001,24 @@ const App = {
             local.sync_status = 'conflict';
             await DB.saveEntry(local);
           }
+        } else if (r.outcome === 'error') {
+          // The server refused this change. Until now nothing was done with
+          // that answer at all: a job deleted on an older build vanished from
+          // Tasks and stayed on the server, and nobody was told. Say why, and
+          // put a refused delete back — the record is still real work.
+          const local = await DB.getEntry(r.id);
+          if (local) {
+            const change = changes.find(c => c.id === r.id);
+            if (change && change.action === 'delete' && local.deleted_at) {
+              local.deleted_at = null;
+              // _deleteById bumped the version for the delete; undo that too,
+              // so this phone is back on the version the server holds.
+              local.version = Math.max(1, (local.version || 1) - 1);
+            }
+            local.sync_status = 'error';
+            local.last_error  = r.message || 'The server refused this change.';
+            await DB.saveEntry(local);
+          }
         }
       }
     }
@@ -1994,13 +2053,24 @@ const App = {
         const d = change.data;
         if (!d || !d.id || !d.log_date) continue;     // skip malformed rows
         const local = await DB.getEntry(d.id);
+        // A record already in conflict is never overwritten. The office
+        // publishes a job (v1), the technician fills it in offline (still
+        // v1, unsent), the office edits the same record (v2): the push comes
+        // back "conflict" and this very same sync then applied the server's
+        // v2 over the only copy of the technician's text, hours and PTW.
+        // The card says the office changed it; the work stays put.
+        const conflicted = !!local && local.sync_status === 'conflict';
         // Accept remote if: no local copy, local is already synced, or remote is newer
         const remoteNewer = !local
           || local.sync_status === 'synced'
           || (d.version || 0) > (local.version || 0);
-        if (remoteNewer) {
+        if (remoteNewer && !conflicted) {
           await DB.saveEntry({ ...d, tags: d.tags || [], sync_status: 'synced' });
           pulled++;
+        } else if (conflicted && (d.version || 0) > (local.version || 0)
+                   && !local.server_changed) {
+          local.server_changed = true;
+          await DB.saveEntry(local);
         }
       }
 
@@ -2080,6 +2150,12 @@ const _SEND = {
 };
 
 function _sendChip(entry) {
+  // A conflict where the office has since changed the record too: the work
+  // done here is still the only copy of itself, so say what happened rather
+  // than leaving the engineer with a bare "Conflict".
+  if (entry.sync_status === 'conflict' && entry.server_changed) {
+    return '<span class="chip crit">The office changed this — your work is kept</span>';
+  }
   const [text, kind] = _SEND[entry.sync_status] || ['Waiting to send', 'warn'];
   return `<span class="chip ${kind}">${text}</span>`;
 }
@@ -2134,9 +2210,11 @@ function _renderCard(entry) {
     ? `<button class="retry-btn" onclick="event.stopPropagation();App.syncNow()">Retry</button>` : '';
   // A job the office handed out is the office's record: this phone fills it
   // in, it does not delete it (the server would refuse, and the delete would
-  // sit unsent forever).
-  const del = entry.assigned_by
-    ? `<span class="hint">From ${_esc(entry.assigned_by)}</span>`
+  // sit unsent forever). What makes it a job is assigned_to — assigned_by is
+  // legitimately empty when the office account has no username, and the
+  // Delete button then appeared on a job it cannot delete.
+  const del = entry.assigned_to
+    ? `<span class="hint">From ${_esc(entry.assigned_by || 'the office')}</span>`
     : `<button class="del-btn danger-link" data-id="${entry.id}">Delete</button>`;
 
   return `

@@ -200,6 +200,48 @@ c.commit(); c.close()
 legacy = [x for x in avi.month_inputs(PID, 2026, 9)['pm'] if x['affected_blocks'] == '39'][0]
 H.check(legacy['source_key'] == 'phone', 'a record from before `source` existed is shown as the phone\'s')
 
+print('\n=== the permit number reaches the customer\'s 3.1 ===')
+import services.tashkent_report_service as ts
+rw.record_pm(PID, '61', '2026-09-18', None, 4, 'PM as per the checklist',
+             source='desktop', ptw_no='PTW-2609-201', today=TODAY)
+rw.record_pm(PID, '62', '2026-09-18', None, 4, 'PM as per the checklist',
+             source='desktop', today=TODAY)
+rows = rw.pm_as_rows(PID, 2026, 9)
+with_ptw = [r for r in rows if r['blocks'] == '61']
+H.check(with_ptw and with_ptw[0]['ptw'] == 'PTW-2609-201',
+        'a PM written with a permit keeps it ({})'.format(with_ptw and with_ptw[0]['ptw']))
+head, body = ts._pm_table(rows)
+H.check(head == ['Date', 'Block(s)', 'PTW No.', 'Work', 'Hours'],
+        '3.1 is a table with the permit column: {}'.format(head))
+H.check(['2026-09-18', '61', 'PTW-2609-201', 'PM as per the checklist', '4'] in body,
+        'and the record is one row of it')
+H.check(['2026-09-18', '62', '—', 'PM as per the checklist', '4'] in body,
+        'a PM done without a permit says so with a dash, not a blank')
+H.check(ts._pm_table([dict(r, ptw='') for r in rows])[0]
+        == ['Date', 'Block(s)', 'Work', 'Hours'],
+        'a month with no permits at all has no permit column')
+
+# a permit typed on the phone survives the desktop's confirmation
+ev = {'id': 'ev-ptw', 'project_id': PID, 'kind': 'pm', 'blocks': '63',
+      'date_from': '2026-09-19', 'date_to': '2026-09-19', 'hours': 4,
+      'description': 'PM per checklist', 'ptw_no': 'PTW-2609-202'}
+import services.availability_inputs_service as avi
+avi.route_field_event(ev)
+phone = [r for r in rw.pm_as_rows(PID, 2026, 9) if r['blocks'] == '63']
+H.check(phone and phone[0]['ptw'] == 'PTW-2609-202',
+        'a permit from the phone reaches the report ({})'.format(phone and phone[0]['ptw']))
+
+# editing the record must not silently drop the number
+rec = [r for r in rw.get_pm_activities(PID, 2026, 9)
+       if str(r.get('affected_blocks')) == '61'][0]
+rw.update_pm_record(rec['id'], '61', '2026-09-18', None, 5, '')
+kept = [r for r in rw.pm_as_rows(PID, 2026, 9) if r['blocks'] == '61'][0]
+H.check(kept['ptw'] == 'PTW-2609-201' and kept['hours'] == '5',
+        'an edit that says nothing about the permit keeps it ({})'.format(kept['ptw']))
+rw.update_pm_record(rec['id'], '61', '2026-09-18', None, 5, '', ptw_no='')
+cleared = [r for r in rw.pm_as_rows(PID, 2026, 9) if r['blocks'] == '61'][0]
+H.check(cleared['ptw'] == '', 'but the dialog can clear it deliberately')
+
 print('\n=== the PM tab dialog refuses an empty block ===')
 from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox
 app = QApplication.instance() or QApplication([])

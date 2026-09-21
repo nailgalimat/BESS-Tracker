@@ -396,6 +396,20 @@ def load_cmu_cycle_snapshot(first_day_path, last_day_path,
 
 # ── KPI ENGINE ────────────────────────────────────────────────────────────────
 
+def _pm_table(pm_rows):
+    """Section 3.1 as the customer asked for it: Date · Block(s) · PTW No. ·
+    Work · Hours. The permit column is dropped when no record carries one —
+    an empty column in the customer's report only invites the question."""
+    if not pm_rows:
+        return None
+    ptw = any((r.get('ptw') or '').strip() for r in pm_rows)
+    head = ['Date', 'Block(s)'] + (['PTW No.'] if ptw else []) + ['Work', 'Hours']
+    body = [[r.get('date', ''), r.get('blocks', '')]
+            + ([r.get('ptw', '') or '—'] if ptw else [])
+            + [r.get('work', ''), r.get('hours', '')] for r in pm_rows]
+    return head, body
+
+
 def _unavail_status_label(status: str) -> str:
     """Short, customer-facing label for an unavailability incident status."""
     return {'FAULT': 'Fault', 'PARTIAL': 'Partial'}.get(status, status)
@@ -1735,6 +1749,7 @@ def generate_tashkent_report(
     manual_unavailability=None,   # operator-entered 4.4.1 rows (list of dicts)
     cycles_accum_avg=None,
     pm_activities=None,
+    pm_rows=None,                 # 3.1 as a table: date, blocks, PTW No., work, hours
     cm_activities=None,
     safety_incidents=None,
     site_visits=None,
@@ -2586,7 +2601,10 @@ def generate_tashkent_report(
     story.append(_section('3.  Services Provision', ''))
     story.append(Spacer(1, 3*mm))
     story.append(Paragraph('<b>3.1  Preventative Maintenance (PM)</b>', STYLE_H3))
-    if pm_activities:
+    _pm_tbl = _pm_table(pm_rows)
+    if _pm_tbl:
+        story.append(_styled_table(_pm_tbl[0], _pm_tbl[1]))
+    elif pm_activities:
         for act in pm_activities: story.append(Paragraph(f'•  {act}', STYLE_BODY))
     else:
         story.append(Paragraph('No PM activities in the reporting period.',
@@ -3507,7 +3525,7 @@ def _key_numbers(g):
         'avg_soc_pct': num(g.get('avg_soc_pct')),
         'avg_soh_pct': num(g.get('avg_soh_pct')),
         'rows': {
-            '3.1': len(g.get('pm_activities') or []),
+            '3.1': len(g.get('pm_rows') or g.get('pm_activities') or []),
             '3.2': (len(cm) if cm else
                     0 if cls is None or getattr(cls, 'empty', True) else min(7, int(len(cls)))),
             '4.4.1': min(20, n_ur),
@@ -3606,7 +3624,10 @@ def _build_tashkent_docx(output_path, _ctx):
     # 3. Services Provision
     add_section_banner(doc, '3.  Services Provision')
     add_heading(doc, '3.1  Preventative Maintenance (PM)', level=3)
-    if pm_activities:
+    _pm_tbl = _pm_table(g.get('pm_rows'))
+    if _pm_tbl:
+        add_styled_table(doc, _pm_tbl[0], _pm_tbl[1])
+    elif pm_activities:
         for act in pm_activities: add_paragraph(doc, f'•  {act}')
     else:
         add_paragraph(doc, 'No PM activities in the reporting period.')

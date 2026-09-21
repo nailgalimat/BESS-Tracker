@@ -144,6 +144,17 @@ class SyncConfig:
         self._data["checklist_cursor"] = v
 
     @property
+    def checklist_cursor_uuid(self) -> str:
+        """Second half of the checklist cursor. A publish of 200 runs stamps
+        them all with the same second, so the timestamp alone cannot say where
+        the last page stopped."""
+        return self._data.get("checklist_cursor_uuid", "")
+
+    @checklist_cursor_uuid.setter
+    def checklist_cursor_uuid(self, v: str):
+        self._data["checklist_cursor_uuid"] = v
+
+    @property
     def last_sync_at(self) -> str:
         return self._data.get("last_sync_at", "")
 

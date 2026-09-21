@@ -55,7 +55,7 @@ TEXT_KEYS = ('site_name', 'project_details', 'report_number', 'prepared_by', 're
              'safety_incidents', 'breakdown_incidents')
 REPORT_INPUT_KEYS = ('plant_capacity_mw', 'per_block_capacity_mw',
                      'contractual_plant_capacity_mw', 'redundancy_threshold_pct',
-                     'yearly_cycle_target', 'pm_activities', 'exclusions',
+                     'yearly_cycle_target', 'pm_activities', 'pm_rows', 'exclusions',
                      'manual_unavailability', 'balancing_periods')
 NUMBERS = (('availability_pct', 'Availability', '{:.2f} %'), ('rte_pct', 'RTE', '{:.2f} %'),
            ('cycles_month', 'Cycles month', '{:.1f}'), ('cycles_in_year', 'Cycles year', '{:.1f}'),

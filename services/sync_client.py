@@ -406,7 +406,19 @@ def push_checklists() -> dict:
         if resp.status_code != 200:
             stats["errors"] += len(batch)
             break
+        # A run the server kept (its copy was written later than ours) is NOT
+        # published: marking it synced left the office's correction sitting
+        # here for good, because nothing ever offered it again. It stays
+        # unsynced and goes up on the next cycle — by then the pull will have
+        # settled which copy is the later one.
+        try:
+            kept = set(resp.json().get("kept_uuids") or ())
+        except ValueError:
+            kept = set()
         for r in batch:
+            if r["uuid"] in kept:
+                stats["kept"] = stats.get("kept", 0) + 1
+                continue
             cs.mark_run_synced(r["uuid"])    # only this service writes the tables
             stats["pushed"] += 1
     return stats
@@ -427,10 +439,15 @@ def pull_checklists() -> dict:
     stats = {"applied": 0, "errors": 0}
     _retry_inbox("checklist_run", _apply_checklist_run, stats)
     cursor = str(sync_config.checklist_cursor or "0")
+    # The cursor is (updated_at, uuid): a publish of 200 runs shares one
+    # second, and a timestamp-only cursor stepped over whatever else was
+    # written in that same second.
+    cursor_uuid = str(sync_config.checklist_cursor_uuid or "")
 
     while True:
         try:
-            resp = _request("get", "/checklists/runs", params={"since": cursor})
+            resp = _request("get", "/checklists/runs",
+                            params={"since": cursor, "since_uuid": cursor_uuid})
             if resp.status_code != 200:
                 if resp.status_code != 404:   # 404: a server without checklists
                     stats["errors"] += 1
@@ -448,13 +465,16 @@ def pull_checklists() -> dict:
                 _inbox_put("checklist_run", run, ex)
                 stats["errors"] += 1
 
-        new_cursor = body.get("cursor")
-        if new_cursor and new_cursor > cursor:
-            cursor = new_cursor
+        new_cursor = body.get("cursor") or cursor
+        new_uuid = body.get("cursor_uuid") or ""     # '' on an older server
+        moved = (new_cursor, new_uuid) != (cursor, cursor_uuid)
+        if moved:
+            cursor, cursor_uuid = new_cursor, new_uuid
             sync_config.checklist_cursor = cursor
+            sync_config.checklist_cursor_uuid = cursor_uuid
             sync_config.save()
-        if not body.get("has_more", False):
-            break
+        if not body.get("has_more", False) or not moved:
+            break                       # a cursor standing still must not loop
 
     return stats
 
@@ -816,6 +836,46 @@ def get_server_entry(entry_id: str) -> Optional[dict]:
             f"The server could not return this entry (HTTP {resp.status_code}). "
             "If it has not been updated to this version yet, redeploy it first.")
     return resp.json()
+
+
+def verify_assignment(entry_ids, assignee_id: str) -> str:
+    """Did the server actually keep who these jobs are for?
+
+    A server from before assignments existed accepts the record and drops
+    `assigned_to` without an error, so the office sees "sent to Ivan" and the
+    phone never gets anything — the one failure the app must not hide. Pushes
+    what is waiting, then reads one published record back.
+
+    Returns '' when all is well, otherwise one sentence for the office. Never
+    raises: a check that fails is a warning, not a lost publish.
+    """
+    if not entry_ids or not assignee_id:
+        return ''
+    if not (sync_config.enabled and sync_config.is_configured()):
+        # Nothing to check against, and nothing surprising either: sync being
+        # off is the user's own setting, and the "Sent" message already says
+        # the jobs reach the phone on its next sync.
+        return ''
+    try:
+        push_pending()
+    except Exception as ex:                                  # noqa: BLE001
+        return ('The jobs are saved here, but could not be sent to the '
+                'server yet ({}). They go on the next sync.'.format(ex))
+    for eid in list(entry_ids)[:3]:
+        try:
+            row = get_server_entry(eid)
+        except RuntimeError as ex:
+            return ('The jobs are saved here, but the server could not be '
+                    'asked whether it kept them ({}).'.format(ex))
+        if row is None:
+            continue                      # not up yet — try the next one
+        if (row.get('assigned_to') or '') == assignee_id:
+            return ''
+        return ('The server took the jobs but not who they are for, so no '
+                'phone will show them. It is running an older version — '
+                'deploy the current server, then send them again.')
+    return ('The jobs are saved here but are not on the server yet, so no '
+            'phone has them. They go on the next sync.')
 
 
 def resolve_conflict(entry_id: str, keep: str) -> str:

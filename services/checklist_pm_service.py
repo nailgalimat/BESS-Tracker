@@ -69,8 +69,19 @@ def import_template(project_id: int, path: str, name: str = '',
 
     conn = get_connection()
     try:
+        # (project, name) — never the name alone. Two customers issue a file
+        # called "01) PCS Checklist", and looking one up by name let the
+        # second site take over the first site's template: its workbook, its
+        # items and the runs already filled against them.
         row = conn.execute(
-            "SELECT id, uuid FROM checklist_templates WHERE name=?", (name,)).fetchone()
+            "SELECT id, uuid FROM checklist_templates WHERE name=? AND project_id=?",
+            (name, project_id)).fetchone()
+        if row is None:
+            # Imported before templates knew their project: adopt it rather
+            # than leaving the site with two copies of the same checklist.
+            row = conn.execute(
+                "SELECT id, uuid FROM checklist_templates "
+                "WHERE name=? AND project_id IS NULL", (name,)).fetchone()
         if row:
             tid, uid = row['id'], row['uuid'] or str(_uuid.uuid4())
             conn.execute(
@@ -181,6 +192,23 @@ def import_template(project_id: int, path: str, name: str = '',
         conn.close()
 
 
+def _touch_template(conn, template_id: int):
+    """The template changed: say so, and queue the checklists already planned
+    against it so the change reaches the phones.
+
+    sync_client only uploads the items when the newest template stamp has
+    moved, so an item added after a campaign was planned sat on the desktop
+    and nobody on site ever saw it. The runs' own `updated_at` is deliberately
+    NOT touched — a checklist a phone has already filled must not lose its
+    answers to a republish that only added a line.
+    """
+    conn.execute("UPDATE checklist_templates SET updated_at=? WHERE id=?",
+                 (_now(), template_id))
+    conn.execute("UPDATE checklist_runs SET sync_status='pending' "
+                 "WHERE template_id=? AND deleted_at IS NULL "
+                 "AND sync_status='synced'", (template_id,))
+
+
 def _guess_kind(name: str, parsed: dict) -> str:
     text = (name + ' ' + ' '.join(i['equipment'] for i in parsed['items'][:3])).lower()
     if 'pcs' in text:
@@ -243,6 +271,7 @@ def add_item(template_id: int, text: str, equipment: str = '',
             "SELECT id, ?, ?, '' FROM checklist_runs "
             "WHERE template_id=? AND deleted_at IS NULL",
             (item_id, PENDING, template_id))
+        _touch_template(conn, template_id)
         conn.commit()
         return item_id
     finally:
@@ -254,14 +283,15 @@ def delete_item(item_id: int):
     never removed, or the exported file would no longer be their document."""
     conn = get_connection()
     try:
-        row = conn.execute("SELECT added FROM checklist_items WHERE id=?",
-                           (item_id,)).fetchone()
+        row = conn.execute("SELECT added, template_id FROM checklist_items "
+                           "WHERE id=?", (item_id,)).fetchone()
         if not row or not row['added']:
             raise ValueError("An item of the customer's checklist cannot be "
                              "deleted — exclude it instead; the row stays in "
                              "the file with your note.")
         conn.execute("DELETE FROM checklist_results WHERE item_id=?", (item_id,))
         conn.execute("DELETE FROM checklist_items WHERE id=?", (item_id,))
+        _touch_template(conn, row['template_id'])
         conn.commit()
     finally:
         conn.close()
