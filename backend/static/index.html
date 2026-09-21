@@ -10,7 +10,7 @@
   <title>BESS Field Log</title>
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="apple-touch-icon" href="/app/icons/icon-192.png" />
-  <link rel="stylesheet" href="/app/css/app.css?v=17" />
+  <link rel="stylesheet" href="/app/css/app.css?v=18" />
 </head>
 <body>
 
@@ -121,6 +121,9 @@
         <span class="node-go">›</span>
       </button>
       <input id="f-block" type="hidden" />
+      <!-- every block of the same trip, "4,35,60": one record is written per
+           block, so the customer's report keeps a line per block -->
+      <input id="f-blocks" type="hidden" />
       <input id="f-lc" type="hidden" />
       <input id="f-device" type="hidden" />
     </div>
@@ -268,13 +271,16 @@
   </div>
 </div>
 
-<!-- NODE PICKER — recent · zone → block · number, then LC and device -->
+<!-- NODE PICKER — recent · zone → block · number, then LC and device.
+     Several blocks can be chosen for one piece of work: the same alarm on
+     4, 35 and 60 is one trip, one form, and one record per block. -->
 <div id="screen-node" class="screen">
   <header class="topbar">
     <button class="icon-btn" onclick="App.closeNodePicker()">‹</button>
     <span class="topbar-title" id="np-title">Choose node</span>
   </header>
   <div class="screen-body">
+    <p class="np-picked" id="np-picked">Tap more blocks for the same work — one record is written per block.</p>
     <div class="ph-seg" id="np-tabs">
       <button data-tab="recent" onclick="App.nodeTab('recent')">Recent</button>
       <button class="on" data-tab="zone" onclick="App.nodeTab('zone')">Zone → Block</button>
@@ -294,6 +300,14 @@
       <div class="np-num" id="np-num">—</div>
       <div class="np-num-sub" id="np-num-sub">Enter the plant block number</div>
       <div class="keypad" id="np-keypad"></div>
+      <button type="button" id="np-add" class="btn btn-outline btn-block"
+              style="margin-top:8px" onclick="App.nodeAddNumber()">＋ Add this block, type another</button>
+    </div>
+
+    <!-- the whole plant in one tap, the same explicit "All" the PM form uses -->
+    <div class="np-actions">
+      <button type="button" class="btn btn-outline" onclick="App.nodeAll()">All blocks</button>
+      <button type="button" id="np-none" class="btn btn-outline" onclick="App.nodeNone()">Clear</button>
     </div>
 
     <div class="np-label">Level</div>
@@ -660,9 +674,9 @@
 </nav>
 
 <script>window.APP_VERSION = 'v16';</script>
-<script src="/app/js/db.js?v=17"></script>
-<script src="/app/js/api.js?v=17"></script>
-<script src="/app/js/app.js?v=17"></script>
+<script src="/app/js/db.js?v=18"></script>
+<script src="/app/js/api.js?v=18"></script>
+<script src="/app/js/app.js?v=18"></script>
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/app/sw.js').then(reg => {

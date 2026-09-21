@@ -12,8 +12,11 @@ const App = {
   _currentEntryId: null,
   _tab:            'tasks',
   _taskSeg:        'today',
-  // the node being chosen: plant block, level (LC), device
-  _node:           { block: null, lc: '', device: '', zone: '' },
+  // The node being chosen: plant block, level (LC), device. `blocks` holds
+  // every block of the same trip (one alarm on 4, 35 and 60 is one form);
+  // `block` stays the first of them, because that is the node a photo stamp
+  // and a "recent node" are about.
+  _node:           { block: null, blocks: [], lc: '', device: '', zone: '' },
   _nodeTab:        'zone',
   _nodeNum:        '',
   _nodeFor:        'create',
@@ -350,7 +353,8 @@ const App = {
       document.getElementById('f-start').value = '';
       document.getElementById('f-end').value   = '';
       document.getElementById('f-hours').value = '0';
-      this._node = { block: null, lc: '', device: '', zone: '' };
+      this._node = { block: null, blocks: [], lc: '', device: '', zone: '' };
+      document.getElementById('f-blocks').value = '';
     }
     this.pickStatus(kind === 'maintenance' ? 'done' : 'done');
     this._showNode();
@@ -398,8 +402,7 @@ const App = {
     let mins = (h2 * 60 + m2) - (h1 * 60 + m1);
     if (mins < 0) mins += 24 * 60;
     document.getElementById('f-hours').value = String(Math.round(mins / 60 * 100) / 100);
-    document.getElementById('f-hours-hint').textContent =
-      'End − start = ' + (Math.round(mins / 60 * 100) / 100) + ' h · one PM record per block per day.';
+    this._hoursHint('End − start = ' + (Math.round(mins / 60 * 100) / 100) + ' h · ');
   },
 
   // ── Node picker ───────────────────────────────────────────────────────────
@@ -410,11 +413,31 @@ const App = {
     const t = document.getElementById('f-node-text');
     if (!t) return;
     const n = this._node;
+    const many = (n.blocks || []).length > 1;
+    const where = many
+      ? (n.blocks.length + ' blocks · ' + this._formatBlocks(n.blocks))
+      : ('Block ' + n.block + (n.zone ? ' · ' + n.zone : ''));
     t.textContent = n.block
-      ? ('Block ' + n.block + (n.zone ? ' · ' + n.zone : '')
-         + (n.lc ? ' · ' + n.lc : '') + (n.device ? ' · ' + n.device : ''))
+      ? (where + (n.lc ? ' · ' + n.lc : '') + (n.device ? ' · ' + n.device : ''))
       : 'Choose the block';
     t.classList.toggle('chosen', !!n.block);
+    this._hoursHint('');
+  },
+
+  /** The line under the PM hours. On several blocks the hours are charged to
+      EACH block, exactly as record_pm splits them on the desktop — that is
+      real money in the availability figure, so the form says it out loud. */
+  _hoursHint(prefix) {
+    const el = document.getElementById('f-hours-hint');
+    if (!el) return;
+    const n = (this._node.blocks || []).length;
+    const tail = n > 1
+      ? 'these hours are charged to EACH of the ' + n + ' blocks ('
+        + this._formatBlocks(this._node.blocks) + ').'
+      : 'one PM record per block per day.';
+    el.textContent = prefix
+      ? prefix + tail
+      : tail.charAt(0).toUpperCase() + tail.slice(1);
   },
 
   async _project() {
@@ -439,8 +462,26 @@ const App = {
     const p = await this._project();
     this._np = { project: p, zones: this._zonesOf(p), blocks: (p && p.num_blocks) || 0 };
     if (!this._np.zones.length) this._nodeTab = this._np.blocks ? 'zone' : 'number';
+    // reopening the picker shows what is already on the form, not a blank slate
+    // (and never a number half-typed on the way out of it last time)
+    this._nodePick = new Set(this._node.blocks && this._node.blocks.length
+      ? this._node.blocks : (this._node.block ? [this._node.block] : []));
+    this._nodeNum = '';
     this._renderNode();
     this._show('screen-node');
+  },
+
+  /** Every block the form would take right now: what was tapped, plus the
+      number being typed on the Number tab (which is committed on Use, so a
+      single typed block still needs exactly the taps it always did). */
+  _nodeChosen() {
+    const out = new Set(this._nodePick || []);
+    if (this._nodeTab === 'number') {
+      const n = parseInt(this._nodeNum, 10);
+      const max = (this._np && this._np.blocks) || 9999;
+      if (n >= 1 && n <= max) out.add(n);
+    }
+    return [...out].sort((a, b) => a - b);
   },
 
   closeNodePicker() { this._show('screen-create'); },
@@ -471,6 +512,7 @@ const App = {
 
   _renderNode() {
     const np = this._np || { zones: [], blocks: 0 };
+    const picked = this._nodePick || (this._nodePick = new Set());
     document.querySelectorAll('#np-tabs button').forEach(b =>
       b.classList.toggle('on', b.dataset.tab === this._nodeTab));
     document.getElementById('np-recent').style.display = this._nodeTab === 'recent' ? 'block' : 'none';
@@ -496,7 +538,7 @@ const App = {
       const z = np.zones.find(x => x[0] === cur) || np.zones[0];
       let cells = '';
       for (let b = z[1]; b <= z[2]; b++) {
-        cells += `<button class="tile${this._node.block === b ? ' on' : ''}" onclick="App.pickBlock(${b})">
+        cells += `<button class="tile${picked.has(b) ? ' on' : ''}" onclick="App.pickBlock(${b})">
             <b>B${b - z[1] + 1}</b><span>${b}</span></button>`;
       }
       bg.innerHTML = cells;
@@ -505,7 +547,7 @@ const App = {
       zg.innerHTML = '<p class="hint-line">This project has no zones mirrored yet.</p>';
       let cells = '';
       for (let b = 1; b <= np.blocks; b++) {
-        cells += `<button class="tile${this._node.block === b ? ' on' : ''}" onclick="App.pickBlock(${b})">
+        cells += `<button class="tile${picked.has(b) ? ' on' : ''}" onclick="App.pickBlock(${b})">
             <b>${b}</b></button>`;
       }
       bg.innerHTML = cells;
@@ -515,8 +557,9 @@ const App = {
                    + 'or use the Number tab.</p>';
     }
 
-    // number keypad
-    const num = this._nodeNum || (this._node.block ? String(this._node.block) : '');
+    // number keypad — the one block already chosen is shown, several are not
+    // (the keypad types one at a time; "Add" puts it with the others)
+    const num = this._nodeNum || (picked.size === 1 ? String([...picked][0]) : '');
     document.getElementById('np-num').textContent = num || '—';
     const n = parseInt(num, 10);
     const max = np.blocks || 9999;
@@ -524,6 +567,9 @@ const App = {
     document.getElementById('np-num-sub').textContent = okNum
       ? ('Block ' + n + (this._zoneLabel(n) ? ' · ' + this._zoneLabel(n) : ''))
       : ('Enter 1–' + (np.blocks || '…'));
+    const add = document.getElementById('np-add');
+    if (add) add.disabled = !(parseInt(this._nodeNum, 10) >= 1
+                              && parseInt(this._nodeNum, 10) <= max);
     const pad = document.getElementById('np-keypad');
     if (!pad.dataset.built) {
       pad.innerHTML = ['1','2','3','4','5','6','7','8','9','C','0','⌫']
@@ -540,22 +586,63 @@ const App = {
     document.getElementById('np-device').innerHTML = devs.map(d =>
       `<button class="pchip${this._node.device === d ? ' on' : ''}" onclick="App.pickDevice('${d}')">${d}</button>`).join('');
 
-    const chosen = this._nodeTab === 'number' ? n : this._node.block;
+    // what is chosen so far, and the two shortcuts for a whole-plant job
+    const list = this._nodeChosen();
+    const tail = (this._node.device || this._node.lc)
+      ? ' · ' + (this._node.device || this._node.lc) : '';
+    const sum = document.getElementById('np-picked');
+    if (sum) {
+      sum.textContent = list.length > 1
+        ? (list.length + ' blocks · ' + this._formatBlocks(list)
+           + ' — one record each, same text')
+        : 'Tap more blocks for the same work — one record is written per block.';
+      sum.classList.toggle('on', list.length > 1);
+    }
+    const none = document.getElementById('np-none');
+    if (none) none.disabled = !list.length;
+
     const use = document.getElementById('np-use');
-    use.disabled = !(chosen >= 1);
-    use.textContent = chosen >= 1
-      ? ('Use Block ' + chosen + (this._zoneLabel(chosen) ? ' · ' + this._zoneLabel(chosen) : '')
-         + (this._node.device || this._node.lc ? ' · ' + (this._node.device || this._node.lc) : ''))
-      : 'Choose a block';
+    use.disabled = !list.length;
+    use.textContent = !list.length ? 'Choose a block'
+      : list.length === 1
+        ? ('Use Block ' + list[0]
+           + (this._zoneLabel(list[0]) ? ' · ' + this._zoneLabel(list[0]) : '') + tail)
+        : ('Use ' + list.length + ' blocks · ' + this._formatBlocks(list) + tail);
   },
 
   pickZone(z) { this._node.zoneIdx = z; this._renderNode(); },
-  pickBlock(b) { this._node.block = b; this._nodeNum = String(b); this._renderNode(); },
+  // A tap adds a block, a second tap on it takes it back: the same tap that
+  // used to choose the one block still chooses exactly that one.
+  pickBlock(b) {
+    const picked = this._nodePick || (this._nodePick = new Set());
+    if (picked.has(b)) picked.delete(b);
+    else picked.add(b);
+    this._nodeNum = '';
+    this._renderNode();
+  },
+
+  nodeAll() {
+    const n = (this._np && this._np.blocks) || 0;
+    if (!n) return;
+    this._nodePick = new Set();
+    for (let b = 1; b <= n; b++) this._nodePick.add(b);
+    this._nodeNum = '';
+    this._renderNode();
+  },
+
+  nodeNone() {
+    this._nodePick = new Set();
+    this._nodeNum = '';
+    this._renderNode();
+  },
+
   pickLc(l) { this._node.lc = (this._node.lc === l ? '' : l); this._renderNode(); },
   pickDevice(d) { this._node.device = (this._node.device === d ? '' : d); this._renderNode(); },
+  // A recent node is one node: it replaces the selection instead of adding to it.
   pickRecent(b, lc, dev) {
-    this._node.block = b; this._node.lc = lc || ''; this._node.device = dev || '';
-    this._nodeNum = String(b);
+    this._nodePick = new Set([b]);
+    this._node.lc = lc || ''; this._node.device = dev || '';
+    this._nodeNum = '';
     this.useNode();
   },
 
@@ -563,19 +650,33 @@ const App = {
     if (k === 'C') this._nodeNum = '';
     else if (k === '⌫') this._nodeNum = (this._nodeNum || '').slice(0, -1);
     else this._nodeNum = ((this._nodeNum || '') + k).slice(0, 4);
+    this._renderNode();
+  },
+
+  // Keep the typed block and start typing the next one — the Number tab's way
+  // of naming several blocks, for a project whose zones are not mirrored yet.
+  nodeAddNumber() {
     const n = parseInt(this._nodeNum, 10);
-    if (n >= 1) this._node.block = n;
+    const max = (this._np && this._np.blocks) || 9999;
+    if (!(n >= 1 && n <= max)) return;
+    (this._nodePick || (this._nodePick = new Set())).add(n);
+    this._nodeNum = '';
     this._renderNode();
   },
 
   useNode() {
-    const b = this._nodeTab === 'number'
-      ? parseInt(this._nodeNum, 10) : this._node.block;
-    if (!(b >= 1)) return;
-    this._node.block = b;
-    this._node.zone = this._zoneLabel(b);
+    const list = this._nodeChosen();
+    if (!list.length) return;
+    // The first block leads: it is the node the photos are stamped with and
+    // the one remembered as "recent". The rest get their own records.
+    this._node.blocks = list;
+    this._node.block = list[0];
+    this._node.zone = this._zoneLabel(list[0]);
+    this._nodePick = new Set(list);
+    this._nodeNum = '';
     this._rememberNode(this._node);
-    document.getElementById('f-block').value  = String(b);
+    document.getElementById('f-block').value  = String(list[0]);
+    document.getElementById('f-blocks').value = list.join(',');
     document.getElementById('f-lc').value     = this._node.lc || '';
     document.getElementById('f-device').value = this._node.device || '';
     this._showNode();
@@ -585,7 +686,10 @@ const App = {
   // The same defect on the next node: keep the text, drop the node.
   repeatOnAnotherNode() {
     const cat = document.getElementById('f-cat').value;
-    this._node = { block: null, lc: this._node.lc, device: '', zone: '' };
+    this._node = { block: null, blocks: [], lc: this._node.lc, device: '', zone: '' };
+    this._nodePick = new Set();
+    // the node is being chosen again: the old list must not write its records
+    document.getElementById('f-blocks').value = '';
     this.goCreate(cat, true);
     this.openNodePicker('create');
   },
@@ -802,6 +906,12 @@ const App = {
     const cat    = document.getElementById('f-cat').value;
     const desc   = document.getElementById('f-desc').value.trim();
     const block  = parseInt(document.getElementById('f-block').value, 10) || null;
+    // Every block of this trip. The same alarm on 4, 35 and 60 is one form and
+    // one set of photos, but one record per block: that is what the customer's
+    // report (a line per block) and the desktop's Work journal are made of.
+    const blocks = ((document.getElementById('f-blocks') || {}).value || '')
+      .split(',').map(s => parseInt(s, 10)).filter(b => b >= 1);
+    if (!blocks.length && block) blocks.push(block);
     const lc     = document.getElementById('f-lc').value || '';
     const device = document.getElementById('f-device').value || '';
     const ptw    = document.getElementById('f-ptw').value.trim();
@@ -829,10 +939,20 @@ const App = {
       _showErr(errEl, 'Choose the node — the plant block is what the report needs.');
       return;
     }
+    // "All blocks" is one tap, and on this plant that is 70 records. Saying
+    // the number out loud is the difference between a day's work and a mess
+    // the office has to clean up by hand.
+    if (blocks.length > 5 && !confirm(
+        'This writes ' + blocks.length + ' records, one per block ('
+        + blocks.slice(0, 6).join(', ') + (blocks.length > 6 ? '…' : '') + ').\n\n'
+        + 'Continue?')) return;
     if (cat === 'maintenance') {
       if (!(hours > 0)) { _showErr(errEl, 'Enter the PM hours (more than 0).'); return; }
       if (hours > 24) { _showErr(errEl, 'PM hours are per block per day — at most 24.'); return; }
-      if (hours > 12 && !confirm(hours + ' h of PM on one block in one day — is that right?')) return;
+      // the hours are charged to each block, so say how many are about to be
+      if (hours > 12 && !confirm(hours + ' h of PM on '
+          + (blocks.length > 1 ? 'EACH of ' + blocks.length + ' blocks' : 'one block')
+          + ' in one day — is that right?')) return;
     }
 
     const projectId = projVal ? parseInt(projVal, 10) : null;
@@ -841,7 +961,7 @@ const App = {
 
     const tags = tagStr.split(',').map(t => t.trim()).filter(Boolean);
     const now  = new Date().toISOString();
-    const id   = _uuid();
+    const id   = _uuid();        // the first block's record: it carries the photos
 
     const entry = {
       id,
@@ -878,7 +998,8 @@ const App = {
     const projName = projVal
       ? ((document.getElementById('f-proj').selectedOptions[0] || {}).textContent || '').trim()
       : '';
-    const nodeText = ['Block ' + block, lc, device].filter(Boolean).join(' · ');
+    // The stamp names the node the photo was taken at — the first block.
+    const nodeText = ['Block ' + blocks[0], lc, device].filter(Boolean).join(' · ');
     const imageIds = [];
     for (const staged of this._stagedPhotos) {
       const imgId = _uuid();
@@ -904,17 +1025,33 @@ const App = {
       imageIds.push(imgId);
     }
     entry.image_ids = imageIds;
+    entry.plant_block = blocks[0];   // the block the photos and the stamp name
 
+    // One record per block, same text, same type, status, PTW and hours. The
+    // photos stay on the first record only — a site connection must not carry
+    // the same five photos three times — and the others say where they are.
+    const photoNote = imageIds.length
+      ? 'Photos on the Block ' + blocks[0] + ' record.' : '';
     await DB.saveEntry(entry);
+    for (const b of blocks.slice(1)) {
+      await DB.saveEntry(Object.assign({}, entry, {
+        id:            _uuid(),
+        plant_block:   b,
+        image_ids:     [],
+        internal_note: [note, photoNote].filter(Boolean).join('\n'),
+      }));
+    }
     this._rememberFault(fault);        // remember a newly-typed fault/alarm
     this._stagedPhotos = [];
     localStorage.removeItem('record_draft');
 
     // A PM record is also the block's PM hours for the month: it goes to the
     // desktop as a field event, which is the one writer of pm_activities.
+    // One event naming every block — record_pm splits it into one PM record
+    // per block, each charged the full hours (4 h on three blocks is 4 h each).
     if (cat === 'maintenance' && hours > 0 && projectId) {
       await DB.saveFieldEvent({
-        id: _uuid(), project_id: projectId, kind: 'pm', blocks: String(block),
+        id: _uuid(), project_id: projectId, kind: 'pm', blocks: blocks.join(','),
         date_from: date, date_to: date, hours: hours, exclusion_type: '',
         ptw_no: ptw,
         description: (desc || 'PM as per checklist') + (ptw ? ' [' + ptw + ']' : ''),

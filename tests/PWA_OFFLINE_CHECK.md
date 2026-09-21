@@ -153,3 +153,48 @@ in as `tech1`; the desktop as the admin.
    "From admin" instead of a Delete button. The office can hand it to another
    technician on the desktop; after the next sync it leaves the first phone's
    Tasks and appears on the second.
+
+## 10. v18: several blocks in one record
+
+The same alarm on blocks 4, 35 and 60 is one trip: one form, one set of
+photos, and one record per block. Phone on **v18** (More → the version reads
+`v18`), project Tashkent (70 blocks, 9 zones).
+
+1. **The v17 → v18 step.** With the app open, deploy v18: the "New version
+   available" banner appears; tap Reload. More → the version reads `v18`.
+2. **One block is unchanged.** ＋ → Work record → Node: tap zone 2, tap a
+   block, tap **Use Block N** — the same two taps as before. The form reads
+   `Block N · Z2/Bx`, Save writes **one** record, and Records shows one card.
+3. **Three blocks, one form.** ＋ → Work record → Node: tap block 4 in zone 1,
+   switch to zone 5 and tap 35, zone 8 and tap 60. The line at the top reads
+   `3 blocks · 4, 35, 60 — one record each, same text`, the tiles stay dark in
+   every zone, and the button says **Use 3 blocks · 4, 35, 60**. Choose LC1 and
+   BESS 3 once. The form reads `3 blocks · 4, 35, 60 · LC1 · BESS 3`.
+   - Write the fault (Antifreeze Low Level), what was done, the PTW and an
+     internal note. Take **two photos**. Save.
+   - Records shows **three** cards — Block 4, Block 35, Block 60 — with the
+     same text, fault, PTW and LC/device. Only the Block 4 card carries the
+     photos; open Block 35 and its internal note ends with "Photos on the
+     Block 4 record."
+   - The photo stamp still names the node it was taken at (Block 4), not all
+     three.
+4. **It reaches the office.** 🔄 Sync → desktop → Work: three rows, blocks 4,
+   35 and 60, one customer text each. The monthly report's section 3.2 has a
+   line per block. The internal note is not in the ⤓ Excel export.
+5. **A PM on three blocks.** ＋ → PM record → pick three blocks → the line
+   under the hours reads "these hours are charged to EACH of the 3 blocks".
+   Enter 4 h, save.
+   - Desktop → sync → Monthly report → PM: **three** PM records, **4 h each**
+     (not 12 h shared out, not 1.33 h each). Section 3.2 has **no** line for
+     them — the hours reach the customer through 3.1.
+   - Syncing again must not double them (the event is applied once).
+6. **All blocks.** ＋ → record → Node → **All blocks**: every block of the
+   project is chosen, the button reads `Use 70 blocks · 1-70`. **Clear**
+   empties it and the Use button goes dead. (Save only if you really mean 70
+   records.)
+7. **Number tab, no zones mirrored.** On a project without zones: Number → type
+   12 → **＋ Add this block, type another** → type 15 → **Use 2 blocks ·
+   12, 15**.
+8. **Offline.** Airplane mode on → write a three-block record → three cards say
+   "Waiting to send". Airplane mode off → 🔄 Sync → all three reach the office,
+   and the photos are uploaded **once**.

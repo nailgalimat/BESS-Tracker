@@ -103,6 +103,19 @@ H.check('.tcard.assigned' in css and '.chip.job' in css,
 H.check('not in this version' not in html and 'not in this version' not in app,
         'no line tells the technician that office jobs cannot arrive')
 
+# ── v18: several blocks in one record ────────────────────────────────────
+H.check('id="f-blocks"' in html,
+        'the form carries every block of the trip, not just one')
+H.check('id="np-picked"' in html and 'App.nodeAll()' in html
+        and 'App.nodeNone()' in html and 'App.nodeAddNumber()' in html,
+        'the picker says what is chosen and offers All / Clear / Add')
+for fn in ('_nodeChosen', 'nodeAll', 'nodeNone', 'nodeAddNumber', '_hoursHint'):
+    H.check(fn in app, 'app.js implements {}'.format(fn))
+H.check('EACH of the' in app,
+        'the form says PM hours are charged to each chosen block')
+H.check('.np-picked' in css and '.np-actions' in css,
+        'the chosen-blocks line and the All / Clear row are styled')
+
 # ── the JS actually parses ───────────────────────────────────────────────
 try:
     for f in ('js/app.js', 'js/db.js', 'js/api.js', 'sw.js'):
@@ -138,6 +151,15 @@ try:
                        capture_output=True, text=True, shell=True, timeout=180)
     print((p.stdout or p.stderr).rstrip())
     H.check('RESULT PASS' in (p.stdout or ''), 'the assigned-job check passes')
+except Exception as e:                                   # noqa: BLE001
+    print('   note   node not available or failed:', e)
+
+# ── several blocks in one record, actually executed ──────────────────────
+try:
+    p = subprocess.run(['node', os.path.join(H.MVP, 'tests', 'nodes_check.js')],
+                       capture_output=True, text=True, shell=True, timeout=180)
+    print((p.stdout or p.stderr).rstrip())
+    H.check('RESULT PASS' in (p.stdout or ''), 'the multi-block picker check passes')
 except Exception as e:                                   # noqa: BLE001
     print('   note   node not available or failed:', e)
 

@@ -306,6 +306,43 @@ renamed = os.path.join(wj.photos_root(), 'TK',
 H.check(os.path.isfile(os.path.join(renamed, 'IMG_0001.jpg')) and not os.path.exists(folder),
         'an edited record\'s folder is renamed, not duplicated')
 
+# ── one alarm on three blocks: three records, one per block (phone v18) ─────
+# The phone writes a record per chosen block, all with the same text; the
+# photos stay on the first one and the others say so in the internal note.
+c = dbm.get_connection()
+for eid, blk, note in (('mb1', 4, 'pump was warm again'),
+                       ('mb2', 12, 'pump was warm again\nPhotos on the Block 4 record.'),
+                       ('mb3', 16, 'pump was warm again\nPhotos on the Block 4 record.')):
+    c.execute("INSERT INTO work_log_entries (id, project_id, log_date, category, "
+              "description, fault_name, status, plant_block, node_lc, node_device, "
+              "ptw_no, internal_note, hours, created_at, updated_at, sync_status) "
+              "VALUES (?,?,'2026-09-06','fault','Antifreeze topped up and level checked',"
+              "'Antifreeze Low Level','done',?,'LC1','BESS 3','PTW-2609-140',?,1.5,"
+              "'2026-09-06','2026-09-06','synced')", (eid, PID, blk, note))
+c.commit(); c.close()
+trip = {r['key']: r for r in wj.records(PID, today=TODAY)
+        if r['key'] in ('e:mb1', 'e:mb2', 'e:mb3')}
+H.check(len(trip) == 3, 'three phone records are three journal rows: {}'.format(len(trip)))
+H.check([trip['e:mb%d' % i]['block'] for i in (1, 2, 3)] == [4, 12, 16],
+        'one row per plant block: {}'.format([trip['e:mb%d' % i]['block'] for i in (1, 2, 3)]))
+H.check([trip['e:mb%d' % i]['node'] for i in (1, 2, 3)]
+        == ['Block 4 · Z1/B4 · LC1 · BESS 3', 'Block 12 · Z2/B4 · LC1 · BESS 3',
+            'Block 16 · Z2/B8 · LC1 · BESS 3'],
+        'each row knows its own node, with the shared LC and device: {}'.format(
+            [trip['e:mb%d' % i]['node'] for i in (1, 2, 3)]))
+H.check(len({(r['work_done'], r['title'], r['ptw'], r['hours']) for r in trip.values()}) == 1,
+        'the customer text, fault, PTW and hours are the same on all three')
+H.check('Photos on the Block 4' not in trip['e:mb1']['work_done']
+        and 'Photos on the Block 4' in trip['e:mb2']['internal_note'],
+        'where the photos are is an internal note, never the customer line')
+H.check(len(wj.filter_rows(list(trip.values()), block=12)) == 1,
+        'the block chip still narrows the trip to one block')
+cm3 = {r['id']: r for r in rw.corrective_rows(PID, 2026, 9) if r['id'] in ('mb1', 'mb2', 'mb3')}
+H.check(sorted(r['block'] for r in cm3.values()) == [4, 12, 16]
+        and all(rw.cm_skip_reason(r) is None for r in cm3.values()),
+        'and the customer gets a 3.2 line per block: {}'.format(
+            sorted(r['block'] for r in cm3.values())))
+
 # ── Excel export: the listed rows, no photos, internal notes only on request ──
 from openpyxl import load_workbook
 wj.save(PID, None, date='2026-09-08', kind=wj.KIND_FAULT, block=3,
@@ -319,7 +356,9 @@ H.check(n == len(rows) == ws.max_row - 1, 'every listed record is a row ({})'.fo
 H.check(head[:6] == ['Date', 'Block', 'Zone', 'LC', 'Device', 'Serial No.']
         and 'Internal note' not in head, 'columns without the internal note: {}'.format(head))
 body = {c.value for r in ws.iter_rows(min_row=2) for c in r}
-H.check(not any('board swap' in str(v) for v in body), 'no internal text leaks into the file')
+H.check(not any('board swap' in str(v) for v in body)
+        and not any('Photos on the Block' in str(v) for v in body),
+        'no internal text leaks into the file')
 cell = [r for r in ws.iter_rows(min_row=2) if r[1].value == 3][0]
 H.check(cell[7].data_type == 's' and cell[7].value.startswith('=HYPERLINK'),
         'phone text starting with "=" stays text, not a formula')

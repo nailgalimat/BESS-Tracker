@@ -164,6 +164,48 @@ twice = [rw.record_pm(PID, '60', '2026-09-12', None, h, source='phone', source_r
 H.check(len([x for x in rows() if x['affected_blocks'] == '60']) == 1
         and twice[1]['updated'], 'the same event applied twice updates its own record')
 
+print('\n=== one PM trip on three blocks: one phone event, one record per block ===')
+# The phone's form now takes several blocks at once (PWA v18): it writes one
+# work record per block and ONE field event naming them all. The hours are per
+# block — 4 h on three blocks is 4 h charged to each, not 4/3.
+trip_ev = {'id': 'ev-trip', 'project_id': PID, 'kind': 'pm', 'blocks': '4,35,60',
+           'date_from': '2026-09-13', 'date_to': '2026-09-13', 'hours': 4,
+           'exclusion_type': '', 'ptw_no': 'PTW-2609-140',
+           'description': 'PM as per the checklist [PTW-2609-140]'}
+H.check(avi.route_field_event(trip_ev) == 'applied', 'the three-block phone PM applies at once')
+trip = [r for r in rows() if r['date_from'] == '2026-09-13']
+H.check(sorted(r['affected_blocks'] for r in trip) == ['35', '4', '60'],
+        'one PM record per block: {}'.format(sorted(r['affected_blocks'] for r in trip)))
+H.check([r['hours'] for r in trip] == [4.0] * 3,
+        'each charged the full 4 h, not a third of it: {}'.format([r['hours'] for r in trip]))
+H.check(all(len(charged(b, '2026-09-13')) == 1
+            and charged(b, '2026-09-13')[0]['downtime_h'] == 4.0 for b in (4, 35, 60)),
+        'availability sees 4 h on each of the three blocks')
+H.check(all(r['ptw_no'] == 'PTW-2609-140' for r in trip), 'the one permit reaches all three')
+H.check(avi.route_field_event(trip_ev) == 'seen'
+        and len([r for r in rows() if r['date_from'] == '2026-09-13']) == 3,
+        're-pulling the same event writes nothing more (still 3 records)')
+
+# the three work records that came with it must not ALSO be charged as
+# corrective work in section 3.2 — that would report the same PM twice
+conn = dbm.get_connection()
+for eid, blk in (('trip-a', 4), ('trip-b', 35), ('trip-c', 60)):
+    conn.execute("INSERT INTO work_log_entries (id, project_id, log_date, category, "
+                 "description, status, plant_block, node_lc, hours, ptw_no, "
+                 "created_at, updated_at, sync_status) VALUES (?,?,'2026-09-13',"
+                 "'maintenance','PM: as per the checklist (PCS + BESS)','done',?,"
+                 "'LC1',4,'PTW-2609-140','2026-09-13','2026-09-13','synced')",
+                 (eid, PID, blk))
+conn.commit(); conn.close()
+cm = {r['id']: r for r in rw.corrective_rows(PID, 2026, 9)
+      if r['id'] in ('trip-a', 'trip-b', 'trip-c')}
+H.check(len(cm) == 3 and all(rw.cm_skip_reason(r) == 'pm' for r in cm.values()),
+        'all three phone records are held back from 3.2 as PM: {}'.format(
+            {k: rw.cm_skip_reason(v) for k, v in cm.items()}))
+H.check(not [ln for ln in rw.cm_lines(rw.corrective_rows(PID, 2026, 9))
+             if 'checklist (PCS + BESS)' in ln],
+        'so the customer gets no 3.2 line for them — the hours reach them via 3.1')
+
 print('\n=== rows that already exist: legacy duplicates and empty blocks ===')
 c = dbm.get_connection()
 c.execute("INSERT INTO pm_activities (project_id, year, month, affected_blocks, date_from, date_to, hours, description) "

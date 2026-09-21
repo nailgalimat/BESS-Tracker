@@ -674,6 +674,11 @@ body.has-tabs .fab      { bottom: calc(78px + var(--safe-bot)); }
 .np-pane{ padding-top:6px; }
 .np-label{ font-size:12px; color:#6B7A8D; margin:12px 0 6px; font-weight:600;
            text-transform:uppercase; letter-spacing:.4px; }
+/* several blocks in one record: what is chosen so far, and All / Clear */
+.np-picked{ font-size:12px; color:#6B7A8D; line-height:1.4; margin:2px 2px 8px; }
+.np-picked.on{ color:#1A2B45; font-weight:700; }
+.np-actions{ display:flex; gap:8px; margin-top:12px; }
+.np-actions .btn{ flex:1; padding:8px 0; }
 .tile-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(62px,1fr));
             gap:7px; }
 .tile{
