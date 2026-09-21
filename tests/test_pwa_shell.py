@@ -34,6 +34,13 @@ v_sw = re.search(r"const V\s*=\s*'(\d+)'", sw).group(1)
 v_html = set(re.findall(r"\?v=(\d+)", html))
 H.check(v_html == {v_sw},
         'sw.js V={} and every ?v= in index.html agree ({})'.format(v_sw, sorted(v_html)))
+# The version the phone SHOWS is a third copy of the same number, and it was
+# left behind twice: the engineer reloaded, got the new app and still read
+# "v16" on the More screen, with no way to tell whether the update had landed.
+v_shown = re.search(r"APP_VERSION\s*=\s*'v(\d+)'", html)
+H.check(v_shown and v_shown.group(1) == v_sw,
+        'the version the phone shows is the version it runs (shows v{}, runs v{})'
+        .format(v_shown and v_shown.group(1), v_sw))
 
 # ── the update banner ────────────────────────────────────────────────────
 _install = sw.split("addEventListener('install'")[1].split('});')[0]
