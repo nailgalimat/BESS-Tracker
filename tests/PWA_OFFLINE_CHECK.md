@@ -198,3 +198,14 @@ photos, and one record per block. Phone on **v18** (More → the version reads
 8. **Offline.** Airplane mode on → write a three-block record → three cards say
    "Waiting to send". Airplane mode off → 🔄 Sync → all three reach the office,
    and the photos are uploaded **once**.
+
+## 11. v19: the version on the screen is the version running
+
+1. More → the version line must read **v19**. It is a third copy of the same
+   number (sw.js `V`, the `?v=` tags and `APP_VERSION`); a test now ties them
+   together, because v17 and v18 shipped with the label still saying v16 and
+   nobody could tell whether a reload had landed.
+2. The app asks the server for a new version on every start with network, so a
+   deploy shows the banner the next time the app is opened, not a day later.
+3. If a phone is stuck on an old number: close the app fully (swipe it away)
+   and open it again — that forces the service worker to re-check.

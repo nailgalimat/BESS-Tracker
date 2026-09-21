@@ -10,7 +10,7 @@
   <title>BESS Field Log</title>
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="apple-touch-icon" href="/app/icons/icon-192.png" />
-  <link rel="stylesheet" href="/app/css/app.css?v=18" />
+  <link rel="stylesheet" href="/app/css/app.css?v=19" />
 </head>
 <body>
 
@@ -673,14 +673,18 @@
   <button class="tab" data-tab="more" onclick="App.goSettings()"><span>More</span></button>
 </nav>
 
-<script>window.APP_VERSION = 'v18';</script>
-<script src="/app/js/db.js?v=18"></script>
-<script src="/app/js/api.js?v=18"></script>
-<script src="/app/js/app.js?v=18"></script>
+<script>window.APP_VERSION = 'v19';</script>
+<script src="/app/js/db.js?v=19"></script>
+<script src="/app/js/api.js?v=19"></script>
+<script src="/app/js/app.js?v=19"></script>
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/app/sw.js').then(reg => {
       App.watchForUpdate(reg);
+      // Ask on every start. Left to the browser's own schedule, a deployed
+      // version could sit unnoticed on a phone for a day — the engineer
+      // reloaded, saw the same app and had no reason to think otherwise.
+      if (navigator.onLine) reg.update().catch(() => {});
     }).catch(() => {});
   }
 </script>
