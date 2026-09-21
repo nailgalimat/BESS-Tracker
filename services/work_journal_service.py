@@ -399,6 +399,12 @@ def records(project_id: int, date_from: str = None, date_to: str = None,
                 'hours': r.get('hours'), 'time_from': r.get('time_from') or '',
                 'time_to': r.get('time_to') or '',
                 'impact': r.get('availability_impact') or 'none',
+                # who the office gave it to; the name travels with the record
+                # so a list read offline still shows a person, not an id
+                'assignee': r.get('assigned_to') or '',
+                'assignee_name': r.get('assigned_name') or '',
+                'assigned_by': r.get('assigned_by') or '',
+                'due': (r.get('due_date') or '')[:10],
                 'sync': (r.get('sync_status') or 'local'),
                 'category': r.get('category') or '',
                 'container_id': r.get('container_id'),
@@ -439,6 +445,8 @@ def records(project_id: int, date_from: str = None, date_to: str = None,
                     'hours': None, 'time_from': r.get('start_time') or '',
                     'time_to': r.get('end_time') or '',
                     'impact': r.get('availability_impact') or 'none',
+                    'assignee': '', 'assignee_name': '', 'assigned_by': '',
+                    'due': '',
                     'sync': 'old', 'category': 'fault',
                     'container_id': r.get('container_id'),
                     'serial': (r.get('serial_number') or '').strip(),
@@ -453,6 +461,10 @@ def records(project_id: int, date_from: str = None, date_to: str = None,
 
 
 # ── Filters. The Work page's tabs and chips, as data. ────────────────────────
+
+# the "Nobody" choice on the Assigned-to chip, which is not a user id
+ASSIGNED_NOBODY = '-'
+
 
 def is_open(r: dict) -> bool:
     return r['status'] in ('Open', 'In progress', 'Needs visit')
@@ -475,7 +487,7 @@ TABS = (
 
 
 def filter_rows(rows, tab='all', kind=None, status=None, block=None,
-                ptw_only=False, source=None, text=None):
+                ptw_only=False, source=None, text=None, assignee=None):
     """The same filtering the page's chips do — so a count and the list it
     opens can never disagree."""
     fn = dict((t[0], t[2]) for t in TABS).get(tab, lambda r: True)
@@ -493,6 +505,14 @@ def filter_rows(rows, tab='all', kind=None, status=None, block=None,
             continue
         if source and r.get('source') != source:
             continue
+        # '' as the chip's value means "any"; ASSIGNED_NOBODY asks for the
+        # records nobody has been given, which is a real question in the office
+        if assignee is not None and assignee != '':
+            if assignee == ASSIGNED_NOBODY:
+                if r.get('assignee'):
+                    continue
+            elif r.get('assignee') != assignee:
+                continue
         if text:
             hay = ' '.join(str(r.get(k) or '') for k in
                            ('title', 'work_done', 'node', 'ptw', 'sap',
@@ -543,7 +563,7 @@ def save(project_id: int, key: str = None, **fields) -> str:
 
     fields: date, block, lc, device, kind, status, title, work_done,
     internal_note, ptw, sap, hours, time_from, time_to, impact, parts,
-    container_id.
+    container_id, assignee, assignee_name, assigned_by, due.
     """
     import services.worklog_entry_service as wes
     if key and key.startswith('w:'):
@@ -578,6 +598,16 @@ def save(project_id: int, key: str = None, **fields) -> str:
         'internal_note': fields.get('internal_note') or '',
         'availability_impact': fields.get('impact') or 'none',
     }
+    # Who the job is with. Only written when the caller says so: a phone that
+    # edits a record does not send it, and an absent key must keep the
+    # assignment rather than clear it (the technician would lose the job).
+    if 'assignee' in fields:
+        payload['assigned_to'] = (fields.get('assignee') or '').strip()
+        payload['assigned_name'] = (fields.get('assignee_name') or '').strip()
+        if 'assigned_by' in fields:
+            payload['assigned_by'] = (fields.get('assigned_by') or '').strip()
+    if 'due' in fields:
+        payload['due_date'] = (fields.get('due') or '')[:10]
     # What the card does not show stays as it is on an edit — the phone's
     # location text, its parts and its container link used to be blanked.
     for src, col in (('location', 'site_location'), ('parts', 'spare_parts'),

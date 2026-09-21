@@ -615,6 +615,17 @@ def initialize_database():
         ):
             c.execute(_idx)
 
+        # Migration: a planned job can be given to a named technician and
+        # published to the phones as a work record.
+        #   assignee_id  the server user id behind the free-text `assignee`
+        #   record_uuid  the work_log_entries row this job was published as.
+        #                (`work_log_id` above is INTEGER and predates the UUID
+        #                keys those rows use — leave it alone.)
+        _pi_cols = [r[1] for r in c.execute("PRAGMA table_info(plan_items)").fetchall()]
+        for _col in ("assignee_id", "record_uuid"):
+            if _col not in _pi_cols:
+                c.execute(f"ALTER TABLE plan_items ADD COLUMN {_col} TEXT DEFAULT ''")
+
         # Migration: scope the three unavailability tables to (project, month)
         # so they can be entered per report-month instead of globally. Existing
         # rows keep NULL year/month (the report still date-filters them).
@@ -700,6 +711,11 @@ def initialize_database():
         #                goes into the report).
         #   availability_impact  none | counts | excluded — what it does to the
         #                month, decided on the desktop.
+        #   assigned_to / assigned_name / assigned_by   the office gives a job
+        #                to a named technician: the server user id, plus the
+        #                names cached so a phone with no signal can still say
+        #                who it is from and who it is for.
+        #   due_date     when it is wanted, shown on the phone's Tasks tab.
         for _col, _decl in (("plant_block", "INTEGER"),
                             ("node_lc", "TEXT DEFAULT ''"),
                             ("node_device", "TEXT DEFAULT ''"),
@@ -708,11 +724,76 @@ def initialize_database():
                             ("time_to", "TEXT DEFAULT ''"),
                             ("hours", "REAL"),
                             ("internal_note", "TEXT DEFAULT ''"),
-                            ("availability_impact", "TEXT DEFAULT 'none'")):
+                            ("availability_impact", "TEXT DEFAULT 'none'"),
+                            ("assigned_to", "TEXT DEFAULT ''"),
+                            ("assigned_name", "TEXT DEFAULT ''"),
+                            ("assigned_by", "TEXT DEFAULT ''"),
+                            ("due_date", "TEXT DEFAULT ''")):
             if _col not in _wle_cols:
                 c.execute(f"ALTER TABLE work_log_entries ADD COLUMN {_col} {_decl}")
         c.execute("CREATE INDEX IF NOT EXISTS idx_wle_project_date "
                   "ON work_log_entries(project_id, log_date)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_wle_assigned "
+                  "ON work_log_entries(assigned_to)")
+
+        # ── WHO CAN BE GIVEN A JOB ────────────────────────────────────────
+        # A mirror of the server's accounts, refreshed on every sync, so the
+        # "Assigned to" picker works in a container with no signal. The server
+        # owns these rows; nothing here is ever pushed back.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS sync_users (
+                id          TEXT    PRIMARY KEY,        -- the server's user id
+                username    TEXT    NOT NULL DEFAULT '',
+                role        TEXT    NOT NULL DEFAULT '',-- admin | engineer | technician
+                is_active   INTEGER NOT NULL DEFAULT 1,
+                updated_at  TEXT    DEFAULT (datetime('now'))
+            )
+        """)
+
+        # ── PM checklists ─────────────────────────────────────────────────
+        # The customer issues the checklist as an Excel file and expects it
+        # back in that same file, so a template keeps the workbook it came
+        # from and every item keeps the row it sits on.
+        _ct_cols = [r[1] for r in c.execute(
+            "PRAGMA table_info(checklist_templates)").fetchall()]
+        for _col, _decl in (("uuid", "TEXT"), ("project_id", "INTEGER"),
+                            ("kind", "TEXT DEFAULT ''"),          # PCS | BESS | …
+                            ("source_file", "TEXT DEFAULT ''"),   # our copy of the workbook
+                            ("source_sha", "TEXT DEFAULT ''"),
+                            ("progress_row", "INTEGER"),
+                            ("updated_at", "TEXT")):
+            if _col not in _ct_cols:
+                c.execute(f"ALTER TABLE checklist_templates ADD COLUMN {_col} {_decl}")
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_checklist_templates_uuid "
+                  "ON checklist_templates(uuid) WHERE uuid IS NOT NULL")
+
+        _ci_cols = [r[1] for r in c.execute(
+            "PRAGMA table_info(checklist_items)").fetchall()]
+        for _col, _decl in (("s_no", "TEXT DEFAULT ''"),
+                            ("equipment", "TEXT DEFAULT ''"),
+                            ("excel_row", "INTEGER"),
+                            ("added", "INTEGER DEFAULT 0")):      # added on the desktop
+            if _col not in _ci_cols:
+                c.execute(f"ALTER TABLE checklist_items ADD COLUMN {_col} {_decl}")
+
+        # A run is one checklist for one block, covering its four units; a
+        # deviation on one of them is written in the comment.
+        _cr_cols = [r[1] for r in c.execute(
+            "PRAGMA table_info(checklist_runs)").fetchall()]
+        for _col, _decl in (("uuid", "TEXT"), ("plant_block", "INTEGER"),
+                            ("campaign", "TEXT DEFAULT ''"),
+                            ("ptw_no", "TEXT DEFAULT ''"),
+                            ("serial", "TEXT DEFAULT ''"),
+                            ("signed_by", "TEXT DEFAULT ''"),
+                            ("source", "TEXT DEFAULT 'desktop'"),  # desktop | phone
+                            ("sync_status", "TEXT DEFAULT 'local'"),
+                            ("updated_at", "TEXT"), ("deleted_at", "TEXT")):
+            if _col not in _cr_cols:
+                c.execute(f"ALTER TABLE checklist_runs ADD COLUMN {_col} {_decl}")
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_checklist_runs_uuid "
+                  "ON checklist_runs(uuid) WHERE uuid IS NOT NULL")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_checklist_runs_block "
+                  "ON checklist_runs(project_id, plant_block)")
 
         c.execute("""
             CREATE TABLE IF NOT EXISTS work_log_tags (

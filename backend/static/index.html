@@ -10,7 +10,7 @@
   <title>BESS Field Log</title>
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="apple-touch-icon" href="/app/icons/icon-192.png" />
-  <link rel="stylesheet" href="/app/css/app.css?v=13" />
+  <link rel="stylesheet" href="/app/css/app.css?v=16" />
 </head>
 <body>
 
@@ -257,6 +257,8 @@
         <input id="photo-input" type="file" accept="image/*" multiple
                style="display:none" onchange="App.addPhotos(this)" />
         <div id="photo-preview" class="photo-grid"></div>
+        <p class="hint-line" id="photo-hint">Each photo is saved with the project,
+           the date and time, the node and the location written on it.</p>
       </div>
     </div>
 
@@ -314,6 +316,60 @@
   <div id="detail-body" class="screen-body"></div>
 </div>
 
+<!-- ONE TASK — a job the office gave this technician, filled in and closed -->
+<!-- It is the same record the office wrote: doing the work fills THIS one in,
+     so the journal, the phone and the report never hold two copies of a job. -->
+<div id="screen-task" class="screen">
+  <header class="topbar">
+    <button class="icon-btn" onclick="App.goTasks()">‹</button>
+    <span class="topbar-title" id="task-title">Task</span>
+    <button id="task-save" class="topbar-save" onclick="App.saveTask()">Save</button>
+  </header>
+  <div class="sync-bar" id="task-banner" style="display:none"></div>
+  <div class="screen-body">
+    <div class="card task-head">
+      <div class="tcard-blk" id="task-node">—</div>
+      <div class="tcard-meta" id="task-from">—</div>
+      <p class="task-ask" id="task-ask"></p>
+    </div>
+
+    <div class="form-group">
+      <label>What was done <span class="inrep">In report</span></label>
+      <textarea id="task-desc" rows="3"
+                placeholder="what you actually did"></textarea>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Start</label>
+        <input id="task-start" type="time" onchange="App.recalcTaskHours()" />
+      </div>
+      <div class="form-group">
+        <label>End</label>
+        <input id="task-end" type="time" onchange="App.recalcTaskHours()" />
+      </div>
+      <div class="form-group">
+        <label>Hours</label>
+        <input id="task-hours" type="number" step="0.25" min="0" max="24" value="0" />
+      </div>
+    </div>
+    <div class="form-group">
+      <label>PTW No.</label>
+      <input id="task-ptw" type="text" placeholder="optional" />
+    </div>
+    <div class="form-group">
+      <label>Note for the office <span class="intern">Internal</span></label>
+      <textarea id="task-note" rows="2"
+                placeholder="what you found, what is still open"></textarea>
+    </div>
+    <div id="task-error" class="error-msg" style="display:none"></div>
+    <button class="btn btn-primary btn-block" onclick="App.completeTask()">
+      ✓ Done — send to the office</button>
+    <p class="hint-line">Saving keeps it on this phone; both go to the office on
+      the next sync. This is the office's own record — it is filled in, never
+      duplicated.</p>
+  </div>
+</div>
+
 <!-- MORE — sync, version, log out -->
 <div id="screen-settings" class="screen">
   <header class="topbar">
@@ -351,6 +407,9 @@
     </button>
     <button class="btn btn-outline btn-block" style="margin-top:12px" onclick="App.goEvents()">
       🧰 Downtime events
+    </button>
+    <button class="btn btn-outline btn-block" style="margin-top:12px" onclick="App.goChecklists()">
+      📋 PM checklists
     </button>
     <button class="btn btn-outline btn-block danger" style="margin-top:12px" onclick="App.logout()">
       🚪 Log out
@@ -536,6 +595,57 @@
   </div>
 </div>
 
+<!-- PM CHECKLISTS — what the office planned for this block -->
+<div id="screen-checklists" class="screen">
+  <header class="topbar">
+    <button class="icon-btn" onclick="App.goTasks()">‹</button>
+    <span class="topbar-title">Checklists</span>
+    <div class="topbar-actions">
+      <button class="icon-btn" onclick="App.refreshChecklists()" title="Refresh">🔄</button>
+    </div>
+  </header>
+  <div class="sync-bar" id="cl-banner" style="display:none"></div>
+  <div class="screen-body">
+    <div class="form-group">
+      <label>Project</label>
+      <select id="cl-proj" onchange="App.onChecklistProject()"></select>
+    </div>
+    <div id="cl-list" class="cl-list"></div>
+    <p class="hint-line">The office plans one checklist per block. They are kept
+      on the phone, so a container with no signal is not a problem — tap Send
+      when you are back in range.</p>
+  </div>
+</div>
+
+<!-- ONE CHECKLIST — OK / NOK / N/A per item, with a comment -->
+<div id="screen-checklist" class="screen">
+  <header class="topbar">
+    <button class="icon-btn" onclick="App.goChecklists()">‹</button>
+    <span class="topbar-title" id="cl-title">Checklist</span>
+    <button id="cl-send" class="topbar-save" onclick="App.sendChecklist()">Send</button>
+  </header>
+  <div class="cl-progress" id="cl-progress"></div>
+  <div class="screen-body">
+    <div class="form-row">
+      <div class="form-group">
+        <label>PTW No.</label>
+        <input id="cl-ptw" type="text" placeholder="optional" onchange="App.saveChecklistHead()" />
+      </div>
+      <div class="form-group">
+        <label>Equipment serial</label>
+        <input id="cl-serial" type="text" placeholder="if known" onchange="App.saveChecklistHead()" />
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Signature / name <span class="intern">optional</span></label>
+      <input id="cl-signed" type="text" placeholder="who did the work" onchange="App.saveChecklistHead()" />
+    </div>
+    <div id="cl-items"></div>
+    <p class="hint-line">Measurements and a deviation on one unit go in the
+      comment — “BESS 3: door seal torn”. Everything is saved as you tap.</p>
+  </div>
+</div>
+
 <!-- LIGHTBOX -->
 <div id="lightbox" class="lightbox" onclick="this.style.display='none'">
   <img id="lightbox-img" src="" alt="" />
@@ -549,10 +659,10 @@
   <button class="tab" data-tab="more" onclick="App.goSettings()"><span>More</span></button>
 </nav>
 
-<script>window.APP_VERSION = 'v13';</script>
-<script src="/app/js/db.js?v=13"></script>
-<script src="/app/js/api.js?v=13"></script>
-<script src="/app/js/app.js?v=13"></script>
+<script>window.APP_VERSION = 'v16';</script>
+<script src="/app/js/db.js?v=16"></script>
+<script src="/app/js/api.js?v=16"></script>
+<script src="/app/js/app.js?v=16"></script>
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/app/sw.js').then(reg => {

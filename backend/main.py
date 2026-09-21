@@ -33,7 +33,7 @@ from config import settings
 from database import engine, Base, SessionLocal
 from models.db_models import User
 from services.auth_service import hash_password
-from routers import auth, worklogs, images, sync, projects, stock, events
+from routers import auth, worklogs, images, sync, projects, stock, events, checklists
 
 
 # ── Structured logging ────────────────────────────────────────────────────────
@@ -132,7 +132,15 @@ async def lifespan(app: FastAPI):
                        ("node_device", "TEXT DEFAULT ''"), ("ptw_no", "TEXT DEFAULT ''"),
                        ("time_from", "TEXT DEFAULT ''"), ("time_to", "TEXT DEFAULT ''"),
                        ("hours", "REAL"), ("internal_note", "TEXT DEFAULT ''"),
-                       ("availability_impact", "TEXT DEFAULT 'none'")):
+                       ("availability_impact", "TEXT DEFAULT 'none'"),
+                       # A job the office gave to a named technician: the user
+                       # id, the names cached for an offline phone, and when it
+                       # is wanted. Optional, so an older desktop or phone that
+                       # sends none of them keeps working unchanged.
+                       ("assigned_to", "TEXT DEFAULT ''"),
+                       ("assigned_name", "TEXT DEFAULT ''"),
+                       ("assigned_by", "TEXT DEFAULT ''"),
+                       ("due_date", "TEXT DEFAULT ''")):
             if _c not in _cols:
                 _conn.exec_driver_sql(
                     f"ALTER TABLE work_log_entries ADD COLUMN {_c} {_d}")
@@ -149,6 +157,34 @@ async def lifespan(app: FastAPI):
         if "zones" not in _pcols:
             _conn.exec_driver_sql(
                 "ALTER TABLE projects ADD COLUMN zones TEXT DEFAULT ''")
+        # PM checklists. create_all makes the two tables on a fresh server;
+        # a server that already has them from an earlier deploy only gets the
+        # missing columns, so an older desktop or phone keeps working.
+        for _tbl, _cols_wanted in (
+                ("checklist_templates", (("project_id", "INTEGER"),
+                                         ("name", "TEXT DEFAULT ''"),
+                                         ("kind", "TEXT DEFAULT ''"),
+                                         ("items", "TEXT DEFAULT '[]'"),
+                                         ("updated_at", "TEXT"))),
+                ("checklist_runs", (("plant_block", "INTEGER"),
+                                    ("campaign", "TEXT DEFAULT ''"),
+                                    ("run_date", "TEXT DEFAULT ''"),
+                                    ("status", "TEXT DEFAULT ''"),
+                                    ("results", "TEXT DEFAULT '{}'"),
+                                    ("ptw_no", "TEXT DEFAULT ''"),
+                                    ("serial", "TEXT DEFAULT ''"),
+                                    ("notes", "TEXT DEFAULT ''"),
+                                    ("filled_by", "TEXT DEFAULT ''"),
+                                    ("updated_at", "TEXT"),
+                                    ("deleted_at", "TEXT")))):
+            _have = {r[1] for r in _conn.exec_driver_sql(
+                f"PRAGMA table_info({_tbl})").fetchall()}
+            if not _have:
+                continue                      # create_all has just made it
+            for _c, _d in _cols_wanted:
+                if _c not in _have:
+                    _conn.exec_driver_sql(
+                        f"ALTER TABLE {_tbl} ADD COLUMN {_c} {_d}")
 
     # Ensure uploads directory exists
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
@@ -219,6 +255,7 @@ app.include_router(sync.router)
 app.include_router(projects.router)
 app.include_router(stock.router)
 app.include_router(events.router)
+app.include_router(checklists.router)
 
 
 @app.get("/healthz", tags=["ops"])

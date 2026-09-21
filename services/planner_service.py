@@ -127,7 +127,8 @@ def delete_plan(plan_id: int, delete_items: bool = False):
 _ITEM_FIELDS = ('plan_id', 'type_code', 'title', 'description', 'block', 'lc',
                 'asset_code', 'planned_date', 'planned_hours', 'assignee',
                 'priority', 'status', 'actual_date', 'actual_hours',
-                'actual_notes', 'moved_from', 'alarm_event_id', 'work_log_id')
+                'actual_notes', 'moved_from', 'alarm_event_id', 'work_log_id',
+                'assignee_id', 'record_uuid')
 
 
 def add_item(project_id: int, **fields) -> int:
@@ -338,6 +339,101 @@ def complete_item(item_id: int, actual_date: str = None,
             'linked_existing': linked}
 
 
+# ── Giving a planned job to a technician ─────────────────────────────────────
+
+def _plan_title(plan_id) -> str:
+    if not plan_id:
+        return ''
+    conn = get_connection()
+    try:
+        r = conn.execute("SELECT title FROM work_plans WHERE id=?",
+                         (plan_id,)).fetchone()
+        return (r['title'] if r else '') or ''
+    finally:
+        conn.close()
+
+
+def publish_jobs(project_id: int, item_ids: List[int], assignee_id: str = '',
+                 assignee_name: str = '', assigned_by: str = '') -> dict:
+    """Publish planned jobs as work records assigned to one technician.
+
+    A plan item is ours: it never left the desktop, which is why a campaign
+    planned in the office reached nobody's phone. Publishing writes each job as
+    a `work_log_entries` row — the same journal the Work page, the report and
+    the phones already read — so the technician sees it in Tasks and fills that
+    very record in, instead of writing a second one nobody can match up.
+
+    Idempotent: a job already published keeps its record and is only
+    reassigned, so pressing the button twice cannot double the list. Returns
+    {'published', 'reassigned', 'keys'}.
+
+    The record is deliberately *not* the report's PM hours. Marking the job
+    done on the Schedule tab still writes the `pm_activities` row (one writer,
+    see complete_item) — this is the work order, not the downtime.
+    """
+    import services.work_journal_service as wj
+    out = {'published': 0, 'reassigned': 0, 'keys': []}
+    for item_id in item_ids:
+        it = get_item(item_id)
+        if not it or it.get('project_id') != project_id:
+            continue
+        # A PM job is a PM record: 'PM' in the customer's own line is what
+        # keeps it out of section 3.2, which reports PM as hours (3.1) and
+        # would otherwise print it twice. Anything else goes as 'Other', which
+        # the report does not treat as corrective work at all until somebody
+        # edits it into one.
+        kind = (wj.KIND_PM if _type_counts_downtime(project_id, it['type_code'])
+                else wj.KIND_OTHER)
+        text = (it.get('title') or '').strip() or 'Planned work'
+        plan_title = _plan_title(it.get('plan_id'))
+        if plan_title and plan_title not in text:
+            # the campaign name has to be in the text: on the phone it is the
+            # only thing that says which round this job belongs to
+            text = f"{plan_title} — {text}"
+        key = it.get('record_uuid') or ''
+        existing = wj.get('e:' + key, project_id) if key else None
+        if existing:
+            # already on someone's phone: hand it to whoever it is for now
+            wj.save(project_id, 'e:' + key, date=existing['date'],
+                    kind=existing['kind'], status=existing['status'],
+                    block=existing['block'], lc=existing['lc'],
+                    device=existing['device'], title=existing['title'],
+                    work_done=existing['work_done'],
+                    internal_note=existing['internal_note'],
+                    ptw=existing['ptw'], sap=existing['sap'],
+                    hours=existing['hours'], time_from=existing['time_from'],
+                    time_to=existing['time_to'], impact=existing['impact'],
+                    assignee=assignee_id, assignee_name=assignee_name,
+                    assigned_by=assigned_by, due=existing['due'])
+            out['reassigned'] += 1
+            new_key = 'e:' + key
+        else:
+            new_key = wj.save(
+                project_id, None,
+                date=it.get('planned_date') or _today(), kind=kind, status='Open',
+                block=it.get('block'), lc=f"LC{it['lc']}" if it.get('lc') else '',
+                title=text, work_done=text,
+                internal_note=(it.get('description') or '').strip(),
+                impact='none',
+                assignee=assignee_id, assignee_name=assignee_name,
+                assigned_by=assigned_by, due=it.get('planned_date') or '')
+            out['published'] += 1
+        # The job and its record name each other, and the schedule shows who
+        # holds it — including after a reassignment.
+        conn = get_connection()
+        try:
+            conn.execute("UPDATE plan_items SET record_uuid=?, assignee_id=?, "
+                         "assignee=COALESCE(NULLIF(?,''), assignee), "
+                         "updated_at=datetime('now') WHERE id=?",
+                         (new_key[2:], assignee_id or '', assignee_name or '',
+                          item_id))
+            conn.commit()
+        finally:
+            conn.close()
+        out['keys'].append(new_key)
+    return out
+
+
 def reopen_item(item_id: int):
     """Undo a completion, taking the downtime row it wrote with it (a record it
     only linked to stays)."""
@@ -388,7 +484,7 @@ def generate_pm_campaign(project_id: int, title: str, blocks: List[int],
                          hours_per_block: float = 4.0,
                          skip_weekends: bool = True,
                          type_code: str = 'pm',
-                         assignee: str = '') -> dict:
+                         assignee: str = '', assignee_id: str = '') -> dict:
     """Roll a list of blocks out across working days and create the jobs.
 
     This is how the plant is actually maintained: a couple of blocks a day
@@ -421,14 +517,18 @@ def generate_pm_campaign(project_id: int, title: str, blocks: List[int],
         conn.executemany("""
             INSERT INTO plan_items
                 (project_id, plan_id, type_code, title, block, planned_date,
-                 planned_hours, assignee, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'planned')
+                 planned_hours, assignee, assignee_id, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned')
         """, [(project_id, plan_id, type_code, f'{title} — block {b}', b,
-               day, float(hours_per_block), assignee) for day, b in schedule])
+               day, float(hours_per_block), assignee, assignee_id or '')
+              for day, b in schedule])
         conn.commit()
+        item_ids = [r[0] for r in conn.execute(
+            "SELECT id FROM plan_items WHERE plan_id=? ORDER BY planned_date, block",
+            (plan_id,))]
     finally:
         conn.close()
-    return {'plan_id': plan_id, 'items': len(schedule),
+    return {'plan_id': plan_id, 'items': len(schedule), 'item_ids': item_ids,
             'date_from': start_date, 'date_to': last_day}
 
 

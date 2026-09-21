@@ -26,6 +26,8 @@ html = open(os.path.join(STATIC, 'index.html'), encoding='utf-8').read()
 sw = open(os.path.join(STATIC, 'sw.js'), encoding='utf-8').read()
 app = open(os.path.join(STATIC, 'js', 'app.js'), encoding='utf-8').read()
 css = open(os.path.join(STATIC, 'css', 'app.css'), encoding='utf-8').read()
+jsdb = open(os.path.join(STATIC, 'js', 'db.js'), encoding='utf-8').read()
+jsapi = open(os.path.join(STATIC, 'js', 'api.js'), encoding='utf-8').read()
 
 # ── the cache version ────────────────────────────────────────────────────
 v_sw = re.search(r"const V\s*=\s*'(\d+)'", sw).group(1)
@@ -67,12 +69,75 @@ for field in ('plant_block', 'node_lc', 'node_device', 'ptw_no', 'time_from',
 H.check('Waiting to send' in app and 'Conflict' in app and 'Error' in app,
         'every record says what happened to it, not just a grey dot')
 
+# ── v15: PM checklists on the phone ──────────────────────────────────────
+for ident in ('screen-checklists', 'screen-checklist', 'cl-proj', 'cl-items',
+              'cl-progress', 'cl-ptw', 'cl-signed'):
+    H.check('id="{}"'.format(ident) in html, 'the checklist screen has {}'.format(ident))
+H.check('App.goChecklists()' in html,
+        'and it is reachable — More → PM checklists')
+for fn in ('goChecklists', 'openChecklist', 'setChecklistResult',
+           'setChecklistComment', 'sendChecklist', '_syncChecklists'):
+    H.check(fn in app, 'app.js implements {}'.format(fn))
+H.check("'/checklists'" in sw,
+        'sw.js treats /checklists as an API call, never a cached shell file')
+H.check("DB_VERSION = 4" in jsdb and "'checklists'" in jsdb,
+        'IndexedDB v4 keeps the checklists on the phone')
+H.check('getChecklists' in jsapi and 'postChecklistResults' in jsapi,
+        'api.js can fetch what is assigned and send back what was ticked')
+H.check('.cl-btn' in css and '.cl-item.out' in css,
+        'OK / NOK / N/A and the greyed out-of-scope item are styled')
+
+# ── v16: the jobs the office assigns ─────────────────────────────────────
+for ident in ('screen-task', 'task-node', 'task-from', 'task-desc',
+              'task-hours', 'task-ptw', 'task-note'):
+    H.check('id="{}"'.format(ident) in html, 'the task screen has {}'.format(ident))
+H.check('App.completeTask()' in html and 'App.saveTask()' in html,
+        'the technician can save progress and close the job')
+for fn in ('openTask', 'completeTask', 'saveTask', '_storeTask', '_assignedToMe'):
+    H.check(fn in app, 'app.js implements {}'.format(fn))
+H.check("localStorage.setItem('user_id'" in app,
+        'the phone remembers which user it is, so it knows its own jobs')
+H.check('.tcard.assigned' in css and '.chip.job' in css,
+        'an assigned job stands out from the records the technician wrote')
+# the hint that said campaign tasks could not reach a phone is now false
+H.check('not in this version' not in html and 'not in this version' not in app,
+        'no line tells the technician that office jobs cannot arrive')
+
 # ── the JS actually parses ───────────────────────────────────────────────
 try:
     for f in ('js/app.js', 'js/db.js', 'js/api.js', 'sw.js'):
         subprocess.run(['node', '--check', os.path.join(STATIC, f)], check=True,
                        capture_output=True, shell=True)
     H.check(True, 'node --check passes on app.js, db.js, api.js and sw.js')
+except Exception as e:                                   # noqa: BLE001
+    print('   note   node not available or failed:', e)
+
+# ── the photo stamp, actually executed ───────────────────────────────────
+H.check('_stampPhoto' in app and '_location' in app and 'image/jpeg' in app,
+        'photos are stamped and re-encoded before they are stored')
+try:
+    p = subprocess.run(['node', os.path.join(H.MVP, 'tests', 'stamp_check.js')],
+                       capture_output=True, text=True, shell=True, timeout=180)
+    print((p.stdout or p.stderr).rstrip())
+    H.check('RESULT PASS' in (p.stdout or ''), 'the photo stamp check passes')
+except Exception as e:                                   # noqa: BLE001
+    print('   note   node not available or failed:', e)
+
+# ── the checklist screen, actually executed ──────────────────────────────
+try:
+    p = subprocess.run(['node', os.path.join(H.MVP, 'tests', 'checklist_check.js')],
+                       capture_output=True, text=True, shell=True, timeout=180)
+    print((p.stdout or p.stderr).rstrip())
+    H.check('RESULT PASS' in (p.stdout or ''), 'the checklist screen check passes')
+except Exception as e:                                   # noqa: BLE001
+    print('   note   node not available or failed:', e)
+
+# ── the Tasks tab and one assigned job, actually executed ────────────────
+try:
+    p = subprocess.run(['node', os.path.join(H.MVP, 'tests', 'tasks_check.js')],
+                       capture_output=True, text=True, shell=True, timeout=180)
+    print((p.stdout or p.stderr).rstrip())
+    H.check('RESULT PASS' in (p.stdout or ''), 'the assigned-job check passes')
 except Exception as e:                                   # noqa: BLE001
     print('   note   node not available or failed:', e)
 

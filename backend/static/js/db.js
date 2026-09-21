@@ -4,7 +4,7 @@
  */
 const DB = (() => {
   const DB_NAME    = 'bess_field_log';
-  const DB_VERSION = 3;
+  const DB_VERSION = 4;
   let _db = null;
 
   // ── Open / upgrade ──────────────────────────────────────────────────────────
@@ -44,6 +44,15 @@ const DB = (() => {
         if (!db.objectStoreNames.contains('events')) {
           const ev = db.createObjectStore('events', { keyPath: 'id' });
           ev.createIndex('sync_status', 'sync_status', { unique: false });
+        }
+
+        // v4: the PM checklists assigned to this project, filled offline.
+        // Keyed by the run uuid the desktop planned, so the same checklist has
+        // one name on the phone, on the server and in the office.
+        if (!db.objectStoreNames.contains('checklists')) {
+          const cl = db.createObjectStore('checklists', { keyPath: 'uuid' });
+          cl.createIndex('sync_status', 'sync_status', { unique: false });
+          cl.createIndex('project_id',  'project_id',  { unique: false });
         }
       };
 
@@ -216,6 +225,39 @@ const DB = (() => {
     return wrap((await store('events', 'readwrite')).delete(id));
   }
 
+  // ── PM checklists ───────────────────────────────────────────────────────────
+  // A run is kept whatever its state: sent ones stay so a mistake can still be
+  // corrected on site, the way the paper copy could be.
+
+  async function saveChecklist(run) {
+    return wrap((await store('checklists', 'readwrite')).put(run));
+  }
+
+  async function getChecklist(uuid) {
+    return wrap((await store('checklists')).get(uuid));
+  }
+
+  async function getAllChecklists() {
+    const all = await wrap((await store('checklists')).getAll());
+    all.sort((a, b) => String(b.run_date || '').localeCompare(String(a.run_date || ''))
+                       || (a.plant_block || 0) - (b.plant_block || 0));
+    return all;
+  }
+
+  async function getPendingChecklists() {
+    const all = await getAllChecklists();
+    return all.filter(r => r.sync_status && r.sync_status !== 'synced');
+  }
+
+  async function updateChecklist(uuid, patch) {
+    const s = await store('checklists', 'readwrite');
+    const rec = await wrap(s.get(uuid));
+    if (!rec) return null;
+    const next = Object.assign({}, rec, patch);
+    await wrap((await store('checklists', 'readwrite')).put(next));
+    return next;
+  }
+
   // ── Meta (cursor, settings) ─────────────────────────────────────────────────
 
   async function getMeta(key, defaultVal = null) {
@@ -236,6 +278,8 @@ const DB = (() => {
     saveWriteoff, getPendingWriteoffs, deleteWriteoff,
     saveFieldEvent, getPendingFieldEvents, getAllFieldEvents,
     updateFieldEvent, deleteFieldEvent,
+    saveChecklist, getChecklist, getAllChecklists, getPendingChecklists,
+    updateChecklist,
     getMeta, setMeta,
   };
 })();

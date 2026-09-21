@@ -23,11 +23,17 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox, QSizePolicy, QGridLayout, QDateEdit,
 )
 
+import services.team_service as team
 import services.work_journal_service as wj
 from ui.components import PageHeader, PrimaryButton, SecondaryButton
 
 TABS = [('all', 'All'), ('open', 'Open'), ('scada', 'Needs a record (SCADA)'),
         ('noblock', 'No block'), ('conflict', 'Conflicts')]
+
+# "Assigned to" is a column, not a detail: the office's first question in the
+# morning is what is with whom.
+COLUMNS = ["Date", "Node", "Work", "Status", "PTW No.", "Assigned to", "Source"]
+ALARM_COLUMNS = ["Start", "Node", "Fault", "Hours", "Class", "", "Source"]
 
 STATUSES = ['Needs visit', 'Open', 'In progress', 'Done']
 IMPACTS = [('none', 'None'), ('counts', 'Counts'), ('excluded', 'Excluded')]
@@ -128,17 +134,23 @@ class WorkPage(QWidget):
         self.source_cb.addItem("Phone", 'phone')
         self.source_cb.addItem("Desktop", 'desktop')
         self.source_cb.addItem("Old format", 'old')
+        self.assignee_cb = QComboBox()
+        self.assignee_cb.setMinimumWidth(130)
+        self.assignee_cb.setToolTip("What is with whom — the jobs the office "
+                                    "gave to a technician")
+        self._fill_assignee_chip()
         self.ptw_chk = QCheckBox("Has PTW")
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Block, fault, PTW…")
         self.search_edit.setMinimumWidth(180)
         for w in (self.kind_cb, self.status_cb, self.block_edit, self.period_cb,
-                  self.source_cb, self.ptw_chk):
+                  self.source_cb, self.assignee_cb, self.ptw_chk):
             chips.addWidget(w)
         chips.addStretch()
         chips.addWidget(self.search_edit)
         root.addLayout(chips)
-        for cb in (self.kind_cb, self.status_cb, self.period_cb, self.source_cb):
+        for cb in (self.kind_cb, self.status_cb, self.period_cb, self.source_cb,
+                   self.assignee_cb):
             cb.currentIndexChanged.connect(self._apply)
         self.ptw_chk.stateChanged.connect(self._apply)
         self.block_edit.textChanged.connect(self._apply)
@@ -146,16 +158,15 @@ class WorkPage(QWidget):
 
         # list + card
         split = QSplitter(Qt.Horizontal)
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(
-            ["Date", "Node", "Work", "Status", "PTW No.", "Source"])
+        self.table = QTableWidget(0, len(COLUMNS))
+        self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(2, QHeaderView.Stretch)      # the work, not the note
-        for col, w in ((0, 96), (1, 190), (3, 96), (4, 110), (5, 92)):
+        for col, w in ((0, 96), (1, 190), (3, 96), (4, 110), (5, 110), (6, 92)):
             self.table.setColumnWidth(col, w)
         self.table.itemSelectionChanged.connect(self._on_select)
         split.addWidget(self.table)
@@ -194,7 +205,8 @@ class WorkPage(QWidget):
         chip not named in the filter is cleared first, or a leftover chip
         would quietly shrink the list below the count that opened it."""
         widgets = (self.kind_cb, self.status_cb, self.period_cb,
-                   self.source_cb, self.ptw_chk, self.block_edit, self.search_edit)
+                   self.source_cb, self.assignee_cb, self.ptw_chk,
+                   self.block_edit, self.search_edit)
         for w in widgets:
             w.blockSignals(True)
         try:
@@ -202,6 +214,8 @@ class WorkPage(QWidget):
             self.status_cb.setCurrentIndex(
                 max(0, self.status_cb.findData(flt.get('status'))))
             self.source_cb.setCurrentIndex(0)
+            self.assignee_cb.setCurrentIndex(
+                max(0, self.assignee_cb.findData(flt.get('assignee'))))
             self.ptw_chk.setChecked(False)
             self.block_edit.setText(str(flt.get('block') or ''))
             self.search_edit.clear()
@@ -228,6 +242,7 @@ class WorkPage(QWidget):
         if self.period_cb.currentData() == 'month' and self._year:
             d1, d2 = wj.month_range(self._year, self._month)
         self._rows = wj.records(self._pid, date_from=d1, date_to=d2)
+        self._fill_assignee_chip()     # a sync may have brought new accounts
         self._update_tab_counts()
         self._apply()
 
@@ -255,13 +270,26 @@ class WorkPage(QWidget):
             block=block if block.isdigit() else None,
             ptw_only=self.ptw_chk.isChecked(),
             source=self.source_cb.currentData(),
+            assignee=self.assignee_cb.currentData(),
             text=self.search_edit.text().strip() or None)
         self._fill(rows)
 
+    def _fill_assignee_chip(self):
+        """The technicians this desktop knows, cached from the last sync."""
+        cur = self.assignee_cb.currentData()
+        self.assignee_cb.blockSignals(True)
+        self.assignee_cb.clear()
+        self.assignee_cb.addItem("Anyone", None)
+        self.assignee_cb.addItem("Nobody yet", wj.ASSIGNED_NOBODY)
+        for u in team.users():
+            self.assignee_cb.addItem(u['username'], u['id'])
+        i = self.assignee_cb.findData(cur)
+        self.assignee_cb.setCurrentIndex(max(0, i))
+        self.assignee_cb.blockSignals(False)
+
     def _fill(self, rows):
         self._shown = rows
-        self.table.setHorizontalHeaderLabels(
-            ["Date", "Node", "Work", "Status", "PTW No.", "Source"])
+        self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.setRowCount(0)
         for r in rows:
             i = self.table.rowCount()
@@ -273,7 +301,9 @@ class WorkPage(QWidget):
                 r['source'], r['source'])
             if r['sync'] == 'conflict':
                 src = 'Conflict'
-            cells = [r['date'], r['node'], work, r['status'], r['ptw'], src]
+            who = r.get('assignee_name') or (
+                team.name_for(r.get('assignee')) if r.get('assignee') else '')
+            cells = [r['date'], r['node'], work, r['status'], r['ptw'], who, src]
             for c, v in enumerate(cells):
                 it = QTableWidgetItem(str(v or ''))
                 if r['sync'] == 'conflict':
@@ -295,8 +325,7 @@ class WorkPage(QWidget):
         """Needs a record (SCADA): alarms nobody has written up yet."""
         self._shown = []
         self.table.setRowCount(0)
-        self.table.setHorizontalHeaderLabels(
-            ["Start", "Node", "Fault", "Hours", "Class", "Source"])
+        self.table.setHorizontalHeaderLabels(ALARM_COLUMNS)
         for a in self._alarms:
             i = self.table.rowCount()
             self.table.insertRow(i)
@@ -307,7 +336,7 @@ class WorkPage(QWidget):
             for c, v in enumerate([str(a.get('activated') or '')[:16], node,
                                    a.get('trigger_name') or '',
                                    f"{a.get('hours') or 0:g}",
-                                   a.get('cls_reason') or '', 'SCADA']):
+                                   a.get('cls_reason') or '', '', 'SCADA']):
                 self.table.setItem(i, c, QTableWidgetItem(str(v)))
         self.foot.setText(f"{len(self._alarms)} SCADA fault(s) with no work "
                           "record · select one to write it up")
@@ -414,6 +443,36 @@ class WorkPage(QWidget):
         self._fields['status'].addItems(STATUSES)
         self._fields['status'].setCurrentText(row['status'])
         add("Status", self._fields['status'])
+
+        # Who is to do it. The record itself is the job: the technician sees
+        # this one in Tasks on the phone and fills it in — no second record.
+        self._fields['assignee'] = QComboBox()
+        self._fields['assignee'].addItem("— nobody —", '')
+        for u in team.users():
+            self._fields['assignee'].addItem(u['username'], u['id'])
+        cur_id = row.get('assignee') or ''
+        if cur_id and self._fields['assignee'].findData(cur_id) < 0:
+            # assigned to somebody this desktop has not synced yet
+            self._fields['assignee'].addItem(
+                row.get('assignee_name') or 'someone else', cur_id)
+        self._fields['assignee'].setCurrentIndex(
+            max(0, self._fields['assignee'].findData(cur_id)))
+        who_row = QHBoxLayout()
+        who_row.addWidget(self._fields['assignee'])
+        note = []
+        if row.get('assigned_by'):
+            note.append(f"given by {row['assigned_by']}")
+        if row.get('due'):
+            note.append(f"due {row['due']}")
+        if not team.users():
+            note.append("sync once to list the technicians")
+        lbl = QLabel(' · '.join(note))
+        lbl.setStyleSheet("color:#6B7A8D;")
+        who_row.addWidget(lbl)
+        who_row.addStretch()
+        holder = QWidget()
+        holder.setLayout(who_row)
+        add("Assigned to", holder)
 
         self._fields['date'] = QDateEdit()
         self._fields['date'].setCalendarPopup(True)
@@ -717,11 +776,21 @@ class WorkPage(QWidget):
 
     # ── writes ───────────────────────────────────────────────────────────
     def _collect(self):
+        from services.sync_config import sync_config
         f = self._fields
         blk = f['block'].text().strip()
+        who = f['assignee'].currentData() or ''
+        date = f['date'].date().toString("yyyy-MM-dd")
         return {
             'status': f['status'].currentText(),
-            'date': f['date'].date().toString("yyyy-MM-dd"),
+            'date': date,
+            'assignee': who,
+            'assignee_name': f['assignee'].currentText() if who else '',
+            # who handed it out, so the phone can say where the job came from
+            'assigned_by': (sync_config.username or '') if who else '',
+            # an assigned record IS the work order: its date is when it is
+            # wanted, and that is what the phone shows as the due date
+            'due': date if who else '',
             'block': int(blk) if blk.isdigit() else None,
             'lc': f['lc'].currentText(),
             'device': f['device'].currentText().strip(),
@@ -826,6 +895,7 @@ class WorkPage(QWidget):
                  'kind': wj.KIND_FAULT, 'title': '', 'work_done': '',
                  'internal_note': '', 'status': 'Open', 'ptw': '', 'sap': '',
                  'hours': None, 'time_from': '', 'time_to': '', 'impact': 'none',
+                 'assignee': '', 'assignee_name': '', 'assigned_by': '', 'due': '',
                  'sync': 'local', 'category': 'fault', 'container_id': None,
                  'serial': '',
                  'node': 'New record', 'age_days': 0}

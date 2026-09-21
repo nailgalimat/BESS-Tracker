@@ -62,7 +62,10 @@ async def upload_image(
     ).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
-    if user.role != "admin" and entry.user_id != user.id:
+    # The technician the job was given to photographs the job: their upload
+    # belongs on that record, not on a second one of their own.
+    if (user.role != "admin" and entry.user_id != user.id
+            and (entry.assigned_to or "") != user.id):
         raise HTTPException(status_code=403, detail="Not your entry")
 
     # ── Idempotency: if client sent X-Image-ID and it already exists, return it ─

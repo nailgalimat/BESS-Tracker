@@ -148,4 +148,16 @@ work.apply_filter(conf['filter'])
 H.check(work.table.rowCount() == data['phones']['conflicts'],
         'the conflict row opens exactly the conflicting record')
 
+# ── the board fits the window it is in ───────────────────────────────────
+# a window that is not maximised used to cut the right-hand panels off
+page.show()
+for width, want in ((1400, 3), (1000, 2), (700, 1)):
+    page.resize(width, 800)
+    app.processEvents()
+    cols = {page._grid.getItemPosition(i)[1] + page._grid.getItemPosition(i)[3]
+            for i in range(page._grid.count())}
+    H.check(page._cols == want and max(cols) <= want,
+            '{} px wide: {} column(s), nothing past the edge'.format(width, page._cols))
+H.check(page._grid.count() == 7, 'all seven panels are still on the board')
+
 H.finish()

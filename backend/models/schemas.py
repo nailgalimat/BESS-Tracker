@@ -33,6 +33,16 @@ class UserOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AssignableUser(BaseModel):
+    """Who the office may give a job to — the name and nothing else. The
+    desktop caches these so its "Assigned to" picker works offline."""
+    id:       str
+    username: str
+    role:     str = ""
+
+    model_config = {"from_attributes": True}
+
+
 class TokenResponse(BaseModel):
     access_token:  str
     refresh_token: str
@@ -211,6 +221,68 @@ class FieldEventOut(BaseModel):
 
 class FieldEventPullResponse(BaseModel):
     events:   List[FieldEventOut]
+    cursor:   str
+    has_more: bool
+
+
+# ── PM checklists ───────────────────────────────────────────────────────────
+
+class ChecklistTemplateOut(BaseModel):
+    uuid:       str
+    project_id: Optional[int] = None
+    name:       str = ""
+    kind:       str = ""
+    # The items as the desktop numbered them: [{item_id, s_no, equipment,
+    # activity, text, added}]. They travel with the template so the phone can
+    # show a checklist it has not seen since its last sync.
+    items:      List[dict[str, Any]] = Field(default_factory=list)
+    updated_at: str = ""
+
+
+class ChecklistTemplatesSyncRequest(BaseModel):
+    templates: List[ChecklistTemplateOut]
+
+
+class ChecklistRunOut(BaseModel):
+    uuid:          str
+    project_id:    int
+    template_uuid: str
+    plant_block:   Optional[int] = None
+    campaign:      str = ""
+    run_date:      str = ""
+    status:        str = "In Progress"
+    results:       dict[str, Any] = Field(default_factory=dict)
+    ptw_no:        str = ""
+    serial:        str = ""
+    notes:         str = ""
+    filled_by:     str = ""
+    updated_at:    str = ""
+    deleted_at:    Optional[str] = None
+
+
+class ChecklistRunsSyncRequest(BaseModel):
+    runs: List[ChecklistRunOut]
+
+
+class ChecklistAssignedResponse(BaseModel):
+    templates: List[ChecklistTemplateOut]
+    runs:      List[ChecklistRunOut]
+
+
+class ChecklistResultsIn(BaseModel):
+    """What a phone sends back. Only the items it carries are touched, so a
+    half-filled checklist never blanks the rest."""
+    results:    dict[str, Any] = Field(default_factory=dict)
+    status:     Optional[str] = None
+    ptw_no:     Optional[str] = None
+    serial:     Optional[str] = None
+    filled_by:  Optional[str] = None
+    notes:      Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class ChecklistRunPullResponse(BaseModel):
+    runs:     List[ChecklistRunOut]
     cursor:   str
     has_more: bool
 

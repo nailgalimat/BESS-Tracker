@@ -31,6 +31,7 @@ from ui.components import (PageHeader, PrimaryButton, SecondaryButton,
                            make_table)
 from services.project_service import get_all_projects, get_project_by_id
 import services.planner_service as pl
+import services.team_service as team
 
 MONTHS = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -112,8 +113,16 @@ class _CampaignDialog(QDialog):
             self.type_combo.setCurrentIndex(i)
         form.addRow('Work type:', self.type_combo)
 
-        self.assignee = QLineEdit()
-        self.assignee.setPlaceholderText('optional')
+        # A named technician, not free text: the jobs can then be published to
+        # that person's phone. Typing a name still works for someone who has
+        # no account yet.
+        self.assignee = QComboBox()
+        self.assignee.setEditable(True)
+        self.assignee.addItem('', '')
+        for u in team.users():
+            self.assignee.addItem(u['username'], u['id'])
+        self.assignee.lineEdit().setPlaceholderText(
+            'optional — pick a technician to send the jobs to their phone')
         form.addRow('Assignee:', self.assignee)
         lay.addLayout(form)
 
@@ -172,8 +181,56 @@ class _CampaignDialog(QDialog):
             'hours_per_block': self.hours.value(),
             'skip_weekends': self.skip_we.isChecked(),
             'type_code': self.type_combo.currentData(),
-            'assignee': self.assignee.text().strip(),
+            'assignee': self.assignee.currentText().strip(),
+            'assignee_id': self._assignee_id(),
         }
+
+    def _assignee_id(self):
+        """The server user id behind the chosen name, '' for typed text."""
+        name = self.assignee.currentText().strip()
+        i = self.assignee.findText(name)
+        return (self.assignee.itemData(i) or '') if i >= 0 else ''
+
+
+class _AssignDialog(QDialog):
+    """Who gets these jobs on their phone.
+
+    A plan item never left this desktop; published, it becomes a work record
+    in the one journal — the technician opens it in Tasks, does the work and
+    fills that same record in.
+    """
+
+    def __init__(self, users, n_jobs, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Send to a technician')
+        self.setMinimumWidth(460)
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+        intro = QLabel(
+            f'{n_jobs} job(s) become work records assigned to one person. They '
+            'appear in Tasks on that phone after the next sync, and what the '
+            'technician writes comes back into the same record — not a second '
+            'one. Sending twice does not duplicate them.')
+        intro.setWordWrap(True)
+        intro.setStyleSheet('color:#6B7A8D;')
+        lay.addWidget(intro)
+
+        form = QFormLayout()
+        self.who = QComboBox()
+        for u in users:
+            self.who.addItem(f"{u['username']}  ({u['role'] or 'user'})", u['id'])
+        form.addRow('Technician:', self.who)
+        lay.addLayout(form)
+
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.button(QDialogButtonBox.Ok).setText('Send')
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        lay.addWidget(box)
+
+    def values(self):
+        return (self.who.currentData() or '',
+                self.who.currentText().split('  (')[0])
 
 
 class _AddJobDialog(QDialog):
@@ -413,6 +470,265 @@ class _ImportDialog(QDialog):
                 self.title.text().strip(), self.type_combo.currentData())
 
 
+class _ChecklistPlanDialog(QDialog):
+    """A PM campaign's checklists: one per block, out of the customer's own
+    workbook. What is left out of this campaign is ticked off here — the row
+    still goes to the customer, empty, with the note written beside it."""
+
+    def __init__(self, templates, n_blocks, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Plan checklists')
+        self.setMinimumSize(760, 560)
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+
+        form = QFormLayout()
+        self.template = QComboBox()
+        for t in templates:
+            self.template.addItem(
+                '{}{} · {} item(s)'.format(t['name'],
+                                           f" ({t['kind']})" if t['kind'] else '',
+                                           t['item_count']), t['id'])
+        self.template.currentIndexChanged.connect(self._load_items)
+        form.addRow('Checklist:', self.template)
+
+        self.campaign = QLineEdit(f'PM {datetime.date.today().strftime("%B %Y")}')
+        form.addRow('Campaign:', self.campaign)
+
+        self.kind = QComboBox()
+        self.kind.addItem(f'All {n_blocks} blocks', 'all')
+        self.kind.addItem('Only the blocks I list', 'custom')
+        self.kind.currentIndexChanged.connect(
+            lambda: self.blocks.setEnabled(self.kind.currentData() == 'custom'))
+        form.addRow('Blocks:', self.kind)
+        self.blocks = QLineEdit()
+        self.blocks.setPlaceholderText('e.g. 4, 17-20, 33')
+        self.blocks.setEnabled(False)
+        form.addRow('', self.blocks)
+
+        self.date = QDateEdit(QDate.currentDate())
+        self.date.setCalendarPopup(True)
+        self.date.setDisplayFormat('yyyy-MM-dd')
+        form.addRow('Date:', self.date)
+        lay.addLayout(form)
+
+        cap = QLabel('Untick anything this campaign does not cover — "we are not '
+                     'doing the RMU this time". The row stays in the customer\'s '
+                     'file, empty, with your note.')
+        cap.setWordWrap(True); cap.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        lay.addWidget(cap)
+
+        self.tbl = QTableWidget(0, 5)
+        self.tbl.setHorizontalHeaderLabels(
+            ['In scope', 'No.', 'Equipment', 'Item', 'Note if left out'])
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.horizontalHeader().setStretchLastSection(True)
+        lay.addWidget(self.tbl, 1)
+
+        row = QHBoxLayout()
+        b = SecondaryButton('＋  Add item…')
+        b.setToolTip('An item this plant needs that the customer\'s file does '
+                     'not list. It is written at the end of its group.')
+        b.clicked.connect(self._add_item)
+        row.addWidget(b)
+        row.addStretch()
+        lay.addLayout(row)
+
+        self._n_blocks = n_blocks
+        self._load_items()
+
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.button(QDialogButtonBox.Ok).setText('Plan')
+        box.accepted.connect(self.accept); box.rejected.connect(self.reject)
+        lay.addWidget(box)
+
+    def template_id(self):
+        return self.template.currentData()
+
+    def _load_items(self):
+        import services.checklist_pm_service as cs
+        self.tbl.setRowCount(0)
+        tid = self.template_id()
+        if not tid:
+            return
+        for it in cs.items(tid):
+            r = self.tbl.rowCount()
+            self.tbl.insertRow(r)
+            chk = QTableWidgetItem()
+            chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            chk.setCheckState(Qt.Checked)
+            chk.setData(Qt.UserRole, it['id'])
+            self.tbl.setItem(r, 0, chk)
+            for c, v in ((1, it['s_no'] or ''), (2, it['equipment'] or ''),
+                         (3, it['description'] or '')):
+                cell = QTableWidgetItem(str(v))
+                cell.setFlags(Qt.ItemIsEnabled)
+                self.tbl.setItem(r, c, cell)
+            self.tbl.setItem(r, 4, QTableWidgetItem(''))
+        self.tbl.resizeColumnsToContents()
+
+    def _add_item(self):
+        import services.checklist_pm_service as cs
+        tid = self.template_id()
+        if not tid:
+            return
+        groups = []
+        for it in cs.items(tid):
+            if it['equipment'] and it['equipment'] not in groups:
+                groups.append(it['equipment'])
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Add an item')
+        dlg.setMinimumWidth(460)
+        lay = QVBoxLayout(dlg)
+        form = QFormLayout()
+        group = QComboBox()
+        for g in groups:
+            group.addItem(g, g)
+        form.addRow('Group:', group)
+        text = QLineEdit()
+        text.setPlaceholderText('e.g. Check the anti-condensation heater')
+        form.addRow('Item:', text)
+        lay.addLayout(form)
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(dlg.accept); box.rejected.connect(dlg.reject)
+        lay.addWidget(box)
+        if dlg.exec_() != QDialog.Accepted or not text.text().strip():
+            return
+        cs.add_item(tid, text.text().strip(), equipment=group.currentData() or '')
+        self._load_items()
+
+    def values(self):
+        blocks = (list(range(1, self._n_blocks + 1))
+                  if self.kind.currentData() == 'all'
+                  else pl._parse_blocks(self.blocks.text()))
+        excluded, notes = [], {}
+        for r in range(self.tbl.rowCount()):
+            cell = self.tbl.item(r, 0)
+            if cell.checkState() == Qt.Checked:
+                continue
+            iid = cell.data(Qt.UserRole)
+            excluded.append(iid)
+            note = (self.tbl.item(r, 4).text() or '').strip()
+            if note:
+                notes[iid] = note
+        return {'template_id': self.template_id(),
+                'blocks': blocks,
+                'run_date': self.date.date().toString('yyyy-MM-dd'),
+                'campaign': self.campaign.text().strip(),
+                'excluded_item_ids': excluded,
+                'excluded_notes': notes}
+
+
+class _ChecklistFillDialog(QDialog):
+    """One block's checklist, filled or corrected here — technicians forget,
+    and a checklist that cannot be finished in the office is a checklist the
+    customer never gets."""
+
+    RESULTS = [('—', ''), ('OK', 'OK'), ('NOK', 'NOK'), ('N/A', 'N/A')]
+
+    def __init__(self, run, parent=None):
+        super().__init__(parent)
+        import services.checklist_pm_service as cs
+        self._cs = cs
+        self._run = run
+        self.setWindowTitle('Checklist — block {}'.format(run['plant_block']))
+        self.setMinimumSize(860, 620)
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+
+        head = QLabel('<b>{}</b> · block {} · {} · {}'.format(
+            run['template_name'], run['plant_block'], run['campaign'] or '—',
+            run['run_date']))
+        head.setWordWrap(True)
+        lay.addWidget(head)
+
+        form = QFormLayout()
+        self.ptw = QLineEdit(run['ptw_no'] or '')
+        self.ptw.setPlaceholderText('optional')
+        form.addRow('PTW No.:', self.ptw)
+        self.serial = QLineEdit(run['serial'] or '')
+        self.serial.setPlaceholderText('blank when the project does not know it')
+        form.addRow('Equipment serial:', self.serial)
+        self.signed = QLineEdit(run['signed_by'] or '')
+        self.signed.setPlaceholderText('optional')
+        form.addRow('Signed by:', self.signed)
+        lay.addLayout(form)
+
+        self.tbl = QTableWidget(0, 6)
+        self.tbl.setHorizontalHeaderLabels(
+            ['No.', 'Equipment', 'Activity', 'Item', 'Result', 'Comment'])
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.horizontalHeader().setStretchLastSection(True)
+        lay.addWidget(self.tbl, 1)
+        self._fill()
+
+        self.note = QLabel('')
+        self.note.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        lay.addWidget(self.note)
+        self._refresh_note()
+
+        box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        box.accepted.connect(self.accept); box.rejected.connect(self.reject)
+        lay.addWidget(box)
+
+    def _fill(self):
+        for it in self._run['items']:
+            r = self.tbl.rowCount()
+            self.tbl.insertRow(r)
+            for c, v in ((0, it['s_no'] or ''), (1, it['equipment'] or ''),
+                         (2, it['activity'] or ''), (3, it['text'] or '')):
+                cell = QTableWidgetItem(str(v))
+                cell.setFlags(Qt.ItemIsEnabled)
+                self.tbl.setItem(r, c, cell)
+            self.tbl.item(r, 0).setData(Qt.UserRole, it['item_id'])
+            excluded = (it['result'] == self._cs.EXCLUDED)
+            if excluded:
+                lbl = QTableWidgetItem('Excluded')
+                lbl.setFlags(Qt.ItemIsEnabled)
+                lbl.setForeground(QColor('#9AA6B4'))
+                self.tbl.setItem(r, 4, lbl)
+                for c in range(4):
+                    self.tbl.item(r, c).setForeground(QColor('#9AA6B4'))
+            else:
+                cb = QComboBox()
+                for label, code in self.RESULTS:
+                    cb.addItem(label, code)
+                i = cb.findData(it['result'] or '')
+                cb.setCurrentIndex(max(0, i))
+                cb.currentIndexChanged.connect(self._refresh_note)
+                self.tbl.setCellWidget(r, 4, cb)
+            self.tbl.setItem(r, 5, QTableWidgetItem(it['comment'] or ''))
+        self.tbl.resizeColumnsToContents()
+        self.tbl.setColumnWidth(3, 340)
+
+    def _refresh_note(self):
+        vals = self.values()['results']
+        done = sum(1 for v in vals.values()
+                   if v['result'] in (self._cs.OK, self._cs.NOK, self._cs.NA))
+        nok = sum(1 for v in vals.values() if v['result'] == self._cs.NOK)
+        ex = sum(1 for v in vals.values() if v['result'] == self._cs.EXCLUDED)
+        self.note.setText(
+            f'{done} of {len(vals) - ex} in scope answered · {nok} NOK · '
+            f'{ex} left out of this campaign. Measurements and one-unit '
+            f'deviations go in the comment ("BESS 3: door seal torn").')
+
+    def values(self):
+        results = {}
+        for r in range(self.tbl.rowCount()):
+            iid = self.tbl.item(r, 0).data(Qt.UserRole)
+            w = self.tbl.cellWidget(r, 4)
+            res = w.currentData() if w else self._cs.EXCLUDED
+            results[iid] = {'result': res,
+                            'comment': (self.tbl.item(r, 5).text() or '').strip()}
+        in_scope = [v for v in results.values() if v['result'] != self._cs.EXCLUDED]
+        done = all(v['result'] for v in in_scope)
+        return {'results': results,
+                'status': 'Done' if (in_scope and done) else 'In Progress',
+                'ptw_no': self.ptw.text().strip(),
+                'serial': self.serial.text().strip(),
+                'signed_by': self.signed.text().strip()}
+
+
 class _TypeDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -521,6 +837,7 @@ class PlannerPage(QWidget):
         self.tabs.addTab(self._tab_schedule(), 'Schedule')
         self.tabs.addTab(self._tab_due(), 'PM due')
         self.tabs.addTab(self._tab_plans(), 'Campaigns')
+        self.tabs.addTab(self._tab_checklists(), 'Checklists')
         self.tabs.currentChanged.connect(self._on_tab)
         root.addWidget(self.tabs, 1)
 
@@ -550,6 +867,7 @@ class PlannerPage(QWidget):
         row = QHBoxLayout()
         for label, slot, primary in (
             ('✓  Mark done…', self._complete_selected, True),
+            ('📱  Send to a technician…', self._send_to_phone, False),
             ('↷  Move to…', self._move_selected, False),
             ('↺  Reopen', self._reopen_selected, False),
             ('🗑  Delete', self._delete_selected, False),
@@ -595,6 +913,63 @@ class PlannerPage(QWidget):
         d = SecondaryButton('🗑  Delete campaign')
         d.clicked.connect(self._delete_plan)
         row.addWidget(d)
+        lay.addLayout(row)
+        return w
+
+    def _tab_checklists(self):
+        """The customer's own PM checklists: imported, planned per block, sent
+        to the phones, exported back into the customer's file."""
+        w = QWidget(); lay = QVBoxLayout(w)
+        lay.setContentsMargins(20, 12, 20, 12); lay.setSpacing(8)
+        cap = QLabel('One checklist per block, out of the workbook the customer '
+                     'issued. Planned checklists reach the phones on the next '
+                     'sync; what the technicians tick comes back here, and the '
+                     'export writes it into the customer\'s own file.')
+        cap.setWordWrap(True); cap.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        lay.addWidget(cap)
+
+        row = QHBoxLayout()
+        b = SecondaryButton('⤓  Import checklist…')
+        b.setToolTip('The customer\'s Excel checklist. Importing it again '
+                     'updates the items and keeps what is already filled in.')
+        b.clicked.connect(self._import_checklist)
+        row.addWidget(b)
+        b = PrimaryButton('＋  Plan checklists…')
+        b.clicked.connect(self._plan_checklists)
+        row.addWidget(b)
+        row.addSpacing(12)
+        row.addWidget(QLabel('Campaign:'))
+        self.cl_campaign = QComboBox(); self.cl_campaign.setMinimumWidth(190)
+        self.cl_campaign.currentIndexChanged.connect(self._fill_checklists)
+        row.addWidget(self.cl_campaign)
+        row.addStretch()
+        lay.addLayout(row)
+
+        # Which checklists this project has, without opening a dialog to find out
+        self.cl_templates = QLabel('')
+        self.cl_templates.setWordWrap(True)
+        self.cl_templates.setStyleSheet('color:#33465E;font-size:11px;')
+        lay.addWidget(self.cl_templates)
+
+        self.cl_tbl = make_table(['Block', 'Checklist', 'Campaign', 'Date',
+                                  'Progress', 'NOK', 'Status', 'Filled on'])
+        self.cl_tbl.doubleClicked.connect(self._open_checklist)
+        lay.addWidget(self.cl_tbl, 1)
+
+        row = QHBoxLayout()
+        for label, slot, primary in (
+            ('✎  Open / fill…', self._open_checklist, True),
+            ('⤒  Export this one…', self._export_checklist, False),
+            ('⤒  Export the campaign…', self._export_campaign_checklists, False),
+            ('🗑  Delete', self._delete_checklist, False),
+        ):
+            btn = (PrimaryButton if primary else SecondaryButton)(label)
+            btn.clicked.connect(slot)
+            row.addWidget(btn)
+        row.addStretch()
+        hint = QLabel('Double-click a row to fill it in.')
+        hint.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        row.addWidget(hint)
         lay.addLayout(row)
         return w
 
@@ -653,23 +1028,31 @@ class PlannerPage(QWidget):
             self._load_due()
         elif self.tabs.currentIndex() == 2:
             self._load_plans()
+        elif self.tabs.currentIndex() == 3:
+            self._load_checklists()
 
     def _on_tab(self, i):
         if i == 1:
             self._load_due()
         elif i == 2:
             self._load_plans()
+        elif i == 3:
+            self._load_checklists()
 
     def _fill_schedule(self):
         self.tbl.setRowCount(0)
         for it in self._items:
             r = self.tbl.rowCount()
             self.tbl.insertRow(r)
+            # 📱 = published as a work record, so it is on that phone
+            who = it.get('assignee') or ''
+            if it.get('record_uuid'):
+                who = f"📱 {who}" if who else '📱 sent'
             vals = [it.get('planned_date') or '',
                     it.get('type_label') or it.get('type_code') or '',
                     str(it['block']) if it.get('block') else '',
                     it.get('title') or '',
-                    it.get('assignee') or '',
+                    who,
                     f"{float(it.get('planned_hours') or 0):g}",
                     it.get('actual_date') or '',
                     f"{float(it['actual_hours']):g}" if it.get('actual_hours') is not None else '',
@@ -767,6 +1150,182 @@ class PlannerPage(QWidget):
                 self.plan_tbl.setItem(i, c, QTableWidgetItem(str(v)))
             self.plan_tbl.item(i, 0).setData(Qt.UserRole, p)
 
+    # ── checklists ───────────────────────────────────────────────────────
+    def _load_checklists(self):
+        """The campaign list first, then the checklists of the one on show."""
+        if not self._project_id:
+            return
+        import services.checklist_pm_service as cs
+        tpls = cs.templates(self._project_id)
+        self.cl_templates.setText(
+            'Checklists imported:  ' + '   ·   '.join(
+                '{} ({} items)'.format(t['name'], t['item_count']) for t in tpls)
+            if tpls else 'No checklist imported for this project yet.')
+        cur = self.cl_campaign.currentData()
+        self.cl_campaign.blockSignals(True)
+        self.cl_campaign.clear()
+        self.cl_campaign.addItem('All campaigns', None)
+        for c in cs.campaigns(self._project_id):
+            name = c['campaign'] or '(no campaign)'
+            self.cl_campaign.addItem(
+                f"{name} · {c['n_done']}/{c['n_runs']} done", c['campaign'])
+        i = self.cl_campaign.findData(cur)
+        self.cl_campaign.setCurrentIndex(max(0, i))
+        self.cl_campaign.blockSignals(False)
+        self._fill_checklists()
+
+    def _fill_checklists(self):
+        if not self._project_id:
+            return
+        import services.checklist_pm_service as cs
+        self.cl_tbl.setRowCount(0)
+        rows = cs.runs(self._project_id, campaign=self.cl_campaign.currentData())
+        for r in rows:
+            i = self.cl_tbl.rowCount()
+            self.cl_tbl.insertRow(i)
+            vals = [str(r['plant_block'] or ''), r['template_name'],
+                    r['campaign'] or '', r['run_date'] or '',
+                    f"{r['n_done']}/{r['n_items']}", str(r['n_nok'] or ''),
+                    r['status'] or '', (r['source'] or '').title()]
+            for c, v in enumerate(vals):
+                cell = QTableWidgetItem(str(v))
+                if c in (0, 4, 5):
+                    cell.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.cl_tbl.setItem(i, c, cell)
+            if r['n_nok']:
+                self.cl_tbl.item(i, 5).setForeground(QColor('#B4232A'))
+            self.cl_tbl.item(i, 6).setForeground(
+                QColor('#1E8E3E' if r['status'] == 'Done' else '#8A6D1F'))
+            self.cl_tbl.item(i, 0).setData(Qt.UserRole, r)
+
+    def _selected_checklist(self):
+        rows = (self.cl_tbl.selectionModel().selectedRows()
+                if self.cl_tbl.selectionModel() else [])
+        if not rows:
+            QMessageBox.information(self, 'Nothing selected',
+                                    'Pick a checklist first.')
+            return None
+        return self.cl_tbl.item(rows[0].row(), 0).data(Qt.UserRole)
+
+    def _import_checklist(self):
+        if not self._project_id:
+            return
+        import services.checklist_pm_service as cs
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'The customer\'s checklist', '', 'Excel (*.xlsx)')
+        if not path:
+            return
+        try:
+            tid = cs.import_template(self._project_id, path)
+        except Exception as e:                        # noqa: BLE001
+            QMessageBox.critical(self, 'Cannot read this file', str(e))
+            return
+        n = len(cs.items(tid))
+        self._load_checklists()
+        QMessageBox.information(
+            self, 'Imported',
+            f'{n} item(s). The workbook itself is kept beside the database, so '
+            f'the export goes back into the customer\'s own file.')
+
+    def _plan_checklists(self):
+        if not self._project_id:
+            return
+        import services.checklist_pm_service as cs
+        tpls = cs.templates(self._project_id)
+        if not tpls:
+            QMessageBox.information(
+                self, 'No checklist yet',
+                'Import the customer\'s checklist first (⤓ Import checklist…).')
+            return
+        dlg = _ChecklistPlanDialog(tpls, self._n_blocks(), self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        v = dlg.values()
+        if not v['blocks']:
+            QMessageBox.warning(self, 'No blocks', 'Nothing to plan.')
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            made = cs.plan_runs(self._project_id, **v)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._load_checklists()
+        QMessageBox.information(
+            self, 'Planned',
+            f"{len(made)} checklist(s) ready — they reach the phones on the "
+            f"next sync.")
+
+    def _open_checklist(self):
+        r = self._selected_checklist()
+        if not r:
+            return
+        import services.checklist_pm_service as cs
+        run = cs.run_detail(r['uuid'])
+        if not run:
+            return
+        dlg = _ChecklistFillDialog(run, self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        v = dlg.values()
+        cs.save_results(r['uuid'], v['results'], status=v['status'],
+                        signed_by=v['signed_by'], ptw_no=v['ptw_no'],
+                        serial=v['serial'], source='desktop')
+        self._load_checklists()
+
+    def _export_checklist(self):
+        r = self._selected_checklist()
+        if not r:
+            return
+        d = QFileDialog.getExistingDirectory(self, 'Where to save')
+        if not d:
+            return
+        import services.checklist_pm_service as cs
+        try:
+            out = cs.export_run(r['uuid'], d, self.project_combo.currentText())
+        except Exception as e:                        # noqa: BLE001
+            QMessageBox.critical(self, 'Export failed', str(e))
+            return
+        QMessageBox.information(self, 'Saved', out)
+
+    def _export_campaign_checklists(self):
+        if not self._project_id:
+            return
+        campaign = self.cl_campaign.currentData()
+        if campaign is None:
+            QMessageBox.information(self, 'Which campaign?',
+                                    'Choose a campaign above first.')
+            return
+        d = QFileDialog.getExistingDirectory(self, 'Where to save')
+        if not d:
+            return
+        import services.checklist_pm_service as cs
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            out = cs.export_campaign(self._project_id, campaign, d,
+                                     self.project_combo.currentText())
+        finally:
+            QApplication.restoreOverrideCursor()
+        bad = [o for o in out if str(o).startswith('!')]
+        QMessageBox.information(
+            self, 'Exported',
+            '{} file(s) written to\n{}{}'.format(
+                len(out) - len(bad), d,
+                '\n\nNot written:\n' + '\n'.join(bad) if bad else ''))
+
+    def _delete_checklist(self):
+        r = self._selected_checklist()
+        if not r:
+            return
+        if QMessageBox.question(
+                self, 'Delete',
+                f"Delete the checklist for block {r['plant_block']}?\n"
+                "It disappears from the phones on the next sync.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        import services.checklist_pm_service as cs
+        cs.delete_run(r['uuid'])
+        self._load_checklists()
+
     # ── actions ──────────────────────────────────────────────────────────
     def _selected_item(self):
         rows = self.tbl.selectionModel().selectedRows() if self.tbl.selectionModel() else []
@@ -818,6 +1377,59 @@ class PlannerPage(QWidget):
         if out['wrote_downtime']:
             self.summary.setText(
                 self.summary.text() + '   ·   downtime recorded for the monthly report')
+
+    def _selected_items(self):
+        """Every selected job, for the actions that work on a batch."""
+        rows = self.tbl.selectionModel().selectedRows() if self.tbl.selectionModel() else []
+        return [self.tbl.item(r.row(), 0).data(Qt.UserRole) for r in rows]
+
+    def _send_to_phone(self):
+        """Publish planned jobs as records assigned to a technician, so a
+        campaign planned here actually reaches the phones."""
+        if not self._project_id:
+            return
+        items = self._selected_items() or list(self._items)
+        if not items:
+            QMessageBox.information(self, 'Nothing to send',
+                                    'There are no jobs in this view.')
+            return
+        users = team.users()
+        if not users:
+            QMessageBox.information(
+                self, 'No technicians yet',
+                'The list of accounts comes from the sync server. Sync once '
+                '(🔄 in the toolbar) and try again.')
+            return
+        if not self._selected_items() and QMessageBox.question(
+                self, 'Send every job shown',
+                f'Nothing is selected, so all {len(items)} job(s) in this view '
+                'would be sent. Continue?',
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        dlg = _AssignDialog(users, len(items), self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        uid, name = dlg.values()
+        self._publish(items, uid, name)
+
+    def _publish(self, items, user_id, user_name):
+        from services.sync_config import sync_config
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            res = pl.publish_jobs(self._project_id, [it['id'] for it in items],
+                                  assignee_id=user_id, assignee_name=user_name,
+                                  assigned_by=sync_config.username or '')
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._reload()
+        QMessageBox.information(
+            self, 'Sent',
+            f"{res['published']} job(s) are now work records for {user_name}"
+            + (f", {res['reassigned']} already published were reassigned"
+               if res['reassigned'] else '')
+            + '.\n\nThey reach the phone on its next sync, and show in Work '
+              'here as assigned.')
+        return res
 
     def _reopen_selected(self):
         it = self._selected_item()
@@ -912,6 +1524,16 @@ class PlannerPage(QWidget):
             self, 'Campaign created',
             f"{res['items']} job(s) scheduled from {res['date_from']} "
             f"to {res['date_to']}.")
+        # A campaign nobody can see is the old problem: offer to send it now,
+        # while the person who planned it is still here.
+        if res['items'] and v.get('assignee_id') and QMessageBox.question(
+                self, 'Send to the phone',
+                f"Send these {res['items']} job(s) to {v['assignee']} now?\n\n"
+                "They become work records in the journal and show in Tasks on "
+                "that phone after the next sync.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) == QMessageBox.Yes:
+            self._publish([{'id': i} for i in res['item_ids']],
+                          v['assignee_id'], v['assignee'])
 
     def _import_excel(self):
         if not self._project_id:

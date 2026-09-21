@@ -73,6 +73,9 @@ hidden = [
     'services.asset_tree_service',
     'services.planner_service',
     'services.checklist_service',
+    # PM checklists: the customer's workbook, and the runs planned from it
+    'services.checklist_excel',
+    'services.checklist_pm_service',
     'services.edit_serials_service',
     'services.kpi_service',
     'services.lifecycle_service',
@@ -94,6 +97,9 @@ hidden = [
     # UI redesign: the nine-item shell, Today, Work journal, Availability
     'services.work_journal_service',
     'services.today_service',
+    # jobs the office gives to a named technician
+    'services.team_service',
+    'services.crash_guard',
     'ui.project_hub_page',
     'ui.today_page',
     'ui.work_page',

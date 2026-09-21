@@ -24,7 +24,7 @@ from dependencies import get_current_user, require_admin
 from models.db_models import User, RefreshToken
 from models.schemas import (
     LoginRequest, RefreshRequest, TokenResponse,
-    AccessTokenResponse, UserOut,
+    AccessTokenResponse, UserOut, AssignableUser,
 )
 from services.auth_service import (
     hash_password, verify_password,
@@ -183,3 +183,25 @@ def list_users(
 ):
     users = db.query(User).order_by(User.created_at.asc()).all()
     return [UserOut.model_validate(u) for u in users]
+
+
+# ── Who a job can be given to ─────────────────────────────────────────────────
+
+@router.get("/assignable", response_model=_List[AssignableUser])
+def assignable_users(
+    db:   Session = Depends(get_db),
+    user: User    = Depends(get_current_user),
+):
+    """The accounts the desktop may hand work to, as id + username + role.
+
+    Separate from /auth/users, which is admin-only account management and
+    returns the e-mail addresses with it: planning work only needs the name,
+    and an engineer who plans must be able to ask for the list. A technician
+    does not assign, so they do not get it."""
+    if user.role not in ("admin", "engineer"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Only the office assigns work")
+    rows = (db.query(User).filter(User.is_active == True)
+              .order_by(User.username.asc()).all())
+    return [AssignableUser(id=u.id, username=u.username, role=u.role or "")
+            for u in rows]

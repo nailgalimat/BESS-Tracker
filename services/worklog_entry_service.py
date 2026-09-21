@@ -60,11 +60,13 @@ def _new_id() -> str:
 
 # The record fields the Work journal and the phone added on top of the
 # original Field Log entry: where in the plant, the permit, the hours, the
-# internal note and what it does to availability. All optional, all defaulted,
-# so an older client that does not send them is unaffected.
+# internal note, what it does to availability, and who the office gave the job
+# to. All optional, all defaulted, so an older client that does not send them
+# is unaffected.
 RECORD_FIELDS = ("plant_block", "node_lc", "node_device", "ptw_no",
                  "time_from", "time_to", "hours", "internal_note",
-                 "availability_impact")
+                 "availability_impact",
+                 "assigned_to", "assigned_name", "assigned_by", "due_date")
 
 
 def save_worklog_entry(
@@ -152,6 +154,7 @@ def get_worklog_entries(
                 e.plant_block, e.node_lc, e.node_device, e.ptw_no,
                 e.time_from, e.time_to, e.hours, e.internal_note,
                 e.availability_impact,
+                e.assigned_to, e.assigned_name, e.assigned_by, e.due_date,
                 COALESCE(p.name, '(Mobile)') AS project_name,
                 e.project_id, e.container_id,
                 c.zone_number, c.block_number, c.container_index,

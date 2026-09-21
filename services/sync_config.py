@@ -126,6 +126,24 @@ class SyncConfig:
         self._data["field_cursor"] = v
 
     @property
+    def checklist_tpl_at(self) -> str:
+        """The newest checklist template stamp already on the server — so a
+        92-item checklist is not re-uploaded every minute for nothing."""
+        return self._data.get("checklist_tpl_at", "")
+
+    @checklist_tpl_at.setter
+    def checklist_tpl_at(self, v: str):
+        self._data["checklist_tpl_at"] = v
+
+    @property
+    def checklist_cursor(self) -> str:
+        return self._data.get("checklist_cursor", "0")
+
+    @checklist_cursor.setter
+    def checklist_cursor(self, v: str):
+        self._data["checklist_cursor"] = v
+
+    @property
     def last_sync_at(self) -> str:
         return self._data.get("last_sync_at", "")
 

@@ -77,6 +77,11 @@ def _entry_to_dict(entry: WorkLogEntry) -> dict:
         "hours":               entry.hours,
         "internal_note":       entry.internal_note or "",
         "availability_impact": entry.availability_impact or "none",
+        # the job the office gave someone; blank on everything else
+        "assigned_to":         entry.assigned_to or "",
+        "assigned_name":       entry.assigned_name or "",
+        "assigned_by":         entry.assigned_by or "",
+        "due_date":            entry.due_date or "",
     }
 
 
@@ -96,6 +101,22 @@ def _image_to_dict(img: WorkLogImage) -> dict:
     }
 
 
+# ── WHO MAY SEE AND CHANGE AN ENTRY ───────────────────────────────────────────
+# Three kinds of person touch a record: the admin (the office desktop), the
+# user who wrote it, and the technician it was given to. The last one is new:
+# without it a job written in the office never reached a phone.
+
+def _may_read(entry: WorkLogEntry, user: User) -> bool:
+    return (user.role == "admin" or entry.user_id == user.id
+            or (entry.assigned_to or "") == user.id)
+
+
+def _may_assign(user: User) -> bool:
+    """Only the office hands work out. A technician doing an assigned job may
+    say what was done — never who does it."""
+    return user.role in ("admin", "engineer")
+
+
 # ── ONE ENTRY ─────────────────────────────────────────────────────────────────
 
 @router.get("/entry/{entry_id}")
@@ -108,7 +129,7 @@ def get_entry(
     sends — what a device needs to settle a sync conflict. (GET /worklogs/{id}
     has a narrower schema: no fault/status/SAP/spare-parts fields.)"""
     entry = db.query(WorkLogEntry).filter(WorkLogEntry.id == entry_id).first()
-    if not entry or (user.role != "admin" and entry.user_id != user.id):
+    if not entry or not _may_read(entry, user):
         raise HTTPException(status_code=404, detail="Entry not found")
     return _entry_to_dict(entry)
 
@@ -127,11 +148,14 @@ def pull(
     settled = settled_before()      # see services/sync_cursor.py
 
     # Shared visibility filter for entries and images (images join their parent
-    # entry). Non-admins see only their own entries; a device never gets its
-    # own changes echoed back.
+    # entry). Non-admins see their own entries and the jobs assigned to them —
+    # a record the office writes has another user_id, so without the second
+    # condition it never reached the phone it was meant for. A device never
+    # gets its own changes echoed back.
     def _visible(q):
         if user.role != "admin":
-            q = q.filter(WorkLogEntry.user_id == user.id)
+            q = q.filter((WorkLogEntry.user_id == user.id) |
+                         (WorkLogEntry.assigned_to == user.id))
         if device_id:
             q = q.filter(
                 (WorkLogEntry.origin_device == None) |
@@ -318,6 +342,8 @@ def _apply_entry_change(change, device_id: str, user: User, db: Session) -> Sync
         if change.action == "delete":
             if not entry:
                 return SyncChangeResult(id=change.id, outcome="skipped", message="Not found")
+            # Being given a job is not being given the right to delete it:
+            # only its author (or the office) removes a record.
             if user.role != "admin" and entry.user_id != user.id:
                 return SyncChangeResult(id=change.id, outcome="error", message="Not your entry")
             if entry.version > change.version:
@@ -360,6 +386,12 @@ def _apply_entry_change(change, device_id: str, user: User, db: Session) -> Sync
                 hours               = payload.get("hours"),
                 internal_note       = payload.get("internal_note", ""),
                 availability_impact = payload.get("availability_impact", "none"),
+                # A technician's own record is never a job handed to somebody
+                # else, whatever its payload says.
+                assigned_to         = payload.get("assigned_to", "") if _may_assign(user) else "",
+                assigned_name       = payload.get("assigned_name", "") if _may_assign(user) else "",
+                assigned_by         = payload.get("assigned_by", "") if _may_assign(user) else "",
+                due_date            = payload.get("due_date", ""),
             )
             db.add(entry)
             db.flush()   # get DB-assigned defaults before returning version
@@ -367,8 +399,9 @@ def _apply_entry_change(change, device_id: str, user: User, db: Session) -> Sync
                 db.add(WorkLogTag(work_log_id=change.id, tag=tag))
             return SyncChangeResult(id=change.id, outcome="applied", server_version=entry.version)
 
-        # Existing row
-        if user.role != "admin" and entry.user_id != user.id:
+        # Existing row. The technician it was given to may say what was done
+        # and close it; the record itself stays the office's.
+        if not _may_read(entry, user):
             return SyncChangeResult(id=change.id, outcome="error", message="Not your entry")
 
         if entry.version > change.version:
@@ -407,9 +440,16 @@ def _apply_entry_change(change, device_id: str, user: User, db: Session) -> Sync
             entry.log_date         = payload.get("log_date", entry.log_date)
             for _f in ("plant_block", "node_lc", "node_device", "ptw_no",
                        "time_from", "time_to", "hours", "internal_note",
-                       "availability_impact"):
+                       "availability_impact", "due_date"):
                 if _f in payload:
                     setattr(entry, _f, payload[_f])
+            # Reassigning is the office's call: a technician's push carries the
+            # assignment back unchanged, and must not be able to hand the job
+            # to somebody else — or to take it off themselves.
+            if _may_assign(user):
+                for _f in ("assigned_to", "assigned_name", "assigned_by"):
+                    if _f in payload:
+                        setattr(entry, _f, payload[_f])
             entry.deleted_at       = payload.get("deleted_at")
             entry.updated_at       = now
             entry.version         += 1
@@ -444,7 +484,8 @@ def _apply_image_change(change, user: User, db: Session) -> SyncChangeResult:
         ).first()
         if not entry:
             return SyncChangeResult(id=change.id, outcome="error", message="Parent entry not found")
-        if user.role != "admin" and entry.user_id != user.id:
+        # a photo of the job they were given belongs on that job's record
+        if not _may_read(entry, user):
             return SyncChangeResult(id=change.id, outcome="error", message="Not your entry")
 
         new_img = WorkLogImage(
@@ -478,7 +519,9 @@ def sync_state(
     user:      User          = Depends(get_current_user),
 ):
     """Returns the server's latest cursor for this user."""
-    q = db.query(WorkLogEntry).filter(WorkLogEntry.user_id == user.id)
+    # Same reach as the pull: own entries plus the jobs assigned to them.
+    q = db.query(WorkLogEntry).filter((WorkLogEntry.user_id == user.id) |
+                                      (WorkLogEntry.assigned_to == user.id))
     if user.role == "admin":
         q = db.query(WorkLogEntry)
 

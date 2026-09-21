@@ -267,6 +267,12 @@ def push_pending() -> dict:
                     "hours":               e.get("hours"),
                     "internal_note":       e.get("internal_note", "") or "",
                     "availability_impact": e.get("availability_impact", "none") or "none",
+                    # who the office gave this job to; the server refuses a
+                    # reassignment from anyone but the owner or an admin
+                    "assigned_to":         e.get("assigned_to", "") or "",
+                    "assigned_name":       e.get("assigned_name", "") or "",
+                    "assigned_by":         e.get("assigned_by", "") or "",
+                    "due_date":            e.get("due_date", "") or "",
                     "log_date":         e["log_date"],
                     "created_at":       e.get("created_at", _now()),
                     "deleted_at":       e.get("deleted_at"),
@@ -365,6 +371,109 @@ def push_projects():
         _request("put", "/projects", json={"projects": projects})
     except RequestException:
         pass
+
+
+def push_checklists() -> dict:
+    """Publish the customer's PM checklists and the runs planned for the
+    campaign, so the phones can fill them in. Templates carry their items, so a
+    phone offline since yesterday still has the text. Failures are non-fatal —
+    the runs stay unsynced and go on the next cycle."""
+    from services import checklist_pm_service as cs
+    stats = {"pushed": 0, "errors": 0}
+    runs = [r for r in cs.runs_for_sync() if r.get('uuid') and r.get('template_uuid')]
+    templates = [t for t in cs.templates_for_sync() if t.get('uuid')]
+    # A checklist of 92 items is a lot to re-upload every minute for nothing,
+    # so the items go up when they have changed — or whenever a run does, since
+    # that run's template has to be on the server before it.
+    newest = max((t.get('updated_at') or '' for t in templates), default='')
+    if templates and (runs or newest != sync_config.checklist_tpl_at):
+        try:
+            resp = _request("put", "/checklists/templates",
+                            json={"templates": templates})
+            if resp.status_code != 200:
+                return stats                 # an older server: nothing to push to
+            sync_config.checklist_tpl_at = newest
+            sync_config.save()
+        except RequestException:
+            return stats
+    for i in range(0, len(runs), 100):
+        batch = runs[i:i + 100]
+        try:
+            resp = _request("put", "/checklists/runs", json={"runs": batch})
+        except RequestException:
+            stats["errors"] += len(batch)
+            break
+        if resp.status_code != 200:
+            stats["errors"] += len(batch)
+            break
+        for r in batch:
+            cs.mark_run_synced(r["uuid"])    # only this service writes the tables
+            stats["pushed"] += 1
+    return stats
+
+
+def _apply_checklist_run(run: dict) -> bool:
+    """One filled checklist from a phone, handed to the service that owns the
+    tables. False when it belongs to another desktop or the local copy is the
+    later one."""
+    from services import checklist_pm_service as cs
+    return cs.apply_remote_run(run)
+
+
+def pull_checklists() -> dict:
+    """Pull the checklists the phones filled in. Last writer by updated_at
+    wins, so a run corrected in the office after the phone sent it keeps the
+    office's answers (both sides stamp UTC — see checklist_pm_service._now)."""
+    stats = {"applied": 0, "errors": 0}
+    _retry_inbox("checklist_run", _apply_checklist_run, stats)
+    cursor = str(sync_config.checklist_cursor or "0")
+
+    while True:
+        try:
+            resp = _request("get", "/checklists/runs", params={"since": cursor})
+            if resp.status_code != 200:
+                if resp.status_code != 404:   # 404: a server without checklists
+                    stats["errors"] += 1
+                break
+            body = resp.json()
+        except RequestException:
+            stats["errors"] += 1
+            break
+
+        for run in body.get("runs", []):
+            try:
+                if _apply_checklist_run(run):
+                    stats["applied"] += 1
+            except Exception as ex:                      # noqa: BLE001
+                _inbox_put("checklist_run", run, ex)
+                stats["errors"] += 1
+
+        new_cursor = body.get("cursor")
+        if new_cursor and new_cursor > cursor:
+            cursor = new_cursor
+            sync_config.checklist_cursor = cursor
+            sync_config.save()
+        if not body.get("has_more", False):
+            break
+
+    return stats
+
+
+def pull_users() -> int:
+    """Mirror the server's accounts locally so the office can pick a
+    technician offline. Non-fatal: an older server has no such route, and the
+    picker then simply shows whoever was cached last. Returns the count."""
+    from services import team_service
+    try:
+        resp = _request("get", "/auth/assignable")
+    except RequestException:
+        return 0
+    if resp.status_code != 200:
+        return 0
+    try:
+        return team_service.save_users(resp.json())
+    except Exception:                                # noqa: BLE001
+        return 0
 
 
 def push_stock():
@@ -597,7 +706,8 @@ _ENTRY_COLS = ("project_id", "container_id", "equipment_serial", "site_location"
 # desktop wrote — absent key means "no opinion", not "empty".
 _ENTRY_OPT_COLS = ("plant_block", "node_lc", "node_device", "ptw_no",
                    "time_from", "time_to", "hours", "internal_note",
-                   "availability_impact")
+                   "availability_impact",
+                   "assigned_to", "assigned_name", "assigned_by", "due_date")
 
 
 def _store_server_entry(conn, data: dict):
@@ -888,6 +998,7 @@ def sync_now() -> SyncResult:
         return SyncResult(0, 0, 0, 0, 0)
 
     push_projects()
+    pull_users()          # who a job can be given to, cached for offline use
     # Write-offs first: the server lowers its stock mirror the moment a phone
     # writes off, and pushing the desktop's quantities before applying that
     # write-off here put the old figure back on the phones for a whole cycle.
@@ -896,6 +1007,9 @@ def sync_now() -> SyncResult:
     push_stats = push_pending()
     pull_stats  = pull_delta()
     ev_stats = pull_field_events()
+    # PM checklists: publish what is planned, then take back what was ticked.
+    push_checklists()
+    cl_stats = pull_checklists()
     download_pending_remote_images()
     # the phones' photos, also in folders a person can find (date, block, fault)
     try:
@@ -917,6 +1031,7 @@ def sync_now() -> SyncResult:
         # still waiting in the inbox is reported until it applies.
         errors    = (push_stats.get("errors", 0) + pull_stats.get("errors", 0)
                      + max(len(inbox_waiting()),
-                           wo_stats.get("errors", 0) + ev_stats.get("errors", 0))),
+                           wo_stats.get("errors", 0) + ev_stats.get("errors", 0)
+                           + cl_stats.get("errors", 0))),
         skipped   = 0,
     )

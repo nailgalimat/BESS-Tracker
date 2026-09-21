@@ -19,6 +19,11 @@ from ui.main_window import MainWindow
 
 
 def main():
+    # Step 0: an error in one page must not take the whole app down with it —
+    # PyQt aborts the process when an exception escapes a slot.
+    from services.crash_guard import install as install_crash_guard
+    install_crash_guard()
+
     # Step 1: Initialize the database (creates tables if they don't exist)
     initialize_database()
 

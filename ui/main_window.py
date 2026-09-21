@@ -315,11 +315,18 @@ class MainWindow(QMainWindow):
         )
         sl.addWidget(self.proj_count_lbl)
 
-        # Sync status label (bottom of sidebar)
-        self.sync_lbl = QLabel("  🔄 Sync: off")
+        # Sync status (bottom of sidebar). It is the only place an error is
+        # ever shown, so it opens the settings that explain it instead of
+        # leaving the user to hunt for them under Project.
+        self.sync_lbl = QPushButton("  🔄 Sync: off")
+        self.sync_lbl.setCursor(Qt.PointingHandCursor)
+        self.sync_lbl.setToolTip("Server, login and what is waiting from the phones")
         self.sync_lbl.setStyleSheet(
-            "color:#4A6080;font-size:10px;padding:4px 12px 8px;background:transparent;"
+            "QPushButton{color:#4A6080;font-size:10px;padding:4px 12px 8px;"
+            "background:transparent;border:none;text-align:left;}"
+            "QPushButton:hover{color:#FFFFFF;}"
         )
+        self.sync_lbl.clicked.connect(self._open_sync_settings)
         sl.addWidget(self.sync_lbl)
 
         root.addWidget(sidebar)

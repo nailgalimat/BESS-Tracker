@@ -191,19 +191,57 @@ class TodayPage(QWidget):
         self.p_phones = Panel("Phones and sync")
         self.p_stock = Panel("Stock below minimum")
 
-        grid.addWidget(self.p_decisions, 0, 0, 1, 2)
-        grid.addWidget(self.p_month,     0, 2, 1, 1)
-        grid.addWidget(self.p_faults,    1, 0, 1, 2)
-        grid.addWidget(self.p_pm,        1, 2, 1, 1)
-        grid.addWidget(self.p_now,       2, 0, 1, 1)
-        grid.addWidget(self.p_phones,    2, 1, 1, 1)
-        grid.addWidget(self.p_stock,     2, 2, 1, 1)
-        grid.setColumnStretch(0, 3)
-        grid.setColumnStretch(1, 3)
-        grid.setColumnStretch(2, 2)
-        grid.setRowStretch(3, 1)
+        self._grid = grid
+        self._cols = 0
+        self._lay_out(3)
         scroll.setWidget(inner)
         root.addWidget(scroll, 1)
+
+    # The window is not always maximised, and a three-column board on a
+    # 1200 px window cut the right-hand panels off the screen. Lay the same
+    # panels out in as many columns as the width really has.
+    def _lay_out(self, cols: int):
+        if cols == self._cols:
+            return
+        self._cols = cols
+        grid = self._grid
+        while grid.count():
+            grid.takeAt(0)
+        wide = [self.p_decisions, self.p_faults]          # these carry lists
+        order = [self.p_decisions, self.p_month, self.p_faults, self.p_pm,
+                 self.p_now, self.p_phones, self.p_stock]
+        for c in range(3):
+            grid.setColumnStretch(c, 0)
+        if cols >= 3:
+            grid.addWidget(self.p_decisions, 0, 0, 1, 2)
+            grid.addWidget(self.p_month,     0, 2, 1, 1)
+            grid.addWidget(self.p_faults,    1, 0, 1, 2)
+            grid.addWidget(self.p_pm,        1, 2, 1, 1)
+            grid.addWidget(self.p_now,       2, 0, 1, 1)
+            grid.addWidget(self.p_phones,    2, 1, 1, 1)
+            grid.addWidget(self.p_stock,     2, 2, 1, 1)
+            grid.setColumnStretch(0, 3)
+            grid.setColumnStretch(1, 3)
+            grid.setColumnStretch(2, 2)
+            grid.setRowStretch(3, 1)
+            return
+        row, col = 0, 0
+        for panel in order:
+            span = 2 if (cols == 2 and panel in wide) else 1
+            if col + span > cols:
+                row, col = row + 1, 0
+            grid.addWidget(panel, row, col, 1, span)
+            col += span
+            if col >= cols:
+                row, col = row + 1, 0
+        for c in range(cols):
+            grid.setColumnStretch(c, 1)
+        grid.setRowStretch(row + 1, 1)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        w = self.width()
+        self._lay_out(3 if w >= 1180 else (2 if w >= 760 else 1))
 
     # ── shell hooks ──────────────────────────────────────────────────────
     def set_current_project(self, pid, name=None):

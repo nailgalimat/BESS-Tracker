@@ -121,6 +121,21 @@ const API = (() => {
     return _req('POST', '/events', payload);
   }
 
+  // ── PM checklists ──────────────────────────────────────────────────────────
+
+  /** The checklists planned for this project, with the templates they need:
+      { templates: [{ uuid, name, kind, items: [...] }], runs: [{ uuid, … }] }.
+      One call, because one is all an engineer on site gets. */
+  async function getChecklists(projectId) {
+    return _req('GET', `/checklists/assigned?project_id=${encodeURIComponent(projectId)}`);
+  }
+
+  /** Send back what was ticked. payload = { results: { item_id: {result, comment} },
+      status, ptw_no, serial, filled_by }. Only the items sent are touched. */
+  async function postChecklistResults(runUuid, payload) {
+    return _req('POST', `/checklists/runs/${encodeURIComponent(runUuid)}/results`, payload);
+  }
+
   // ── Sync ─────────────────────────────────────────────────────────────────────
 
   /**
@@ -177,5 +192,6 @@ const API = (() => {
 
   // ── Public API ───────────────────────────────────────────────────────────────
   return { login, logout, ping, getProjects, pullDelta, pushChanges, uploadImage,
-           getStock, postWriteoff, postEvent };
+           getStock, postWriteoff, postEvent,
+           getChecklists, postChecklistResults };
 })();

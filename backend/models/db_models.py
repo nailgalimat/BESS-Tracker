@@ -142,6 +142,42 @@ class FieldEvent(Base):
     origin_device  = Column(String,  nullable=True)
 
 
+# ── PM checklists ────────────────────────────────────────────────────────────
+# The desktop owns the customer's checklist workbook and plans one run per
+# block for a campaign; the phone receives what is assigned to its project and
+# sends back what was ticked. The items travel inside the template as JSON, so
+# a phone that has been offline since yesterday still has the text to show.
+
+class ChecklistTemplate(Base):
+    __tablename__ = "checklist_templates"
+
+    uuid       = Column(String, primary_key=True)
+    project_id = Column(Integer, nullable=True, index=True)
+    name       = Column(String, default="")
+    kind       = Column(String, default="")          # PCS | BESS | ''
+    items      = Column(Text,   default="[]")        # JSON [{item_id, s_no, …}]
+    updated_at = Column(String, default=_now, nullable=False, index=True)
+
+
+class ChecklistRun(Base):
+    __tablename__ = "checklist_runs"
+
+    uuid          = Column(String, primary_key=True)
+    project_id    = Column(Integer, nullable=False, index=True)
+    template_uuid = Column(String, nullable=False, index=True)
+    plant_block   = Column(Integer, nullable=True)
+    campaign      = Column(String, default="")
+    run_date      = Column(String, default="")       # YYYY-MM-DD
+    status        = Column(String, default="In Progress")
+    results       = Column(Text,   default="{}")     # JSON {item_id: {result, comment}}
+    ptw_no        = Column(String, default="")
+    serial        = Column(String, default="")
+    notes         = Column(Text,   default="")
+    filled_by     = Column(String, default="")
+    updated_at    = Column(String, default=_now, nullable=False, index=True)
+    deleted_at    = Column(String, nullable=True)
+
+
 # ── Work log entries ──────────────────────────────────────────────────────────
 
 class WorkLogEntry(Base):
@@ -178,12 +214,21 @@ class WorkLogEntry(Base):
     hours               = Column(Float, nullable=True)        # PM hours
     internal_note       = Column(Text, default="")           # ours, never the customer's
     availability_impact = Column(String, default="none")     # none|counts|excluded
+    # A job the office gave to a named technician. The phone pulls what is
+    # assigned to it as well as what it wrote itself; the names are cached on
+    # the row so an offline phone can still say who it is from and for.
+    assigned_to         = Column(String, default="", index=True)   # users.id
+    assigned_name       = Column(String, default="")
+    assigned_by         = Column(String, default="")
+    due_date            = Column(String, default="")         # YYYY-MM-DD
 
     __table_args__ = (
         # Compound index for non-admin delta pull: WHERE user_id=? AND updated_at > ?
         Index("idx_wle_user_updated_at", "user_id", "updated_at"),
         # Partial-style index for pending entries (SQLite supports this via expression index)
         Index("idx_wle_sync_status", "sync_status"),
+        # The other half of a technician's delta pull: what is assigned to them
+        Index("idx_wle_assigned_updated_at", "assigned_to", "updated_at"),
     )
 
     user   = relationship("User", back_populates="entries")

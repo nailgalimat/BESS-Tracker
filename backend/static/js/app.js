@@ -18,6 +18,7 @@ const App = {
   _nodeNum:        '',
   _nodeFor:        'create',
   _swReg:          null,
+  _geo:            null,   // last known position, for the photo stamp
 
   // ── Boot ───────────────────────────────────────────────────────────────────
   async init() {
@@ -130,11 +131,18 @@ const App = {
   // kept: older buttons and code paths still call goHome()
   goHome() { this.goRecords(); },
 
-  taskSeg(seg) {
+  async taskSeg(seg) {
     this._taskSeg = seg;
     document.querySelectorAll('#task-seg button').forEach(b =>
       b.classList.toggle('on', b.dataset.seg === seg));
-    this._renderTasks();
+    await this._renderTasks();
+  },
+
+  // A job the office gave to the person logged in here. The server only sends
+  // what is theirs, but an admin's phone sees everything, so check the id too.
+  _assignedToMe(e) {
+    const me = localStorage.getItem('user_id') || '';
+    return !!e.assigned_to && (!me || e.assigned_to === me);
   },
 
   async _renderTasks() {
@@ -143,12 +151,19 @@ const App = {
     const all = (await DB.getAllEntries()).filter(e => !e.deleted_at);
     const today = _today();
     const weekAgo = _today(-7);
+    // A job planned for next Tuesday is this week's work as much as one from
+    // last Tuesday, so Week reaches forward as well as back.
+    const weekAhead = _today(7);
     const open = all.filter(e => ['open', 'in_progress', 'needs_visit'].includes(e.status || ''));
+    const when = e => e.due_date || e.log_date || '';
     let rows;
-    if (this._taskSeg === 'today') rows = open.filter(e => e.log_date === today);
-    else if (this._taskSeg === 'week') rows = open.filter(e => e.log_date >= weekAgo);
-    else rows = open;
-    rows.sort((a, b) => (a.log_date || '').localeCompare(b.log_date || ''));
+    if (this._taskSeg === 'today') rows = open.filter(e => when(e) === today);
+    else if (this._taskSeg === 'week') {
+      rows = open.filter(e => when(e) >= weekAgo && when(e) <= weekAhead);
+    } else rows = open;
+    // what the office is waiting for comes first, oldest due date at the top
+    rows.sort((a, b) => (this._assignedToMe(b) ? 1 : 0) - (this._assignedToMe(a) ? 1 : 0)
+                        || when(a).localeCompare(when(b)));
 
     const events = (await DB.getAllFieldEvents()).filter(e => e.sync_status !== 'synced');
     let html = '';
@@ -158,22 +173,163 @@ const App = {
     }
     if (!rows.length) {
       html += `<div class="empty">Nothing open ${this._taskSeg === 'today' ? 'today' : ''}.
-               <br>Tap ＋ to write a record.</div>`;
+               <br>Jobs the office gives you appear here after a sync.
+               <br>Tap ＋ to write a record yourself.</div>`;
     }
     for (const e of rows) {
       const node = e.plant_block ? ('Block ' + e.plant_block) : 'No block';
-      html += `<div class="tcard">
+      const mine = this._assignedToMe(e);
+      const from = mine
+        ? `<div class="tcard-from">From ${_esc(e.assigned_by || 'the office')}${
+            e.due_date ? ' · due ' + _esc(e.due_date) : ''}</div>`
+        : '';
+      html += `<div class="tcard${mine ? ' assigned' : ''}">
         <div class="tcard-top"><span class="chip ${e.status === 'needs_visit' ? 'crit' : 'warn'}">
-          ${_esc(_statusLabel(e.status))}</span><span class="hint">${_esc(e.log_date || '')}</span></div>
+          ${_esc(_statusLabel(e.status))}</span>${mine
+            ? '<span class="chip job">Assigned</span>' : ''
+          }<span class="hint">${_esc(when(e))}</span></div>
         <div class="tcard-blk">${_esc(node)}${e.node_lc ? ' · ' + _esc(e.node_lc) : ''}${
           e.node_device ? ' · ' + _esc(e.node_device) : ''}</div>
         <div class="tcard-meta">${_esc(e.fault_name || e.description || '')}</div>
-        <button class="btn btn-outline btn-block" onclick="App._showDetail('${e.id}')">Open</button>
+        ${from}
+        <button class="btn ${mine ? 'btn-primary' : 'btn-outline'} btn-block"
+                onclick="App.${mine ? `openTask('${e.id}')` : `_showDetail('${e.id}')`}">
+          ${mine ? 'Open the job' : 'Open'}</button>
       </div>`;
     }
-    html += `<p class="hint-line">Campaign tasks planned on the desktop appear
-             here once the plan is synced to phones — not in this version.</p>`;
+    // The PM checklists the office planned for this project — the other half
+    // of a technician's day, and until v15 they were only on paper.
+    const tpls = await DB.getMeta('checklist_templates', {}) || {};
+    const cls = (await DB.getAllChecklists()).filter(r => !r.deleted_at);
+    const openCls = cls.filter(r => {
+      const p = _clCount(r, tpls[r.template_uuid]);
+      return !p.total || p.done < p.total;
+    });
+    if (cls.length) {
+      html += `<div class="tcard">
+        <div class="tcard-top"><span class="chip ${openCls.length ? 'warn' : 'ok'}">
+          PM checklists</span><span class="hint">${cls.length} assigned</span></div>
+        <div class="tcard-blk">${openCls.length
+          ? openCls.length + ' still to finish'
+          : 'all finished'}</div>
+        <div class="tcard-meta">${_esc(openCls.slice(0, 4)
+          .map(r => 'Block ' + (r.plant_block || '—')).join(' · '))}</div>
+        <button class="btn btn-outline btn-block" onclick="App.goChecklists()">Open checklists</button>
+      </div>`;
+    } else {
+      html += `<p class="hint-line">Jobs and PM checklists planned in the office
+               appear here after a sync — checklists also under
+               <b>More → PM checklists</b>.</p>`;
+    }
     body.innerHTML = html;
+  },
+
+  // ── One assigned job ───────────────────────────────────────────────────────
+  // The office writes the record and gives it to a technician; the technician
+  // fills that same record in. Anything else leaves the office holding a job
+  // with no answer and the phone holding an answer to no job.
+  _task: null,
+
+  async openTask(entryId) {
+    const e = await DB.getEntry(entryId);
+    if (!e) return;
+    this._task = e;
+    const node = e.plant_block ? ('Block ' + e.plant_block) : 'No block';
+    document.getElementById('task-title').textContent = node;
+    document.getElementById('task-node').textContent = node
+      + (e.node_lc ? ' · ' + e.node_lc : '') + (e.node_device ? ' · ' + e.node_device : '');
+    document.getElementById('task-from').textContent =
+      'From ' + (e.assigned_by || 'the office')
+      + (e.due_date ? ' · due ' + e.due_date : '')
+      + (e.ptw_no ? ' · PTW ' + e.ptw_no : '');
+    document.getElementById('task-ask').textContent =
+      e.fault_name || e.description || '';
+    // What the office asked for is the description until the work is done;
+    // pre-filling it would send it back as "what was done".
+    document.getElementById('task-desc').value =
+      (e.status === 'done' ? (e.description || '') : '');
+    document.getElementById('task-start').value = e.time_from || '';
+    document.getElementById('task-end').value   = e.time_to || '';
+    document.getElementById('task-hours').value = e.hours || 0;
+    document.getElementById('task-ptw').value   = e.ptw_no || '';
+    document.getElementById('task-note').value  = e.internal_note || '';
+    document.getElementById('task-error').style.display = 'none';
+    this._taskBanner('', '');
+    this._show('screen-task');
+  },
+
+  _taskBanner(text, kind) {
+    const b = document.getElementById('task-banner');
+    if (!b) return;
+    b.textContent = text || '';
+    b.className = 'sync-bar' + (kind === 'err' ? ' sync-bar-conflict'
+                              : kind === 'warn' ? ' sync-bar-warn' : '');
+    b.style.display = text ? 'block' : 'none';
+  },
+
+  recalcTaskHours() {
+    const a = document.getElementById('task-start').value;
+    const b = document.getElementById('task-end').value;
+    if (!a || !b) return;
+    const [h1, m1] = a.split(':').map(Number);
+    const [h2, m2] = b.split(':').map(Number);
+    let mins = (h2 * 60 + m2) - (h1 * 60 + m1);
+    if (mins < 0) mins += 24 * 60;
+    document.getElementById('task-hours').value = String(Math.round(mins / 60 * 100) / 100);
+  },
+
+  /** Write what the phone holds back into the office's own record. `done`
+      closes it; otherwise it stays open with the progress on it. */
+  async _storeTask(done) {
+    const e = this._task;
+    if (!e) return null;
+    const desc = document.getElementById('task-desc').value.trim();
+    const errEl = document.getElementById('task-error');
+    if (done && !desc) {
+      _showErr(errEl, 'Write what was done — the office reads this line.');
+      return null;
+    }
+    errEl.style.display = 'none';
+    const hours = parseFloat(document.getElementById('task-hours').value) || null;
+    // A PM job keeps saying PM in the customer's line: that is what keeps it
+    // out of section 3.2, which reports PM as hours instead.
+    const wasPm = e.category === 'maintenance'
+                  || /PM|preventive/i.test(e.description || '')
+                  || /PM|preventive/i.test(e.fault_name || '');
+    let text = desc || e.description || '';
+    if (text && wasPm && !/PM|preventive/i.test(text)) text = 'PM: ' + text;
+    const next = Object.assign({}, e, {
+      description:   text,
+      status:        done ? 'done' : (e.status || 'open'),
+      time_from:     document.getElementById('task-start').value || '',
+      time_to:       document.getElementById('task-end').value || '',
+      hours:         hours,
+      ptw_no:        document.getElementById('task-ptw').value.trim(),
+      internal_note: document.getElementById('task-note').value.trim(),
+      // The same id, so the push updates the office's record instead of
+      // creating a second one. The assignment itself is the office's: it
+      // travels back untouched and the server ignores any change to it.
+      sync_status:   'local',
+      updated_at:    new Date().toISOString(),
+    });
+    await DB.saveEntry(next);
+    this._task = next;
+    return next;
+  },
+
+  async saveTask() {
+    if (!await this._storeTask(false)) return;
+    this._taskBanner('✓ Saved on the phone — it goes with the next sync.', '');
+    if (navigator.onLine) this._syncQuiet();
+  },
+
+  async completeTask() {
+    if (!await this._storeTask(true)) return;
+    if (navigator.onLine) {
+      this._taskBanner('🔄 Sending…', '');
+      try { await this._doSync(); } catch (_) {}
+    }
+    await this.goTasks();
   },
 
   async goCreate(kind, keep) {
@@ -498,7 +654,8 @@ const App = {
     const last    = await DB.getMeta('last_sync_at', null);
     const pending = (await DB.getPendingEntries()).length
                   + (await DB.getPendingWriteoffs()).length
-                  + (await DB.getPendingFieldEvents()).length;
+                  + (await DB.getPendingFieldEvents()).length
+                  + (await DB.getPendingChecklists()).length;
     document.getElementById('s-lastsync').textContent = last ? last.slice(0, 16).replace('T', ' ') : '—';
     document.getElementById('s-pending').textContent  = pending;
   },
@@ -527,6 +684,9 @@ const App = {
       localStorage.setItem('access_token',  data.access_token);
       localStorage.setItem('refresh_token', data.refresh_token);
       localStorage.setItem('username',      data.user.username);
+      // the id the office assigns jobs to — without it the phone cannot tell
+      // its own jobs from the ones an admin account can see
+      if (data.user.id) localStorage.setItem('user_id', data.user.id);
 
       if (!localStorage.getItem('device_id')) {
         // Generate a stable device identifier
@@ -697,16 +857,31 @@ const App = {
       image_ids:        [],
     };
 
-    // Save staged photos to IndexedDB
+    // Save staged photos to IndexedDB, each with its caption burned in
+    const projName = projVal
+      ? ((document.getElementById('f-proj').selectedOptions[0] || {}).textContent || '').trim()
+      : '';
+    const nodeText = ['Block ' + block, lc, device].filter(Boolean).join(' · ');
     const imageIds = [];
     for (const staged of this._stagedPhotos) {
       const imgId = _uuid();
+      let dataUrl = staged.dataUrl;
+      let size = staged.file.size;
+      let filename = staged.file.name || 'photo.jpg';
+      try {
+        dataUrl = await this._stampPhoto(staged, { project: projName, node: nodeText });
+        size = Math.round((dataUrl.length - dataUrl.indexOf(',') - 1) * 0.75);
+        filename = filename.replace(/\.[^.]+$/, '') + '.jpg';
+      } catch (e) {
+        // a photo without its caption still beats no photo
+        console.warn('stamp failed', e);
+      }
       await DB.saveImage({
         id:            imgId,
         entry_id:      id,
-        data_url:      staged.dataUrl,
-        filename:      staged.file.name || 'photo.jpg',
-        size:          staged.file.size,
+        data_url:      dataUrl,
+        filename:      filename,
+        size:          size,
         upload_status: 'local',
       });
       imageIds.push(imgId);
@@ -738,12 +913,15 @@ const App = {
   // ── Photos ─────────────────────────────────────────────────────────────────
   addPhotos(input) {
     const preview = document.getElementById('photo-preview');
+    // where the engineer is standing now, for the stamp; asked once per photo
+    // batch and never blocking: a photo without it is still worth having
+    const geo = this._location();
     Array.from(input.files).forEach(file => {
       const id     = _uuid();
       const reader = new FileReader();
       reader.onload = e => {
         const dataUrl = e.target.result;
-        this._stagedPhotos.push({ id, file, dataUrl });
+        this._stagedPhotos.push({ id, file, dataUrl, geo, taken: file.lastModified || Date.now() });
 
         const wrap = document.createElement('div');
         wrap.className = 'photo-thumb';
@@ -758,6 +936,71 @@ const App = {
       reader.readAsDataURL(file);
     });
     input.value = '';   // allow re-selecting same file
+  },
+
+  /** The phone's position, or null. Never rejects and never blocks the form:
+      indoors, in a container, or with the permission refused, the stamp simply
+      carries no coordinates — the node already says where the work was. */
+  _location() {
+    if (this._geo && Date.now() - this._geo.t < 120000) return Promise.resolve(this._geo);
+    return new Promise(resolve => {
+      if (!navigator.geolocation) return resolve(null);
+      navigator.geolocation.getCurrentPosition(
+        p => {
+          this._geo = { lat: p.coords.latitude, lon: p.coords.longitude,
+                        acc: Math.round(p.coords.accuracy || 0), t: Date.now() };
+          resolve(this._geo);
+        },
+        () => resolve(null),
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+    });
+  },
+
+  /** Draw the photo with a caption strip burned into it: project, date and
+      time, node, coordinates. EXIF is stripped by messengers and by the
+      browser itself, so the text has to be part of the picture. Re-encoded as
+      JPEG, which also takes a 3-8 MB camera photo down to well under 1 MB. */
+  async _stampPhoto(staged, meta) {
+    const bmp = await _decodeImage(staged.file, staged.dataUrl);
+    const MAX = 1600;
+    const scale = Math.min(1, MAX / Math.max(bmp.width, bmp.height));
+    const w = Math.max(1, Math.round(bmp.width * scale));
+    const h = Math.max(1, Math.round(bmp.height * scale));
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(bmp, 0, 0, w, h);
+    if (bmp.close) bmp.close();
+
+    const geo = await staged.geo;
+    const lines = [];
+    const when = new Date(staged.taken || Date.now());
+    lines.push([meta.project, _fmtStampTime(when)].filter(Boolean).join(' · '));
+    if (meta.node) lines.push(meta.node);
+    if (geo) lines.push(`${geo.lat.toFixed(5)}, ${geo.lon.toFixed(5)}`
+                        + (geo.acc ? ` ±${geo.acc} m` : ''));
+
+    const size = Math.max(13, Math.round(w / 42));
+    const pad  = Math.round(size * 0.5);
+    ctx.font = `600 ${size}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`;
+    ctx.textBaseline = 'top';
+    const wrapped = [];
+    for (const line of lines) {
+      let cur = '';
+      for (const word of String(line).split(' ')) {
+        const next = cur ? cur + ' ' + word : word;
+        if (ctx.measureText(next).width > w - pad * 2 && cur) { wrapped.push(cur); cur = word; }
+        else cur = next;
+      }
+      if (cur) wrapped.push(cur);
+    }
+    const lh = Math.round(size * 1.3);
+    const strip = wrapped.length * lh + pad * 2;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, h - strip, w, strip);
+    ctx.fillStyle = '#FFFFFF';
+    wrapped.forEach((t, i) => ctx.fillText(t, pad, h - strip + pad + i * lh));
+    return cv.toDataURL('image/jpeg', 0.82);
   },
 
   // ── Detail view ────────────────────────────────────────────────────────────
@@ -1271,6 +1514,281 @@ const App = {
     return { sent, failed, error };
   },
 
+  // ── PM checklists ───────────────────────────────────────────────────────────
+  // The office plans one checklist per block out of the customer's workbook;
+  // the phone shows the items, takes OK / NOK / N/A and a comment, and keeps
+  // everything in IndexedDB so a container with no signal changes nothing.
+  _clRun:  null,   // the checklist open right now
+  _clTpls: {},     // template uuid -> template, for the item text
+
+  async goChecklists() {
+    let projects = await DB.getMeta('projects', []);
+    if ((!projects || !projects.length) && navigator.onLine) {
+      try { projects = await API.getProjects(); await DB.setMeta('projects', projects); } catch (_) {}
+    }
+    const sel = document.getElementById('cl-proj');
+    sel.innerHTML = '';
+    if (!projects || !projects.length) {
+      sel.innerHTML = '<option value="">— No projects —</option>';
+    } else {
+      for (const p of projects) {
+        const o = document.createElement('option');
+        o.value = p.id; o.textContent = p.name; sel.appendChild(o);
+      }
+      const last = localStorage.getItem('last_project_id');
+      if (last && projects.some(p => String(p.id) === last)) sel.value = last;
+    }
+    this._show('screen-checklists');
+    this._clBanner('', '');
+    await this._renderChecklists();
+    if (navigator.onLine) await this.refreshChecklists();
+  },
+
+  onChecklistProject() {
+    const v = document.getElementById('cl-proj').value;
+    if (v) localStorage.setItem('last_project_id', v);
+    this.refreshChecklists();
+  },
+
+  _clBanner(text, kind) {
+    const b = document.getElementById('cl-banner');
+    if (!b) return;
+    b.textContent = text || '';
+    b.className = 'sync-bar' + (kind === 'err' ? ' sync-bar-conflict'
+                              : kind === 'warn' ? ' sync-bar-warn' : '');
+    b.style.display = text ? 'block' : 'none';
+  },
+
+  async refreshChecklists() {
+    if (!navigator.onLine) {
+      this._clBanner('📴 Offline — showing what is on the phone.', 'warn');
+      await this._renderChecklists();
+      return;
+    }
+    this._clBanner('🔄 Checking…', '');
+    const r = await this._syncChecklists();
+    this._clBanner(r.error ? ('⚠ ' + r.error) : '', r.error ? 'err' : '');
+    await this._renderChecklists();
+  },
+
+  /** Send what was ticked, then take the assigned list. A checklist with
+      unsent answers is never overwritten by the server's copy — the work was
+      done on this phone and nothing else has it yet. */
+  async _syncChecklists() {
+    let sent = 0, error = '';
+    try {
+      for (const run of await DB.getPendingChecklists()) {
+        try {
+          await API.postChecklistResults(run.uuid, {
+            results:   run.results || {},
+            status:    run.status || 'In Progress',
+            ptw_no:    run.ptw_no || '',
+            serial:    run.serial || '',
+            filled_by: run.filled_by || localStorage.getItem('username') || '',
+          });
+          await DB.updateChecklist(run.uuid, { sync_status: 'synced', last_error: '' });
+          sent++;
+        } catch (e) {
+          error = error || (e && e.message) || 'Upload failed';
+          await DB.updateChecklist(run.uuid, { sync_status: 'error', last_error: error });
+        }
+      }
+      const pid = parseInt(document.getElementById('cl-proj').value, 10)
+               || parseInt(localStorage.getItem('last_project_id'), 10);
+      if (pid) {
+        const got = await API.getChecklists(pid);
+        const tpls = {};
+        for (const t of (got.templates || [])) tpls[t.uuid] = t;
+        await DB.setMeta('checklist_templates', tpls);
+        this._clTpls = tpls;
+        const seen = new Set();
+        for (const r of (got.runs || [])) {
+          seen.add(r.uuid);
+          const local = await DB.getChecklist(r.uuid);
+          if (local && local.sync_status && local.sync_status !== 'synced') continue;
+          await DB.saveChecklist(Object.assign({}, r, { sync_status: 'synced' }));
+        }
+        // A checklist the office cancelled is gone from the assigned list, so
+        // it goes from the phone too — unless this phone still holds answers
+        // nobody else has. A truncated list (the server pages at 200) prunes
+        // nothing: that would hide checklists that are simply on page two.
+        if ((got.runs || []).length < 200) {
+          for (const r of await DB.getAllChecklists()) {
+            if (r.project_id !== pid || seen.has(r.uuid) || r.deleted_at) continue;
+            if (r.sync_status && r.sync_status !== 'synced') continue;
+            await DB.updateChecklist(r.uuid, { deleted_at: new Date().toISOString() });
+          }
+        }
+      }
+    } catch (e) {
+      error = error || (e && e.message) || 'Could not reach the server';
+    }
+    return { sent, error };
+  },
+
+  async _renderChecklists() {
+    const list = document.getElementById('cl-list');
+    if (!list) return;
+    this._clTpls = await DB.getMeta('checklist_templates', {}) || {};
+    const pid = parseInt(document.getElementById('cl-proj').value, 10);
+    const rows = (await DB.getAllChecklists())
+      .filter(r => !r.deleted_at && (!pid || r.project_id === pid));
+    if (!rows.length) {
+      list.innerHTML = '<div class="empty">No checklist assigned yet.<br>'
+                     + 'The office plans them; they arrive on the next sync.</div>';
+      return;
+    }
+    let html = '', campaign = null;
+    for (const r of rows) {
+      if ((r.campaign || '') !== campaign) {
+        campaign = r.campaign || '';
+        html += `<div class="date-header">${_esc(campaign || 'No campaign')}</div>`;
+      }
+      const p = _clCount(r, this._clTpls[r.template_uuid]);
+      const chip = r.sync_status && r.sync_status !== 'synced'
+        ? '<span class="chip warn">Waiting to send</span>'
+        : (p.done >= p.total && p.total
+            ? '<span class="chip ok">Sent</span>'
+            : '<span class="chip">Assigned</span>');
+      html += `<div class="cl-card" onclick="App.openChecklist('${r.uuid}')">
+          <div class="cl-card-top">
+            <span class="cl-blk">Block ${r.plant_block || '—'}</span>${chip}
+          </div>
+          <div class="cl-name">${_esc((this._clTpls[r.template_uuid] || {}).name
+                                       || 'Checklist')} · ${_esc(r.run_date || '')}</div>
+          <div class="cl-bar"><i style="width:${p.total ? Math.round(p.done / p.total * 100) : 0}%"></i></div>
+          <div class="cl-meta">${p.done} of ${p.total} done${
+            p.nok ? ` · <b class="cl-nok">${p.nok} NOK</b>` : ''}${
+            p.excluded ? ` · ${p.excluded} not in this campaign` : ''}</div>
+        </div>`;
+    }
+    list.innerHTML = html;
+  },
+
+  async openChecklist(uuid) {
+    const run = await DB.getChecklist(uuid);
+    if (!run) return;
+    this._clRun = run;
+    this._clTpls = await DB.getMeta('checklist_templates', {}) || {};
+    const tpl = this._clTpls[run.template_uuid] || { items: [] };
+    document.getElementById('cl-title').textContent =
+      (tpl.kind || tpl.name || 'Checklist') + ' · block ' + (run.plant_block || '—');
+    document.getElementById('cl-ptw').value    = run.ptw_no || '';
+    document.getElementById('cl-serial').value = run.serial || '';
+    document.getElementById('cl-signed').value = run.filled_by || '';
+
+    let html = '', group = null;
+    for (const it of (tpl.items || [])) {
+      const res = (run.results || {})[String(it.item_id)] || { result: '', comment: '' };
+      if ((it.equipment || '') !== group) {
+        group = it.equipment || '';
+        html += `<div class="cl-group">${_esc(group || 'Checks')}</div>`;
+      }
+      const excluded = res.result === 'Excluded';
+      if (excluded) {
+        // Out of scope for this campaign: shown, never tickable, with the
+        // note the office wrote. The row still goes to the customer.
+        html += `<div class="cl-item out">
+            <div class="cl-text">${_esc(it.s_no ? it.s_no + '. ' : '')}${_esc(it.text || '')}</div>
+            <div class="cl-out">Not in this campaign${
+              res.comment ? ' · ' + _esc(res.comment) : ''}</div>
+          </div>`;
+        continue;
+      }
+      html += `<div class="cl-item" id="cl-i-${it.item_id}">
+          <div class="cl-text">${_esc(it.s_no ? it.s_no + '. ' : '')}${_esc(it.text || '')}${
+            it.activity ? `<span class="cl-act">${_esc(it.activity)}</span>` : ''}</div>
+          <div class="cl-btns">
+            ${['OK', 'NOK', 'N/A'].map(code => `<button type="button"
+                class="cl-btn ${code === 'NOK' ? 'nok' : ''}${res.result === code ? ' on' : ''}"
+                data-res="${code}"
+                onclick="App.setChecklistResult(${it.item_id}, '${code}')">${code}</button>`).join('')}
+          </div>
+          <input class="cl-comment" type="text" placeholder="comment — measurement, which unit…"
+                 value="${_esc(res.comment || '').replace(/<br>/g, ' ')}"
+                 onchange="App.setChecklistComment(${it.item_id}, this.value)" />
+        </div>`;
+    }
+    document.getElementById('cl-items').innerHTML = html
+      || '<div class="empty">This checklist has no items yet — sync once with network.</div>';
+    this._clProgress();
+    this._show('screen-checklist');
+  },
+
+  _clProgress() {
+    const run = this._clRun;
+    if (!run) return;
+    const p = _clCount(run, this._clTpls[run.template_uuid]);
+    const el = document.getElementById('cl-progress');
+    el.innerHTML = `<div class="cl-bar big"><i style="width:${
+      p.total ? Math.round(p.done / p.total * 100) : 0}%"></i></div>
+      <span>${p.done} of ${p.total}${p.nok ? ` · ${p.nok} NOK` : ''}${
+        p.excluded ? ` · ${p.excluded} left out` : ''}</span>`;
+  },
+
+  /** Every tap is saved at once: a phone that dies mid-checklist must not take
+      an hour of work with it. */
+  async _clStore(patch) {
+    if (!this._clRun) return;
+    const run = Object.assign({}, this._clRun, patch, {
+      sync_status: 'local', updated_at: new Date().toISOString(),
+    });
+    this._clRun = run;
+    await DB.saveChecklist(run);
+  },
+
+  async setChecklistResult(itemId, code) {
+    if (!this._clRun) return;
+    const results = Object.assign({}, this._clRun.results || {});
+    const cur = results[String(itemId)] || { result: '', comment: '' };
+    // Tapping the same answer again clears it — a mis-tap is not an answer.
+    const next = (cur.result === code) ? '' : code;
+    results[String(itemId)] = { result: next, comment: cur.comment || '' };
+    const total = ((this._clTpls[this._clRun.template_uuid] || {}).items || [])
+      .filter(i => (results[String(i.item_id)] || {}).result !== 'Excluded').length;
+    const done = Object.values(results).filter(
+      v => ['OK', 'NOK', 'N/A'].includes(v.result)).length;
+    await this._clStore({ results, status: (total && done >= total) ? 'Done' : 'In Progress' });
+    const box = document.getElementById('cl-i-' + itemId);
+    if (box) {
+      box.querySelectorAll('.cl-btn').forEach(b =>
+        b.classList.toggle('on', b.dataset.res === next));
+    }
+    this._clProgress();
+  },
+
+  async setChecklistComment(itemId, text) {
+    if (!this._clRun) return;
+    const results = Object.assign({}, this._clRun.results || {});
+    const cur = results[String(itemId)] || { result: '', comment: '' };
+    results[String(itemId)] = { result: cur.result || '', comment: text || '' };
+    await this._clStore({ results });
+  },
+
+  async saveChecklistHead() {
+    await this._clStore({
+      ptw_no:    document.getElementById('cl-ptw').value.trim(),
+      serial:    document.getElementById('cl-serial').value.trim(),
+      filled_by: document.getElementById('cl-signed').value.trim(),
+    });
+  },
+
+  async sendChecklist() {
+    if (!this._clRun) return;
+    await this.saveChecklistHead();
+    if (!navigator.onLine) {
+      alert('Offline — the checklist is saved on the phone and goes on the next sync.');
+      return;
+    }
+    const btn = document.getElementById('cl-send');
+    btn.disabled = true; btn.textContent = 'Sending…';
+    const r = await this._syncChecklists();
+    btn.disabled = false; btn.textContent = 'Send';
+    await this.goChecklists();
+    this._clBanner(r.error ? ('⚠ Not sent: ' + r.error + ' — kept on the phone.')
+                           : '✓ Sent to the office.', r.error ? 'err' : 'ok');
+  },
+
   // ── Sync ───────────────────────────────────────────────────────────────────
   async syncNow() {
     const bar = document.getElementById('sync-bar');
@@ -1320,7 +1838,8 @@ const App = {
     try {
       return (await DB.getPendingEntries()).length
            + (await DB.getPendingWriteoffs()).length
-           + (await DB.getPendingFieldEvents()).length;
+           + (await DB.getPendingFieldEvents()).length
+           + (await DB.getPendingChecklists()).length;
     } catch (_) {
       return 0;
     }
@@ -1372,6 +1891,11 @@ const App = {
       const r = await this._syncEvents();
       if (r.failed) evError = `${r.failed} PM/downtime record(s) not sent: ${r.error}`;
     } catch (e) { evError = 'PM/downtime records not sent: ' + (e.message || e); }
+    // PM checklists: send what was ticked, take what the office has planned.
+    try {
+      const r = await this._syncChecklists();
+      if (r.error) evError = evError || ('Checklists: ' + r.error);
+    } catch (e) { evError = evError || ('Checklists: ' + (e.message || e)); }
 
     // ── Push pending entries ──────────────────────────────────────────────────
     const pending = await DB.getPendingEntries();
@@ -1560,6 +2084,24 @@ function _sendChip(entry) {
   return `<span class="chip ${kind}">${text}</span>`;
 }
 
+/** How far one checklist is. The template holds the items; a run that arrived
+    without its template is counted from the answers it carries, so the card
+    still says something honest. */
+function _clCount(run, tpl) {
+  const results = (run && run.results) || {};
+  const ids = (tpl && tpl.items && tpl.items.length)
+    ? tpl.items.map(i => String(i.item_id))
+    : Object.keys(results);
+  let done = 0, nok = 0, excluded = 0;
+  for (const id of ids) {
+    const r = (results[id] || {}).result || '';
+    if (r === 'Excluded') { excluded++; continue; }
+    if (r === 'NOK') nok++;
+    if (r === 'OK' || r === 'NOK' || r === 'N/A') done++;
+  }
+  return { total: ids.length - excluded, done, nok, excluded };
+}
+
 function _statusLabel(st) {
   return { open: 'Open', in_progress: 'In progress', needs_visit: 'Needs visit',
            done: 'Done' }[st] || (st || 'Open');
@@ -1590,6 +2132,12 @@ function _renderCard(entry) {
   const retry = (entry.sync_status === 'error' || entry.sync_status === 'local'
                  || entry.sync_status === 'pending')
     ? `<button class="retry-btn" onclick="event.stopPropagation();App.syncNow()">Retry</button>` : '';
+  // A job the office handed out is the office's record: this phone fills it
+  // in, it does not delete it (the server would refuse, and the delete would
+  // sit unsent forever).
+  const del = entry.assigned_by
+    ? `<span class="hint">From ${_esc(entry.assigned_by)}</span>`
+    : `<button class="del-btn danger-link" data-id="${entry.id}">Delete</button>`;
 
   return `
     <div class="log-card" data-id="${entry.id}">
@@ -1605,9 +2153,33 @@ function _renderCard(entry) {
       ${err}
       <div class="card-actions">
         ${retry}
-        <button class="del-btn danger-link" data-id="${entry.id}">Delete</button>
+        ${del}
       </div>
     </div>`;
+}
+
+/** '20.09.2026 14:32' — what a person reads on the photo. */
+function _fmtStampTime(d) {
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} `
+       + `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** Decode a camera photo the way it should be seen. createImageBitmap honours
+    the EXIF rotation, so a portrait photo does not land on its side; an older
+    browser falls back to the data URL, which it rotates itself. */
+async function _decodeImage(file, dataUrl) {
+  if (window.createImageBitmap) {
+    try {
+      return await createImageBitmap(file, { imageOrientation: 'from-image' });
+    } catch (_) { /* fall through */ }
+  }
+  return await new Promise((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = reject;
+    im.src = dataUrl;
+  });
 }
 
 function _showErr(el, msg) {
