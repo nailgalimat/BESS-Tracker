@@ -72,6 +72,7 @@ hidden = [
     'services.asset_service',
     'services.asset_tree_service',
     'services.planner_service',
+    'services.action_list_service',
     'services.checklist_service',
     # PM checklists: the customer's workbook, and the runs planned from it
     'services.checklist_excel',

@@ -155,6 +155,24 @@ class SyncConfig:
         self._data["checklist_cursor_uuid"] = v
 
     @property
+    def action_cursor(self) -> str:
+        return self._data.get("action_cursor", "0")
+
+    @action_cursor.setter
+    def action_cursor(self, v: str):
+        self._data["action_cursor"] = v
+
+    @property
+    def action_cursor_uuid(self) -> str:
+        """Second half of the action-list cursor — a whole list is published in
+        one second, so the timestamp alone cannot say where the page stopped."""
+        return self._data.get("action_cursor_uuid", "")
+
+    @action_cursor_uuid.setter
+    def action_cursor_uuid(self, v: str):
+        self._data["action_cursor_uuid"] = v
+
+    @property
     def last_sync_at(self) -> str:
         return self._data.get("last_sync_at", "")
 

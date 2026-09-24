@@ -141,8 +141,13 @@ QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 
 page = pp.PlannerPage()
 page.set_current_project(PID)
-H.check([page.tabs.tabText(i) for i in range(page.tabs.count())][-1] == 'Checklists',
-        'the Plan page has a Checklists tab (not a menu item of its own)')
+# a tab of the Plan page, not a menu item of its own. Its index is pinned
+# because the page loads a tab's contents by index (_on_tab); tabs are
+# appended after it, never inserted before it.
+_tabs = [page.tabs.tabText(i) for i in range(page.tabs.count())]
+H.check(_tabs[3] == 'Checklists',
+        'the Plan page has a Checklists tab (not a menu item of its own): {}'
+        .format(_tabs))
 page.tabs.setCurrentIndex(3)
 H.check(page.cl_tbl.rowCount() == 2
         and page.cl_tbl.item(0, 4).text() in ('1/13', '12/13'),

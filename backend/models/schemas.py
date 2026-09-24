@@ -294,6 +294,56 @@ class ChecklistRunPullResponse(BaseModel):
     has_more:    bool
 
 
+# ── Action list ─────────────────────────────────────────────────────────────
+
+class ActionItemOut(BaseModel):
+    uuid:          str
+    project_id:    int
+    seq:           Optional[int] = None
+    topic:         str = ""
+    description:   str = ""
+    todo:          str = ""
+    due_date:      str = ""
+    assigned_to:   str = ""
+    assigned_name: str = ""
+    status:        str = "open"
+    done_at:       str = ""
+    done_note:     str = ""
+    done_by:       str = ""
+    updated_at:    str = ""
+    deleted_at:    Optional[str] = None
+
+
+class ActionItemsSyncRequest(BaseModel):
+    items: List[ActionItemOut]
+
+
+class ActionItemsAssignedResponse(BaseModel):
+    items:    List[ActionItemOut]
+    # Paged by uuid, like the checklists: the phone asks again with
+    # ?after=<cursor> while has_more is true.
+    cursor:   str  = ""
+    has_more: bool = False
+
+
+class ActionItemDoneIn(BaseModel):
+    """What a phone sends back when it finishes an item. Only the completion
+    travels: the topic, the due date and the assignment are the office's."""
+    status:     Optional[str] = None          # done | in progress
+    done_note:  Optional[str] = None
+    done_by:    Optional[str] = None
+    done_at:    Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class ActionItemPullResponse(BaseModel):
+    items:       List[ActionItemOut]
+    cursor:      str
+    # the second half of the cursor — a whole publish shares one timestamp
+    cursor_uuid: str = ""
+    has_more:    bool
+
+
 # ── Sync ──────────────────────────────────────────────────────────────────────
 
 class SyncChange(BaseModel):

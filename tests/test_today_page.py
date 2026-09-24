@@ -1,4 +1,4 @@
-"""Today: the seven blocks, and the rule that makes them trustworthy — every
+"""Today: the eight blocks, and the rule that makes them trustworthy — every
 count is the length of the very list its link opens. The old Overview said
 "Open issues 0" while a dozen open phone records sat in the database; this test
 puts records, a phone event, a low stock item and a PM plan in and checks each
@@ -158,6 +158,6 @@ for width, want in ((1400, 3), (1000, 2), (700, 1)):
             for i in range(page._grid.count())}
     H.check(page._cols == want and max(cols) <= want,
             '{} px wide: {} column(s), nothing past the edge'.format(width, page._cols))
-H.check(page._grid.count() == 7, 'all seven panels are still on the board')
+H.check(page._grid.count() == 8, 'all eight panels are still on the board')
 
 H.finish()

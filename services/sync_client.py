@@ -479,6 +479,99 @@ def pull_checklists() -> dict:
     return stats
 
 
+def push_action_items() -> dict:
+    """Publish the office's action list, so the items given to a technician
+    reach their phone. Failures are non-fatal — the items stay unsynced and go
+    on the next cycle."""
+    from services import action_list_service as als
+    stats = {"pushed": 0, "errors": 0}
+    items = [i for i in als.items_for_sync()
+             if i.get("uuid") and i.get("project_id")]
+    for i in range(0, len(items), 100):
+        batch = items[i:i + 100]
+        try:
+            resp = _request("put", "/action-items", json={"items": batch})
+        except RequestException:
+            stats["errors"] += len(batch)
+            break
+        if resp.status_code != 200:
+            # 404 / 405: a server without the action list yet. Nothing is
+            # marked synced, so it all goes up once that server is deployed.
+            stats["errors"] += len(batch)
+            break
+        # An item the server kept (its copy was written later than ours) is
+        # NOT published: marking it synced would leave the office's correction
+        # sitting here for good, because nothing would ever offer it again.
+        try:
+            kept = set(resp.json().get("kept_uuids") or ())
+        except ValueError:
+            kept = set()
+        for it in batch:
+            if it["uuid"] in kept:
+                stats["kept"] = stats.get("kept", 0) + 1
+                continue
+            als.mark_synced(it["uuid"])      # only this service writes the table
+            stats["pushed"] += 1
+    return stats
+
+
+def _apply_action_item(item: dict) -> bool:
+    """One finished action item from a phone, handed to the service that owns
+    the table. False when it belongs to another desktop or the local copy is
+    the later one."""
+    from services import action_list_service as als
+    return als.apply_remote(item)
+
+
+def pull_action_items() -> dict:
+    """Pull the action items the phones finished. Last writer by updated_at
+    wins, so an item corrected in the office after the phone sent it keeps the
+    office's version (both sides stamp UTC — see action_list_service._now)."""
+    stats = {"applied": 0, "errors": 0}
+    _retry_inbox("action_item", _apply_action_item, stats)
+    cursor = str(sync_config.action_cursor or "0")
+    # The cursor is (updated_at, uuid): a publish of a whole list shares one
+    # second, and a timestamp-only cursor stepped over the rest of it.
+    cursor_uuid = str(sync_config.action_cursor_uuid or "")
+
+    while True:
+        try:
+            resp = _request("get", "/action-items",
+                            params={"since": cursor, "since_uuid": cursor_uuid})
+            if resp.status_code != 200:
+                if resp.status_code != 404:   # 404: a server without the list
+                    stats["errors"] += 1
+                break
+            body = resp.json()
+        except RequestException:
+            stats["errors"] += 1
+            break
+
+        for item in body.get("items", []):
+            try:
+                if _apply_action_item(item):
+                    stats["applied"] += 1
+            except Exception as ex:                      # noqa: BLE001
+                # sync_inbox is keyed on item['id']; an action item is named
+                # by its uuid, so it is carried under both names rather than
+                # letting the retry queue itself raise a KeyError.
+                _inbox_put("action_item", item, ex)
+                stats["errors"] += 1
+
+        new_cursor = body.get("cursor") or cursor
+        new_uuid = body.get("cursor_uuid") or ""     # '' on an older server
+        moved = (new_cursor, new_uuid) != (cursor, cursor_uuid)
+        if moved:
+            cursor, cursor_uuid = new_cursor, new_uuid
+            sync_config.action_cursor = cursor
+            sync_config.action_cursor_uuid = cursor_uuid
+            sync_config.save()
+        if not body.get("has_more", False) or not moved:
+            break                       # a cursor standing still must not loop
+
+    return stats
+
+
 def pull_users() -> int:
     """Mirror the server's accounts locally so the office can pick a
     technician offline. Non-fatal: an older server has no such route, and the
@@ -529,6 +622,14 @@ def push_stock():
 # while the phone showed it as sent. Now it waits in sync_inbox and is retried
 # at the start of every pull until it applies.
 
+def _inbox_key(item: dict) -> str:
+    """What names this item in the inbox. Work entries and phone events carry
+    'id'; checklists and action items carry 'uuid'. Reading only 'id' meant the
+    error handler itself raised KeyError — a failure while applying a checklist
+    took the sync down instead of parking the row for the next attempt."""
+    return str(item.get('id') or item.get('uuid') or '')
+
+
 def _inbox_put(kind: str, item: dict, error) -> None:
     conn = get_connection()
     try:
@@ -538,7 +639,7 @@ def _inbox_put(kind: str, item: dict, error) -> None:
             ON CONFLICT(kind, item_id) DO UPDATE SET
                 payload=excluded.payload, error=excluded.error,
                 attempts=sync_inbox.attempts + 1, last_try=datetime('now')
-        """, (kind, str(item["id"]), json.dumps(item, default=str), str(error)[:300]))
+        """, (kind, _inbox_key(item), json.dumps(item, default=str), str(error)[:300]))
         conn.commit()
     finally:
         conn.close()
@@ -578,7 +679,7 @@ def _retry_inbox(kind: str, apply_fn, stats: dict) -> None:
         try:
             if apply_fn(item):
                 stats["applied"] += 1
-            _inbox_done(kind, item["id"])
+            _inbox_done(kind, _inbox_key(item))
         except Exception as ex:
             _inbox_put(kind, item, ex)
 
@@ -1070,6 +1171,9 @@ def sync_now() -> SyncResult:
     # PM checklists: publish what is planned, then take back what was ticked.
     push_checklists()
     cl_stats = pull_checklists()
+    # The action list: publish it, then take back what the phones finished.
+    push_action_items()
+    ai_stats = pull_action_items()
     download_pending_remote_images()
     # the phones' photos, also in folders a person can find (date, block, fault)
     try:
@@ -1092,6 +1196,7 @@ def sync_now() -> SyncResult:
         errors    = (push_stats.get("errors", 0) + pull_stats.get("errors", 0)
                      + max(len(inbox_waiting()),
                            wo_stats.get("errors", 0) + ev_stats.get("errors", 0)
-                           + cl_stats.get("errors", 0))),
+                           + cl_stats.get("errors", 0)
+                           + ai_stats.get("errors", 0))),
         skipped   = 0,
     )

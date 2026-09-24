@@ -18,6 +18,7 @@ recomputed here:
   phones      what is still unsent and what the server refused
   stock       items at or below their minimum for this project's warehouse
   now         what is open right now: downtime events and "needs visit"
+  actions     the office's action list: overdue or due within a week
 """
 import datetime
 from typing import List, Optional
@@ -243,11 +244,26 @@ def happening_now(project_id: int, year: int, month: int,
     return out
 
 
+# ── 8 · Action list ─────────────────────────────────────────────────────────
+def actions(project_id: int, today: datetime.date = None,
+            days: int = 7) -> List[dict]:
+    """Open action items already overdue or due within a week — the
+    organisational list, not plant work. One call into the service that owns
+    the table, and the Plan page's own filter calls the same one, so the count
+    here is exactly the list its link opens."""
+    try:
+        import services.action_list_service as als
+        return als.due_soon(project_id, today=today, days=days)
+    except Exception:                                    # noqa: BLE001
+        return []
+
+
 def summary(project_id: int, year: int, month: int,
             today: datetime.date = None) -> dict:
     """Everything the Today page draws, in one call."""
     faults = open_faults(project_id, today=today)
     return {
+        'actions': actions(project_id, today=today),
         'decisions': decisions(project_id, year, month, today=today),
         'faults': faults,
         'stale': stale_faults(faults),

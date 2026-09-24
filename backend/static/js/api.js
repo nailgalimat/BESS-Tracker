@@ -140,6 +140,25 @@ const API = (() => {
     return _req('POST', `/checklists/runs/${encodeURIComponent(runUuid)}/results`, payload);
   }
 
+  // ── Action list ────────────────────────────────────────────────────────────
+
+  /** One page of the action items given to THIS account at this project:
+      { items: [{ uuid, topic, todo, due_date, … }], cursor, has_more }.
+      `after` is the cursor from the previous page — keep asking while
+      has_more is true. The server sends nobody else's items. */
+  async function getActionItems(projectId, after) {
+    let path = `/action-items/assigned?project_id=${encodeURIComponent(projectId)}`;
+    if (after) path += `&after=${encodeURIComponent(after)}`;
+    return _req('GET', path);
+  }
+
+  /** Send back the completion. payload = { status, done_note, done_by,
+      done_at, updated_at }. The topic, the due date and the assignment are
+      the office's and are not sent. */
+  async function postActionDone(uuid, payload) {
+    return _req('POST', `/action-items/${encodeURIComponent(uuid)}/done`, payload);
+  }
+
   // ── Sync ─────────────────────────────────────────────────────────────────────
 
   /**
@@ -197,5 +216,6 @@ const API = (() => {
   // ── Public API ───────────────────────────────────────────────────────────────
   return { login, logout, ping, getProjects, pullDelta, pushChanges, uploadImage,
            getStock, postWriteoff, postEvent,
-           getChecklists, postChecklistResults };
+           getChecklists, postChecklistResults,
+           getActionItems, postActionDone };
 })();

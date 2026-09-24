@@ -10,7 +10,7 @@
  * app did not open on site.
  */
 
-const V      = '19';
+const V      = '20';
 const CACHE  = 'bess-v' + V;
 const SHELL  = [
   '/app/',
@@ -53,7 +53,8 @@ self.addEventListener('fetch', e => {
 
   // API calls → network-only (no cache)
   const isApi = ['/auth/', '/sync/', '/worklogs/', '/projects', '/stock', '/events',
-                 '/checklists', '/health'].some(p => url.pathname.startsWith(p));
+                 '/checklists', '/action-items', '/health']
+                .some(p => url.pathname.startsWith(p));
   if (isApi) {
     e.respondWith(
       fetch(e.request).catch(() =>

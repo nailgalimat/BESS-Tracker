@@ -1109,6 +1109,46 @@ def initialize_database():
         if "locked_at" not in _rm_cols:
             c.execute("ALTER TABLE report_months ADD COLUMN locked_at TEXT")
 
+        # ── Action list ───────────────────────────────────────────────────
+        # Organisational action items — "confirm the EPC bought the spare
+        # parts", "get the HVAC BOM" — kept in the customer's own Excel sheet
+        # until now. They have no plant block, no equipment and no hours, and
+        # they are deliberately NOT work_log_entries: the Work journal is the
+        # plant's work record and the monthly report is built from it, so an
+        # action item written there would turn up in section 3.2 or in the PM
+        # hours. Its own table is what keeps it out.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS action_items (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                uuid          TEXT,              -- names the row on the phone too
+                project_id    INTEGER,
+                seq           INTEGER,           -- the sheet's "No."
+                topic         TEXT NOT NULL DEFAULT '',
+                description   TEXT NOT NULL DEFAULT '',
+                todo          TEXT NOT NULL DEFAULT '',   -- "Remarks / To do"
+                due_date      TEXT NOT NULL DEFAULT '',   -- YYYY-MM-DD
+                assigned_to   TEXT NOT NULL DEFAULT '',   -- the server's user id
+                assigned_name TEXT NOT NULL DEFAULT '',   -- cached for an offline phone
+                status        TEXT NOT NULL DEFAULT 'open',
+                done_at       TEXT NOT NULL DEFAULT '',
+                done_note     TEXT NOT NULL DEFAULT '',
+                done_by       TEXT NOT NULL DEFAULT '',
+                source        TEXT NOT NULL DEFAULT 'desktop',  -- excel|desktop|phone
+                source_ref    TEXT NOT NULL DEFAULT '',   -- the file it was imported from
+                sync_status   TEXT NOT NULL DEFAULT 'local',
+                created_at    TEXT DEFAULT (datetime('now')),
+                updated_at    TEXT,
+                deleted_at    TEXT,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            )
+        """)
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_action_items_uuid "
+                  "ON action_items(uuid) WHERE uuid IS NOT NULL")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_action_items_project "
+                  "ON action_items(project_id, status)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_action_items_due "
+                  "ON action_items(project_id, due_date)")
+
         # ── ENSURE MAIN WAREHOUSE EXISTS ──────────────────────────────────
         existing = c.execute(
             "SELECT id FROM warehouses WHERE is_main=1"

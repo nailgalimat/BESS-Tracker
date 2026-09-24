@@ -3,11 +3,11 @@
 Replaces Overview, which counted the wrong things ("Open issues 0" with a
 dozen open phone records) and showed a maintenance event from four months ago.
 
-Seven blocks, in a fixed order, each built from today_service:
+Eight blocks, in a fixed order, each built from today_service:
 
   1 Needs your decision   2 Month data and report   3 Open faults
   4 PM campaign           5 Happening now           6 Phones and sync
-  7 Stock below minimum
+  7 Stock below minimum   8 Action list
 
 Two rules the page keeps:
   * every count is `len(rows)` of the very list its link opens — the page
@@ -190,6 +190,7 @@ class TodayPage(QWidget):
         self.p_now = Panel("Happening now")
         self.p_phones = Panel("Phones and sync")
         self.p_stock = Panel("Stock below minimum")
+        self.p_actions = Panel("Action list")
 
         self._grid = grid
         self._cols = 0
@@ -207,9 +208,10 @@ class TodayPage(QWidget):
         grid = self._grid
         while grid.count():
             grid.takeAt(0)
-        wide = [self.p_decisions, self.p_faults]          # these carry lists
+        # these carry lists, so they get the wide slot
+        wide = [self.p_decisions, self.p_faults, self.p_actions]
         order = [self.p_decisions, self.p_month, self.p_faults, self.p_pm,
-                 self.p_now, self.p_phones, self.p_stock]
+                 self.p_now, self.p_phones, self.p_stock, self.p_actions]
         for c in range(3):
             grid.setColumnStretch(c, 0)
         if cols >= 3:
@@ -220,10 +222,11 @@ class TodayPage(QWidget):
             grid.addWidget(self.p_now,       2, 0, 1, 1)
             grid.addWidget(self.p_phones,    2, 1, 1, 1)
             grid.addWidget(self.p_stock,     2, 2, 1, 1)
+            grid.addWidget(self.p_actions,   3, 0, 1, 3)
             grid.setColumnStretch(0, 3)
             grid.setColumnStretch(1, 3)
             grid.setColumnStretch(2, 2)
-            grid.setRowStretch(3, 1)
+            grid.setRowStretch(4, 1)
             return
         row, col = 0, 0
         for panel in order:
@@ -265,7 +268,7 @@ class TodayPage(QWidget):
 
     def refresh(self):
         for p in (self.p_decisions, self.p_month, self.p_faults, self.p_pm,
-                  self.p_now, self.p_phones, self.p_stock):
+                  self.p_now, self.p_phones, self.p_stock, self.p_actions):
             p.clear()
             p.set_count(0)
             p.set_link("", None)
@@ -282,7 +285,7 @@ class TodayPage(QWidget):
             return
         self._data = data
         quiet = not (data['decisions'] or data['faults'] or data['now']
-                     or data['stock'])
+                     or data['stock'] or data.get('actions'))
         sync = data['phones']
         self.head_lbl.setText(
             f"{self._name} · {today.strftime('%d.%m.%Y')}"
@@ -297,6 +300,7 @@ class TodayPage(QWidget):
         self._fill_now(data['now'])
         self._fill_phones(sync)
         self._fill_stock(data['stock'])
+        self._fill_actions(data.get('actions') or [])
 
     # ── blocks ───────────────────────────────────────────────────────────
     def _fill_decisions(self, rows):
@@ -412,3 +416,29 @@ class TodayPage(QWidget):
                   f"{r.get('quantity'):g} left · min {r.get('min_quantity'):g}",
                   chip="Reorder", chip_kind='crit')
         p.set_link("Spare parts →", lambda: self._open(ts.T_STOCK))
+
+    def _fill_actions(self, rows):
+        """The office's own list — confirmations, BOMs, certificates. Nothing
+        here is plant work, so nothing here reaches the customer's report."""
+        p = self.p_actions
+        p.set_count(len(rows))
+        if not rows:
+            p.empty("Nothing due in the next seven days.")
+            p.set_link("Action list →",
+                       lambda: self._open(ts.T_PLAN, {'tab': 'actions'}))
+            return
+        for r in rows[:6]:
+            who = r.get('assigned_name') or ''
+            p.row(f"<b>{r.get('topic') or '(no topic)'}</b>"
+                  + (f" — {(r.get('todo') or '').splitlines()[0]}"
+                     if r.get('todo') else ''),
+                  (r.get('due_date') or '') + (f" · {who}" if who else ''),
+                  chip="Overdue" if r.get('overdue') else "Due",
+                  chip_kind='crit' if r.get('overdue') else 'warn')
+        if len(rows) > 6:
+            p.row(f"+ {len(rows) - 6} more")
+        # The filter opens exactly these rows: the page asks the same service
+        # function this count came from.
+        p.set_link(f"Open {len(rows)} action item(s) →",
+                   lambda: self._open(ts.T_PLAN, {'tab': 'actions',
+                                                  'due': 'soon'}))

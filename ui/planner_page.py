@@ -3,10 +3,14 @@ ui/planner_page.py
 -------------------
 Work planner — the forward half of the app.
 
-Three views over one list of jobs:
-  Schedule   what is planned for a month or a day, filtered by type
-  PM due     which blocks are overdue, so a campaign starts where it hurts
-  Campaigns  the rolling PM rounds and imported plans
+Views over one list of jobs, plus two lists that are not jobs:
+  Schedule    what is planned for a month or a day, filtered by type
+  PM due      which blocks are overdue, so a campaign starts where it hurts
+  Campaigns   the rolling PM rounds and imported plans
+  Checklists  the customer's PM checklists, per block
+  Action list the office's organisational actions — no block, no hours, and
+              deliberately outside the work journal so that nothing on it can
+              reach the customer's monthly report
 
 Marking a PM job done writes the `pm_activities` row the monthly report reads,
 so the plan is the source of the report's PM hours rather than a separate list
@@ -22,7 +26,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QTableWidget, QTableWidgetItem, QTabWidget, QMessageBox,
     QAbstractItemView, QDialog, QDialogButtonBox, QSpinBox, QDoubleSpinBox,
     QDateEdit, QCheckBox, QFileDialog, QTextEdit, QFormLayout, QGroupBox,
-    QApplication, QHeaderView,
+    QApplication, QHeaderView, QInputDialog,
 )
 from PyQt5.QtCore import Qt, QDate
 from PyQt5.QtGui import QColor
@@ -729,6 +733,206 @@ class _ChecklistFillDialog(QDialog):
                 'signed_by': self.signed.text().strip()}
 
 
+class _ActionImportDialog(QDialog):
+    """The action list from a spreadsheet, showing what maps to what first.
+
+    Importing the same sheet again is the normal case — it is a living
+    document — so the dialog says out loud what a re-import does.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Import the action list')
+        self.setMinimumSize(700, 460)
+        self._preview = None
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+
+        row = QHBoxLayout()
+        self.path = QLineEdit()
+        self.path.setPlaceholderText('action list.xlsx')
+        row.addWidget(self.path, 1)
+        b = SecondaryButton('Browse…'); b.clicked.connect(self._browse)
+        row.addWidget(b)
+        lay.addLayout(row)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Sheet:'))
+        self.sheet = QComboBox(); self.sheet.setMinimumWidth(170)
+        self.sheet.currentIndexChanged.connect(self._reread)
+        row.addWidget(self.sheet)
+        row.addStretch()
+        lay.addLayout(row)
+
+        self.info = QLabel('Choose a file — the columns are matched '
+                           'automatically, and you can correct the match below.')
+        self.info.setWordWrap(True)
+        self.info.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        lay.addWidget(self.info)
+
+        self.map_tbl = QTableWidget(0, 2)
+        self.map_tbl.setHorizontalHeaderLabels(['Column in the file', 'Means'])
+        self.map_tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.map_tbl.verticalHeader().setVisible(False)
+        lay.addWidget(self.map_tbl, 1)
+
+        note = QLabel('Importing the same sheet again updates the rows that '
+                      'really changed and adds the new ones. An item already '
+                      'here that is no longer in the file is kept, not deleted '
+                      '— somebody may have been working on it.')
+        note.setWordWrap(True); note.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        lay.addWidget(note)
+
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.button(QDialogButtonBox.Ok).setText('Import')
+        box.accepted.connect(self.accept); box.rejected.connect(self.reject)
+        lay.addWidget(box)
+
+    FIELDS = [('', '— ignore —'), ('seq', 'No.'), ('topic', 'Topic'),
+              ('description', 'Description'), ('todo', 'Remarks / To do'),
+              ('due_date', 'Target date'), ('assigned_name', 'Owner'),
+              ('status', 'Status')]
+
+    def _browse(self):
+        f, _ = QFileDialog.getOpenFileName(self, 'Action list', '',
+                                           'Excel (*.xlsx *.xls)')
+        if not f:
+            return
+        self.path.setText(f)
+        try:
+            import openpyxl
+            names = openpyxl.load_workbook(f, read_only=True).sheetnames
+        except Exception:                             # noqa: BLE001
+            names = []
+        self.sheet.blockSignals(True)
+        self.sheet.clear()
+        for n in (names or ['']):
+            self.sheet.addItem(n or 'first sheet', n or 0)
+        self.sheet.blockSignals(False)
+        self._reread()
+
+    def _reread(self):
+        f = self.path.text().strip()
+        if not f:
+            return
+        import services.action_list_service as als
+        try:
+            self._preview = als.preview_excel(f, sheet=self.sheet.currentData())
+        except Exception as e:                        # noqa: BLE001
+            QMessageBox.warning(self, 'Cannot read', str(e))
+            return
+        pv = self._preview
+        self.info.setText(
+            f"{pv['rows']} row(s). Matched {len(pv['mapping'])} of "
+            f"{len(pv['columns'])} columns — correct anything that is wrong.")
+        self.map_tbl.setRowCount(0)
+        for col in pv['columns']:
+            i = self.map_tbl.rowCount()
+            self.map_tbl.insertRow(i)
+            self.map_tbl.setItem(i, 0, QTableWidgetItem(str(col)))
+            cb = QComboBox()
+            for code, label in self.FIELDS:
+                cb.addItem(label, code)
+            j = cb.findData(pv['mapping'].get(col, ''))
+            cb.setCurrentIndex(j if j >= 0 else 0)
+            self.map_tbl.setCellWidget(i, 1, cb)
+
+    def values(self):
+        mapping = {}
+        for i in range(self.map_tbl.rowCount()):
+            col = self.map_tbl.item(i, 0).text()
+            cb = self.map_tbl.cellWidget(i, 1)
+            code = cb.currentData() if cb else ''
+            if code:
+                mapping[col] = code
+        return (self.path.text().strip(), mapping,
+                self.sheet.currentData() if self.sheet.count() else 0)
+
+
+class _ActionItemDialog(QDialog):
+    """One action item by hand. No block, no hours, no equipment — this is the
+    office's own list, and nothing on it belongs in the customer's report."""
+
+    def __init__(self, users, item=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Action item')
+        self.setMinimumWidth(560)
+        it = item or {}
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+        form = QFormLayout()
+
+        self.seq = QSpinBox(); self.seq.setRange(0, 9999)
+        self.seq.setSpecialValueText('—')
+        self.seq.setValue(int(it.get('seq') or 0))
+        form.addRow('No.:', self.seq)
+
+        self.topic = QLineEdit(it.get('topic') or '')
+        self.topic.setPlaceholderText('Spare parts of EPC')
+        form.addRow('Topic:', self.topic)
+
+        self.description = QTextEdit(it.get('description') or '')
+        self.description.setPlaceholderText('26 battery packs\nany others spare parts?')
+        self.description.setFixedHeight(80)
+        form.addRow('Description:', self.description)
+
+        self.todo = QTextEdit(it.get('todo') or '')
+        self.todo.setPlaceholderText('Confirm EPC purchased, compare with Annex 13')
+        self.todo.setFixedHeight(70)
+        form.addRow('Remarks / To do:', self.todo)
+
+        self.due = QDateEdit(); self.due.setCalendarPopup(True)
+        self.due.setDisplayFormat('yyyy-MM-dd')
+        self.has_due = QCheckBox('has a target date')
+        self.has_due.setChecked(bool(it.get('due_date')))
+        self.due.setDate(QDate.fromString(it.get('due_date') or '', 'yyyy-MM-dd')
+                         if it.get('due_date') else QDate.currentDate())
+        due_row = QHBoxLayout(); due_row.addWidget(self.due); due_row.addWidget(self.has_due)
+        due_row.addStretch()
+        form.addRow('Target date:', due_row)
+
+        self.who = QComboBox()
+        self.who.addItem('— nobody —', '')
+        for u in (users or []):
+            self.who.addItem(f"{u['username']}  ({u['role'] or 'user'})", u['id'])
+        j = self.who.findData(str(it.get('assigned_to') or ''))
+        self.who.setCurrentIndex(j if j >= 0 else 0)
+        form.addRow('Assigned to:', self.who)
+
+        self.status = QComboBox()
+        import services.action_list_service as als
+        for s in als.STATUSES:
+            self.status.addItem(s.title(), s)
+        k = self.status.findData(it.get('status') or 'open')
+        self.status.setCurrentIndex(max(0, k))
+        form.addRow('Status:', self.status)
+        lay.addLayout(form)
+
+        note = QLabel('An action item is organisational — it never reaches the '
+                      'customer\'s monthly report, and it carries no block, no '
+                      'hours and no availability.')
+        note.setWordWrap(True); note.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        lay.addWidget(note)
+
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(self.accept); box.rejected.connect(self.reject)
+        lay.addWidget(box)
+
+    def values(self):
+        return {
+            'seq': self.seq.value() or None,
+            'topic': self.topic.text().strip(),
+            'description': self.description.toPlainText().strip(),
+            'todo': self.todo.toPlainText().strip(),
+            'due_date': (self.due.date().toString('yyyy-MM-dd')
+                         if self.has_due.isChecked() else ''),
+            'assigned_to': self.who.currentData() or '',
+            'assigned_name': (self.who.currentText().split('  (')[0]
+                              if self.who.currentData() else ''),
+            'status': self.status.currentData(),
+        }
+
+
 class _TypeDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -838,6 +1042,7 @@ class PlannerPage(QWidget):
         self.tabs.addTab(self._tab_due(), 'PM due')
         self.tabs.addTab(self._tab_plans(), 'Campaigns')
         self.tabs.addTab(self._tab_checklists(), 'Checklists')
+        self.tabs.addTab(self._tab_actions(), 'Action list')
         self.tabs.currentChanged.connect(self._on_tab)
         root.addWidget(self.tabs, 1)
 
@@ -973,6 +1178,65 @@ class PlannerPage(QWidget):
         lay.addLayout(row)
         return w
 
+    def _tab_actions(self):
+        """The office's action list: what has to be confirmed, ordered,
+        submitted or trained. Not plant work — it never reaches the
+        customer's monthly report."""
+        w = QWidget(); lay = QVBoxLayout(w)
+        lay.setContentsMargins(20, 12, 20, 12); lay.setSpacing(8)
+        cap = QLabel('Organisational actions — confirmations, BOMs, '
+                     'certificates, training. They carry no block and no '
+                     'hours, so nothing here reaches the customer\'s monthly '
+                     'report. An item given to a person shows up in Tasks on '
+                     'that phone after the next sync.')
+        cap.setWordWrap(True); cap.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        lay.addWidget(cap)
+
+        row = QHBoxLayout()
+        b = SecondaryButton('⤓  Import from Excel…')
+        b.setToolTip('Importing the same sheet again updates what changed and '
+                     'adds what is new — nothing already worked on is lost.')
+        b.clicked.connect(self._import_actions)
+        row.addWidget(b)
+        b = PrimaryButton('＋  Add item…')
+        b.clicked.connect(self._add_action)
+        row.addWidget(b)
+        row.addSpacing(12)
+        row.addWidget(QLabel('Show:'))
+        self.act_filter = QComboBox(); self.act_filter.setMinimumWidth(190)
+        for label, data in (('Open items', 'open'),
+                            ('Overdue or due in 7 days', 'soon'),
+                            ('Everything', 'all'),
+                            ('Done', 'done')):
+            self.act_filter.addItem(label, data)
+        self.act_filter.currentIndexChanged.connect(self._fill_actions)
+        row.addWidget(self.act_filter)
+        row.addStretch()
+        lay.addLayout(row)
+
+        self.act_tbl = make_table(['No.', 'Topic', 'To do', 'Due',
+                                   'Assigned to', 'Status'])
+        self.act_tbl.doubleClicked.connect(self._edit_action)
+        lay.addWidget(self.act_tbl, 1)
+
+        row = QHBoxLayout()
+        for label, slot, primary in (
+            ('✎  Edit…', self._edit_action, True),
+            ('👤  Assign…', self._assign_action, False),
+            ('✓  Mark done…', self._done_action, False),
+            ('⤒  Export to Excel…', self._export_actions, False),
+            ('🗑  Delete', self._delete_action, False),
+        ):
+            btn = (PrimaryButton if primary else SecondaryButton)(label)
+            btn.clicked.connect(slot)
+            row.addWidget(btn)
+        row.addStretch()
+        hint = QLabel('Double-click a row to edit it.  Overdue items are red.')
+        hint.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        row.addWidget(hint)
+        lay.addLayout(row)
+        return w
+
     # ── project scoping ──────────────────────────────────────────────────
     def _load_projects(self):
         self.project_combo.blockSignals(True)
@@ -1030,6 +1294,8 @@ class PlannerPage(QWidget):
             self._load_plans()
         elif self.tabs.currentIndex() == 3:
             self._load_checklists()
+        elif self.tabs.currentIndex() == 4:
+            self._fill_actions()
 
     def _on_tab(self, i):
         if i == 1:
@@ -1038,6 +1304,20 @@ class PlannerPage(QWidget):
             self._load_plans()
         elif i == 3:
             self._load_checklists()
+        elif i == 4:
+            self._fill_actions()
+
+    def apply_filter(self, flt: dict):
+        """A count on the Today screen opens the list that holds exactly those
+        rows. Only the action list is addressed this way so far."""
+        if (flt or {}).get('tab') != 'actions':
+            return
+        self.tabs.setCurrentIndex(4)
+        want = (flt or {}).get('due') or 'open'
+        i = self.act_filter.findData(want)
+        if i >= 0:
+            self.act_filter.setCurrentIndex(i)
+        self._fill_actions()
 
     def _fill_schedule(self):
         self.tbl.setRowCount(0)
@@ -1335,6 +1615,195 @@ class PlannerPage(QWidget):
         import services.checklist_pm_service as cs
         cs.delete_run(r['uuid'])
         self._load_checklists()
+
+    # ── action list ──────────────────────────────────────────────────────
+    def _action_rows(self):
+        """The rows the current filter asks for. "Overdue or due in 7 days"
+        goes through the very function the Today screen counts, so the count
+        there and the list here can never disagree."""
+        import services.action_list_service as als
+        what = self.act_filter.currentData()
+        if what == 'soon':
+            return als.due_soon(self._project_id)
+        if what == 'done':
+            return als.items(self._project_id, status=als.DONE)
+        if what == 'all':
+            return als.items(self._project_id)
+        return als.items(self._project_id, include_done=False)
+
+    def _fill_actions(self):
+        if not self._project_id:
+            return
+        self.act_tbl.setRowCount(0)
+        for it in self._action_rows():
+            i = self.act_tbl.rowCount()
+            self.act_tbl.insertRow(i)
+            # the table is one line per item: a multi-line cell is shown as
+            # its first line, and the whole text sits in the tooltip
+            todo = (it.get('todo') or '').replace('\n', ' · ')
+            who = it.get('assigned_name') or (
+                '#' + it['assigned_to'] if it.get('assigned_to') else '')
+            vals = [str(it.get('seq') or ''), it.get('topic') or '', todo,
+                    it.get('due_date') or '', who,
+                    (it.get('status') or '').replace('_', ' ').title()]
+            for c, v in enumerate(vals):
+                cell = QTableWidgetItem(str(v))
+                if c == 0:
+                    cell.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.act_tbl.setItem(i, c, cell)
+            full = '\n\n'.join(x for x in (it.get('description'),
+                                           it.get('todo')) if x)
+            if full:
+                self.act_tbl.item(i, 1).setToolTip(full)
+                self.act_tbl.item(i, 2).setToolTip(it.get('todo') or '')
+            if it.get('overdue'):
+                for c in range(self.act_tbl.columnCount()):
+                    self.act_tbl.item(i, c).setForeground(QColor('#B4232A'))
+            elif (it.get('status') or '') == 'done':
+                self.act_tbl.item(i, 5).setForeground(QColor('#1E8E3E'))
+            self.act_tbl.item(i, 0).setData(Qt.UserRole, it)
+
+    def _selected_action(self):
+        rows = (self.act_tbl.selectionModel().selectedRows()
+                if self.act_tbl.selectionModel() else [])
+        if not rows:
+            QMessageBox.information(self, 'Nothing selected',
+                                    'Pick an action item first.')
+            return None
+        return self.act_tbl.item(rows[0].row(), 0).data(Qt.UserRole)
+
+    def _team(self):
+        try:
+            return team.users()
+        except Exception:                             # noqa: BLE001
+            return []
+
+    def _import_actions(self):
+        if not self._project_id:
+            return
+        import services.action_list_service as als
+        dlg = _ActionImportDialog(self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        path, mapping, sheet = dlg.values()
+        if not path or not mapping:
+            QMessageBox.warning(self, 'Nothing to import',
+                                'Choose a file and say which column is which.')
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            res = als.import_from_excel(self._project_id, path, mapping,
+                                        sheet=sheet, log=lambda *_a: None)
+        except Exception as e:                        # noqa: BLE001
+            QMessageBox.critical(self, 'Could not import the action list', str(e))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.tabs.setCurrentIndex(4)
+        self._fill_actions()
+        extra = ''
+        if res['untouched']:
+            extra = ('\n\n{} item(s) here are not in this file and were kept:\n  '
+                     .format(len(res['untouched']))
+                     + '\n  '.join(res['untouched'][:8]))
+        QMessageBox.information(
+            self, 'Action list imported',
+            f"{res['added']} new, {res['updated']} updated, "
+            f"{res['unchanged']} unchanged." + extra)
+
+    def _add_action(self):
+        if not self._project_id:
+            return
+        import services.action_list_service as als
+        dlg = _ActionItemDialog(self._team(), None, self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        v = dlg.values()
+        if not v['topic']:
+            QMessageBox.warning(self, 'No topic', 'An item needs a topic.')
+            return
+        als.save(self._project_id, None, **v)
+        self._fill_actions()
+
+    def _edit_action(self):
+        it = self._selected_action()
+        if not it:
+            return
+        import services.action_list_service as als
+        dlg = _ActionItemDialog(self._team(), it, self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        als.save(self._project_id, it['uuid'], **dlg.values())
+        self._fill_actions()
+
+    def _assign_action(self):
+        it = self._selected_action()
+        if not it:
+            return
+        import services.action_list_service as als
+        users = self._team()
+        if not users:
+            QMessageBox.information(
+                self, 'No people yet',
+                'The list of accounts comes from the sync server. Sync once '
+                '(🔄 in the toolbar) and try again.')
+            return
+        dlg = _AssignDialog(users, 1, self)
+        dlg.setWindowTitle('Give this action item to…')
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        uid, name = dlg.values()
+        als.assign(it['uuid'], uid, name)
+        self._fill_actions()
+        QMessageBox.information(
+            self, 'Assigned',
+            f"“{it['topic']}” is {name}'s — it appears in Tasks on that phone "
+            f"after the next sync.")
+
+    def _done_action(self):
+        it = self._selected_action()
+        if not it:
+            return
+        import services.action_list_service as als
+        note, ok = QInputDialog.getMultiLineText(
+            self, 'Mark done', f"{it['topic']}\n\nWhat was the outcome? "
+                               f"(optional — it goes in the export)", '')
+        if not ok:
+            return
+        als.mark_done(it['uuid'], note=note.strip(),
+                      by=(it.get('assigned_name') or ''), source='desktop')
+        self._fill_actions()
+
+    def _delete_action(self):
+        it = self._selected_action()
+        if not it:
+            return
+        if QMessageBox.question(
+                self, 'Delete',
+                f"Delete “{it['topic']}”?\nIt disappears from the phones on "
+                f"the next sync.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        import services.action_list_service as als
+        als.delete(it['uuid'])
+        self._fill_actions()
+
+    def _export_actions(self):
+        if not self._project_id:
+            return
+        import services.action_list_service as als
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Export the action list', 'Action list.xlsx', 'Excel (*.xlsx)')
+        if not path:
+            return
+        try:
+            res = als.export_excel(self._project_id, path)
+        except Exception as e:                        # noqa: BLE001
+            QMessageBox.critical(self, 'Could not export', str(e))
+            return
+        QMessageBox.information(
+            self, 'Exported',
+            f"{res['rows']} item(s), with the status, who did it and when.")
 
     # ── actions ──────────────────────────────────────────────────────────
     def _selected_item(self):

@@ -185,6 +185,42 @@ class ChecklistRun(Base):
     deleted_at    = Column(String, nullable=True)
 
 
+# ── Action list ──────────────────────────────────────────────────────────────
+# Organisational action items the office keeps in a spreadsheet — "confirm the
+# EPC purchased the spare parts", "get the HVAC BOM". They have no plant block
+# and no hours, and they are a table of their own so that nothing here can ever
+# reach the customer's monthly report through the work journal.
+# The desktop owns the list; a phone owns the completion of what it was given.
+
+class ActionItem(Base):
+    __tablename__ = "action_items"
+
+    uuid          = Column(String, primary_key=True)
+    project_id    = Column(Integer, nullable=False, index=True)
+    seq           = Column(Integer, nullable=True)     # the sheet's "No."
+    topic         = Column(String, default="")
+    description   = Column(Text,   default="")
+    todo          = Column(Text,   default="")
+    due_date      = Column(String, default="")         # YYYY-MM-DD
+    # Who it is for: the server's own user id, plus the name cached for a
+    # phone that has never seen the account list.
+    assigned_to   = Column(String, default="", index=True)
+    assigned_name = Column(String, default="")
+    status        = Column(String, default="open")     # open|in progress|done|dropped
+    done_at       = Column(String, default="")
+    done_note     = Column(Text,   default="")
+    done_by       = Column(String, default="")
+    # When this row last changed here — the desktop's pull cursor walks it, so
+    # it only ever moves forward.
+    updated_at    = Column(String, default=_now, nullable=False, index=True)
+    # When the writer actually wrote it: the technician's own stamp for an item
+    # finished at 12:30 in a container and uploaded at 14:00. This is what the
+    # two sides compare, so a late upload cannot overwrite an office correction
+    # made while the phone was out of signal.
+    client_updated_at = Column(String, nullable=True)
+    deleted_at    = Column(String, nullable=True)
+
+
 # ── Work log entries ──────────────────────────────────────────────────────────
 
 class WorkLogEntry(Base):

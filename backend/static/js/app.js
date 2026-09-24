@@ -169,12 +169,25 @@ const App = {
                         || when(a).localeCompare(when(b)));
 
     const events = (await DB.getAllFieldEvents()).filter(e => e.sync_status !== 'synced');
+
+    // The office's action items given to this person. They are NOT plant work
+    // — no block, no hours — so they are picked out here and drawn as their
+    // own kind of card below the jobs. An item with no target date is open
+    // work rather than today's work, so Today leaves it out.
+    const acts = (await DB.getAllActions()).filter(a => !a.deleted_at);
+    const openActs = acts.filter(a => !['done', 'dropped'].includes(a.status || ''));
+    const actRows = this._taskSeg === 'open' ? openActs : openActs.filter(a => {
+      if (!a.due_date) return false;
+      return this._taskSeg === 'today' ? a.due_date <= today
+                                       : a.due_date <= weekAhead;
+    });
+
     let html = '';
     if (events.length) {
       html += `<div class="task-note warn">${events.length} downtime record(s) still
                waiting to send · <b>Records</b> shows why</div>`;
     }
-    if (!rows.length) {
+    if (!rows.length && !actRows.length) {
       html += `<div class="empty">Nothing open ${this._taskSeg === 'today' ? 'today' : ''}.
                <br>Jobs the office gives you appear here after a sync.
                <br>Tap ＋ to write a record yourself.</div>`;
@@ -200,6 +213,21 @@ const App = {
           ${mine ? 'Open the job' : 'Open'}</button>
       </div>`;
     }
+    for (const a of actRows) {
+      const late = a.due_date && a.due_date < today;
+      html += `<div class="tcard action">
+        <div class="tcard-top"><span class="chip ${late ? 'crit' : 'pend'}">
+          Action item</span><span class="hint">${_esc(a.due_date || 'no date')}</span></div>
+        <div class="tcard-blk">${_esc(a.topic || '(no topic)')}</div>
+        <div class="tcard-meta">${_esc((a.todo || a.description || '')
+          .split('\n')[0])}</div>
+        <div class="tcard-from">No block — office action${
+          a.assigned_by ? ' · from ' + _esc(a.assigned_by) : ''}</div>
+        <button class="btn btn-outline btn-block"
+                onclick="App.openAction('${a.uuid}')">Open the action</button>
+      </div>`;
+    }
+
     // The PM checklists the office planned for this project — the other half
     // of a technician's day, and until v15 they were only on paper.
     const tpls = await DB.getMeta('checklist_templates', {}) || {};
@@ -1967,6 +1995,134 @@ const App = {
                            : '✓ Sent to the office.', r.error ? 'err' : 'ok');
   },
 
+  // ── Action items ────────────────────────────────────────────────────────────
+  // The office's own list — "confirm the EPC bought the spare parts", "get the
+  // HVAC BOM". No block, no hours, no report: what a technician does with one
+  // is say it is done and write a line about how. Everything is kept in
+  // IndexedDB, so a container with no signal changes nothing.
+  _act: null,
+
+  async openAction(uuid) {
+    const a = await DB.getAction(uuid);
+    if (!a) return;
+    this._act = a;
+    document.getElementById('act-title').textContent = a.topic || 'Action';
+    document.getElementById('act-topic').textContent = a.topic || '';
+    document.getElementById('act-from').textContent =
+      'No block — office action'
+      + (a.assigned_by ? ' · from ' + a.assigned_by : '')
+      + (a.due_date ? ' · due ' + a.due_date : '');
+    document.getElementById('act-ask').textContent =
+      [a.description || '', a.todo || ''].filter(Boolean).join('\n\n');
+    document.getElementById('act-note').value = a.done_note || '';
+    document.getElementById('act-error').style.display = 'none';
+    this._actBanner('', '');
+    this._show('screen-action');
+  },
+
+  _actBanner(text, kind) {
+    const b = document.getElementById('act-banner');
+    if (!b) return;
+    b.textContent = text || '';
+    b.className = 'sync-bar' + (kind === 'err' ? ' sync-bar-conflict'
+                              : kind === 'warn' ? ' sync-bar-warn' : '');
+    b.style.display = text ? 'block' : 'none';
+  },
+
+  /** Write the completion onto the item this phone holds. Saved at once: a
+      phone that dies on the way back must not take the answer with it. */
+  async _storeAction(done) {
+    const a = this._act;
+    if (!a) return null;
+    const note = document.getElementById('act-note').value.trim();
+    const next = Object.assign({}, a, {
+      done_note:   note,
+      status:      done ? 'done' : (a.status || 'open'),
+      done_at:     done ? new Date().toISOString() : (a.done_at || ''),
+      done_by:     localStorage.getItem('username') || a.done_by || '',
+      sync_status: 'local',
+      updated_at:  new Date().toISOString(),
+    });
+    await DB.saveAction(next);
+    this._act = next;
+    return next;
+  },
+
+  async saveAction() {
+    if (!await this._storeAction(false)) return;
+    this._actBanner('✓ Saved on the phone — it goes with the next sync.', '');
+    if (navigator.onLine) this._syncActions();
+  },
+
+  async completeAction() {
+    if (!await this._storeAction(true)) return;
+    if (navigator.onLine) {
+      this._actBanner('🔄 Sending…', '');
+      try { await this._syncActions(); } catch (_) {}
+    }
+    await this.goTasks();
+  },
+
+  /** Send what was finished, then take the list of what is assigned here. An
+      item with an unsent completion is never overwritten by the server's
+      copy — the work was done on this phone and nothing else has it yet. */
+  async _syncActions() {
+    let sent = 0, error = '';
+    try {
+      for (const a of await DB.getPendingActions()) {
+        try {
+          await API.postActionDone(a.uuid, {
+            status:    a.status || 'done',
+            done_note: a.done_note || '',
+            done_by:   a.done_by || localStorage.getItem('username') || '',
+            done_at:   a.done_at || '',
+            // When it was really finished, not when the phone found signal:
+            // the office may have corrected it in between, and the server
+            // needs the real order to know which copy is the later one.
+            updated_at: a.updated_at || '',
+          });
+          await DB.updateAction(a.uuid, { sync_status: 'synced', last_error: '' },
+                                a.updated_at);
+          sent++;
+        } catch (e) {
+          error = error || (e && e.message) || 'Upload failed';
+          await DB.updateAction(a.uuid, { sync_status: 'error', last_error: error },
+                                a.updated_at);
+        }
+      }
+      const pid = parseInt(localStorage.getItem('last_project_id'), 10);
+      if (pid) {
+        const seen = new Set();
+        let after = '', complete = false;
+        for (let page = 0; page < 50; page++) {
+          const got = await API.getActionItems(pid, after);
+          for (const it of (got.items || [])) {
+            seen.add(it.uuid);
+            const local = await DB.getAction(it.uuid);
+            if (local && local.sync_status && local.sync_status !== 'synced') continue;
+            await DB.saveAction(Object.assign({}, it, { sync_status: 'synced' }));
+          }
+          after = got.cursor || '';
+          if (!got.has_more || !after) { complete = true; break; }
+        }
+        // An item the office cancelled, or gave to somebody else, is gone
+        // from the assigned list, so it goes from the phone too — unless this
+        // phone still holds an answer nobody else has. A list that was cut
+        // short prunes nothing: that would hide items simply on a later page.
+        if (complete) {
+          for (const a of await DB.getAllActions()) {
+            if (a.project_id !== pid || seen.has(a.uuid) || a.deleted_at) continue;
+            if (a.sync_status && a.sync_status !== 'synced') continue;
+            await DB.updateAction(a.uuid, { deleted_at: new Date().toISOString() });
+          }
+        }
+      }
+    } catch (e) {
+      error = error || (e && e.message) || 'Could not reach the server';
+    }
+    return { sent, error };
+  },
+
   // ── Sync ───────────────────────────────────────────────────────────────────
   async syncNow() {
     const bar = document.getElementById('sync-bar');
@@ -2074,6 +2230,11 @@ const App = {
       const r = await this._syncChecklists();
       if (r.error) evError = evError || ('Checklists: ' + r.error);
     } catch (e) { evError = evError || ('Checklists: ' + (e.message || e)); }
+    // The action list: send what was finished, take what is assigned here.
+    try {
+      const r = await this._syncActions();
+      if (r.error) evError = evError || ('Action list: ' + r.error);
+    } catch (e) { evError = evError || ('Action list: ' + (e.message || e)); }
 
     // ── Push pending entries ──────────────────────────────────────────────────
     const pending = await DB.getPendingEntries();

@@ -10,7 +10,7 @@
   <title>BESS Field Log</title>
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="apple-touch-icon" href="/app/icons/icon-192.png" />
-  <link rel="stylesheet" href="/app/css/app.css?v=19" />
+  <link rel="stylesheet" href="/app/css/app.css?v=20" />
 </head>
 <body>
 
@@ -384,6 +384,36 @@
   </div>
 </div>
 
+<!-- ACTION ITEM — one item off the office's list. No block, no hours: it is
+     organisational work, and it never reaches the customer's report. -->
+<div id="screen-action" class="screen">
+  <header class="topbar">
+    <button class="icon-btn" onclick="App.goTasks()">‹</button>
+    <span class="topbar-title" id="act-title">Action</span>
+    <button id="act-save" class="topbar-save" onclick="App.saveAction()">Save</button>
+  </header>
+  <div class="sync-bar" id="act-banner" style="display:none"></div>
+  <div class="screen-body">
+    <div class="card action-head">
+      <div class="tcard-blk" id="act-topic">—</div>
+      <div class="tcard-meta" id="act-from">—</div>
+      <p class="task-ask" id="act-ask"></p>
+    </div>
+
+    <div class="form-group">
+      <label>How it was settled</label>
+      <textarea id="act-note" rows="3"
+                placeholder="what you confirmed, who said it, what is still open"></textarea>
+    </div>
+    <div id="act-error" class="error-msg" style="display:none"></div>
+    <button class="btn btn-primary btn-block" onclick="App.completeAction()">
+      ✓ Done — tell the office</button>
+    <p class="hint-line">This is an office action, not plant work: no block, no
+      hours, and nothing here goes into the customer's monthly report. Saving
+      keeps it on this phone; both go to the office on the next sync.</p>
+  </div>
+</div>
+
 <!-- MORE — sync, version, log out -->
 <div id="screen-settings" class="screen">
   <header class="topbar">
@@ -673,10 +703,10 @@
   <button class="tab" data-tab="more" onclick="App.goSettings()"><span>More</span></button>
 </nav>
 
-<script>window.APP_VERSION = 'v19';</script>
-<script src="/app/js/db.js?v=19"></script>
-<script src="/app/js/api.js?v=19"></script>
-<script src="/app/js/app.js?v=19"></script>
+<script>window.APP_VERSION = 'v20';</script>
+<script src="/app/js/db.js?v=20"></script>
+<script src="/app/js/api.js?v=20"></script>
+<script src="/app/js/app.js?v=20"></script>
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/app/sw.js').then(reg => {

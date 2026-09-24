@@ -750,6 +750,13 @@ body.has-tabs .fab      { bottom: calc(78px + var(--safe-bot)); }
 .tcard-from{ font-size:12px; color:#0058B0; margin:0 0 10px; }
 .task-head{ border-left:4px solid #0071E3; }
 .task-ask{ font-size:14px; color:#33465E; margin:8px 0 0; line-height:1.4; }
+/* an action item off the office's list: organisational, no block, no hours.
+   A different colour from a job on purpose — mistaking one for plant work is
+   what would put it in front of the customer. */
+.tcard.action{ border-color:#AF52DE; border-left:4px solid #AF52DE;
+               background:#FDFAFF; }
+.tcard.action .tcard-from{ color:#6B21A8; }
+.action-head{ border-left:4px solid #AF52DE; }
 
 /* form details */
 .hours-row{ display:grid; grid-template-columns:52px 1fr 52px; gap:8px;

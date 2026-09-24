@@ -33,7 +33,8 @@ from config import settings
 from database import engine, Base, SessionLocal
 from models.db_models import User
 from services.auth_service import hash_password
-from routers import auth, worklogs, images, sync, projects, stock, events, checklists
+from routers import (auth, worklogs, images, sync, projects, stock, events,
+                     checklists, action_items)
 
 
 # ── Structured logging ────────────────────────────────────────────────────────
@@ -179,7 +180,25 @@ async def lifespan(app: FastAPI):
                                     # the writer's own stamp, see
                                     # routers/checklists.py
                                     ("client_updated_at", "TEXT"),
-                                    ("deleted_at", "TEXT")))):
+                                    ("deleted_at", "TEXT"))),
+                # The office's action list. Same rule: create_all makes the
+                # table on a fresh server, an older deploy only gets the
+                # missing columns, so nothing that already works stops.
+                ("action_items", (("project_id", "INTEGER"),
+                                  ("seq", "INTEGER"),
+                                  ("topic", "TEXT DEFAULT ''"),
+                                  ("description", "TEXT DEFAULT ''"),
+                                  ("todo", "TEXT DEFAULT ''"),
+                                  ("due_date", "TEXT DEFAULT ''"),
+                                  ("assigned_to", "TEXT DEFAULT ''"),
+                                  ("assigned_name", "TEXT DEFAULT ''"),
+                                  ("status", "TEXT DEFAULT 'open'"),
+                                  ("done_at", "TEXT DEFAULT ''"),
+                                  ("done_note", "TEXT DEFAULT ''"),
+                                  ("done_by", "TEXT DEFAULT ''"),
+                                  ("updated_at", "TEXT"),
+                                  ("client_updated_at", "TEXT"),
+                                  ("deleted_at", "TEXT")))):
             _have = {r[1] for r in _conn.exec_driver_sql(
                 f"PRAGMA table_info({_tbl})").fetchall()}
             if not _have:
@@ -188,6 +207,16 @@ async def lifespan(app: FastAPI):
                 if _c not in _have:
                     _conn.exec_driver_sql(
                         f"ALTER TABLE {_tbl} ADD COLUMN {_c} {_d}")
+        # The phone asks for "the items assigned to me at this plant" on every
+        # refresh, and the desktop's pull walks updated_at. create_all only
+        # indexes a table it creates itself, so a server that already has the
+        # table from an earlier deploy would run both unindexed.
+        _conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS idx_action_items_assigned "
+            "ON action_items (project_id, assigned_to)")
+        _conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS idx_action_items_updated_at "
+            "ON action_items (updated_at)")
         # create_all only makes indexes for tables it creates, so the other
         # half of a technician's delta pull — WHERE assigned_to=? AND
         # updated_at > ? — ran unindexed on every server that already had
@@ -266,6 +295,7 @@ app.include_router(projects.router)
 app.include_router(stock.router)
 app.include_router(events.router)
 app.include_router(checklists.router)
+app.include_router(action_items.router)
 
 
 @app.get("/healthz", tags=["ops"])

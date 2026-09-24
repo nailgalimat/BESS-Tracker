@@ -11,7 +11,8 @@ Scripted here:
   * what the phone pushes carries the new record fields;
   * a PM written on the phone reports as PM hours and does NOT also appear as
     corrective work in the customer's section 3.2;
-  * the zone map the phone's picker needs is what the desktop publishes.
+  * the zone map the phone's picker needs is what the desktop publishes;
+  * the action list is on the phone, and is drawn apart from plant work.
 Anything needing a real browser stays in tests/PWA_OFFLINE_CHECK.md.
 """
 import json
@@ -87,8 +88,10 @@ for fn in ('goChecklists', 'openChecklist', 'setChecklistResult',
     H.check(fn in app, 'app.js implements {}'.format(fn))
 H.check("'/checklists'" in sw,
         'sw.js treats /checklists as an API call, never a cached shell file')
-H.check("DB_VERSION = 4" in jsdb and "'checklists'" in jsdb,
-        'IndexedDB v4 keeps the checklists on the phone')
+# the store, not the schema number — that moves on with every new store, and
+# the current number is checked with the version it belongs to, below
+H.check("'checklists'" in jsdb and 'saveChecklist' in jsdb,
+        'IndexedDB keeps the checklists on the phone')
 H.check('getChecklists' in jsapi and 'postChecklistResults' in jsapi,
         'api.js can fetch what is assigned and send back what was ticked')
 H.check('.cl-btn' in css and '.cl-item.out' in css,
@@ -122,6 +125,26 @@ H.check('EACH of the' in app,
         'the form says PM hours are charged to each chosen block')
 H.check('.np-picked' in css and '.np-actions' in css,
         'the chosen-blocks line and the All / Clear row are styled')
+
+# ── v20: the action list on the phone ────────────────────────────────────
+for ident in ('screen-action', 'act-topic', 'act-from', 'act-ask', 'act-note',
+              'act-banner'):
+    H.check('id="{}"'.format(ident) in html, 'the action screen has {}'.format(ident))
+H.check('App.completeAction()' in html and 'App.saveAction()' in html,
+        'the technician can save a note and tell the office it is done')
+for fn in ('openAction', 'completeAction', 'saveAction', '_storeAction',
+           '_syncActions'):
+    H.check(fn in app, 'app.js implements {}'.format(fn))
+H.check("'/action-items'" in sw,
+        'sw.js treats /action-items as an API call, never a cached shell file')
+H.check("DB_VERSION = 5" in jsdb and "'actions'" in jsdb,
+        'IndexedDB v5 keeps the action items on the phone')
+H.check('getActionItems' in jsapi and 'postActionDone' in jsapi,
+        'api.js can fetch what is assigned and send back the completion')
+H.check('.tcard.action' in css and '.action-head' in css,
+        'an action item is styled apart from a job — it is not plant work')
+H.check('No block — office action' in app,
+        'and the card says so in words, not only in colour')
 
 # ── the JS actually parses ───────────────────────────────────────────────
 try:
@@ -158,6 +181,15 @@ try:
                        capture_output=True, text=True, shell=True, timeout=180)
     print((p.stdout or p.stderr).rstrip())
     H.check('RESULT PASS' in (p.stdout or ''), 'the assigned-job check passes')
+except Exception as e:                                   # noqa: BLE001
+    print('   note   node not available or failed:', e)
+
+# ── the action-item screen, actually executed ────────────────────────────
+try:
+    p = subprocess.run(['node', os.path.join(H.MVP, 'tests', 'action_check.js')],
+                       capture_output=True, text=True, shell=True, timeout=180)
+    print((p.stdout or p.stderr).rstrip())
+    H.check('RESULT PASS' in (p.stdout or ''), 'the action-item check passes')
 except Exception as e:                                   # noqa: BLE001
     print('   note   node not available or failed:', e)
 

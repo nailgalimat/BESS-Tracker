@@ -209,3 +209,45 @@ photos, and one record per block. Phone on **v18** (More → the version reads
    deploy shows the banner the next time the app is opened, not a day later.
 3. If a phone is stuck on an old number: close the app fully (swipe it away)
    and open it again — that forces the service worker to re-check.
+
+## 12. v20: the action list
+
+The office's own list — "confirm the EPC purchased the spare parts", "get the
+HVAC BOM", "submit the LCU RCA". No block, no equipment, no hours. It must
+never look like plant work, because plant work is what the customer's monthly
+report is made of.
+
+1. **It arrives.** Desktop → Plan → **Action list** → ⤓ Import from Excel…
+   (the customer's sheet: No. · Topic · Description · Remarks / To do ·
+   Target Date) → pick a row → **👤 Assign…** → a technician → 🔄 sync.
+   On that phone: 🔄 Sync → **Tasks** shows a card with a purple left edge,
+   the chip **Action item**, the topic, the first line of "to do" and
+   **No block — office action**. It is visibly not a job card.
+2. **Only the right phone.** Log in on a second phone as a different
+   technician → the item is **not** there. The server sends each account only
+   what is assigned to it.
+3. **Today / Week / My open.** An item due today shows under Today; one due in
+   three days under Week but not Today; one with no target date only under
+   **My open**.
+4. **Overdue.** Set a target date in the past on the desktop, sync: the chip
+   turns red.
+5. **Doing it.** Tap **Open the action** → the topic, the description and the
+   to-do, who it is from and when it is due. Write a line in **How it was
+   settled** → **✓ Done — tell the office**.
+   - Desktop → 🔄 sync → Plan → Action list → the row reads **Done**, and
+     ⤒ Export to Excel… writes the status, who did it and when into the sheet.
+   - Monthly report → section 3.2 and the PM hours: **nothing** from the
+     action list is there, and never should be.
+6. **Offline.** Airplane mode on → open an action, write the note, tap Done →
+   it disappears from the open list and the phone keeps it. Airplane mode off
+   → 🔄 Sync → it reaches the office. Syncing twice must not undo it.
+7. **The office corrects it while the phone is out of signal.** Finish an item
+   offline at 12:30, change its topic and due date on the desktop at 13:00,
+   then sync the phone at 14:00: the office's topic and date stay, and the
+   completion is still recorded — the two are different fields and the later
+   writer wins on each side of the pair.
+8. **Cancelled in the office.** Delete the item on the desktop → sync → it
+   goes from the phone as well, unless that phone is still holding an unsent
+   completion for it.
+9. **The version.** More → the version line reads **v20** (sw.js `V`, every
+   `?v=` in index.html and `APP_VERSION` are one number; a test ties them).

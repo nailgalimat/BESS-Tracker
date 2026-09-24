@@ -4,7 +4,7 @@
  */
 const DB = (() => {
   const DB_NAME    = 'bess_field_log';
-  const DB_VERSION = 4;
+  const DB_VERSION = 5;
   let _db = null;
 
   // ── Open / upgrade ──────────────────────────────────────────────────────────
@@ -53,6 +53,15 @@ const DB = (() => {
           const cl = db.createObjectStore('checklists', { keyPath: 'uuid' });
           cl.createIndex('sync_status', 'sync_status', { unique: false });
           cl.createIndex('project_id',  'project_id',  { unique: false });
+        }
+
+        // v5: the office's action items assigned to this person. No block, no
+        // hours — organisational work, kept apart from the plant's records so
+        // that nothing here can end up in the customer's monthly report.
+        if (!db.objectStoreNames.contains('actions')) {
+          const ac = db.createObjectStore('actions', { keyPath: 'uuid' });
+          ac.createIndex('sync_status', 'sync_status', { unique: false });
+          ac.createIndex('project_id',  'project_id',  { unique: false });
         }
       };
 
@@ -282,6 +291,62 @@ const DB = (() => {
     });
   }
 
+  // ── Action items ────────────────────────────────────────────────────────────
+  // The office's list, the part of it that was given to this person. Kept
+  // whatever its state, like a checklist: a note is corrected on site until
+  // the office exports the sheet.
+
+  async function saveAction(item) {
+    return wrap((await store('actions', 'readwrite')).put(item));
+  }
+
+  async function getAction(uuid) {
+    return wrap((await store('actions')).get(uuid));
+  }
+
+  async function getAllActions() {
+    const all = await wrap((await store('actions')).getAll());
+    // soonest due first; an item nobody dated is not more urgent than one due
+    // tomorrow, so it goes last
+    all.sort((a, b) => (a.due_date ? 0 : 1) - (b.due_date ? 0 : 1)
+                       || String(a.due_date || '').localeCompare(String(b.due_date || ''))
+                       || (a.seq || 0) - (b.seq || 0));
+    return all;
+  }
+
+  async function getPendingActions() {
+    const all = await getAllActions();
+    return all.filter(a => a.sync_status && a.sync_status !== 'synced');
+  }
+
+  /** Patch one action item, read and write in ONE transaction — the same race
+   *  the checklists have: an upload takes seconds, and a note typed while it
+   *  was in flight must not be marked 'synced' without ever leaving the phone.
+   *  Pass the stamp the record had when the upload started. */
+  async function updateAction(uuid, patch, expectUpdatedAt) {
+    const db = await open();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('actions', 'readwrite');
+      const s  = tx.objectStore('actions');
+      const get = s.get(uuid);
+      get.onsuccess = () => {
+        const rec = get.result;
+        if (!rec) { res(null); return; }
+        if (expectUpdatedAt !== undefined && expectUpdatedAt !== null
+            && String(rec.updated_at || '') !== String(expectUpdatedAt)) {
+          res(rec);                  // changed underneath — leave it as it is
+          return;
+        }
+        const next = Object.assign({}, rec, patch);
+        const put = s.put(next);
+        put.onsuccess = () => res(next);
+        put.onerror   = e => rej(e.target.error);
+      };
+      get.onerror = e => rej(e.target.error);
+      tx.onerror  = e => rej(e.target.error);
+    });
+  }
+
   // ── Meta (cursor, settings) ─────────────────────────────────────────────────
 
   async function getMeta(key, defaultVal = null) {
@@ -304,6 +369,7 @@ const DB = (() => {
     updateFieldEvent, deleteFieldEvent,
     saveChecklist, getChecklist, getAllChecklists, getPendingChecklists,
     updateChecklist,
+    saveAction, getAction, getAllActions, getPendingActions, updateAction,
     getMeta, setMeta,
   };
 })();

@@ -102,6 +102,12 @@ function sandbox(server, entries) {
     async getPendingChecklists() { return []; },
     async getChecklist() { return null; },
     async saveChecklist() {}, async updateChecklist() {},
+    // v20: the office's action list. This test is about jobs, so there are
+    // none — but Tasks reads the store on every render.
+    async getAllActions() { return []; },
+    async getPendingActions() { return []; },
+    async getAction() { return null; },
+    async saveAction() {}, async updateAction() { return null; },
   };
   const ctxObj = {
     console, setTimeout, clearTimeout, setInterval, clearInterval,
