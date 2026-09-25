@@ -531,8 +531,12 @@ class SparePartsPanel(QGroupBox):
                           f"  (in stock: {p.get('available',0):g})"
                           for p in pending)
         short = [p for p in pending if p.get("available", 0) < p["quantity"]]
-        warn = ("\n\n⚠ Some parts exceed the stock on hand — "
-                "they will go to 0." if short else "")
+        # A short row is refused by worklog_parts_service (a clamped OUT cannot
+        # be reversed back to where it started), so it is reported here, not
+        # deducted: the rest of the rows still go through.
+        warn = ("\n\n⚠ Some parts exceed the stock on hand — those rows will be "
+                "refused. Book the delivery in first, or lower the quantity."
+                if short else "")
         if QMessageBox.question(
             self, "Deduct from stock",
             f"Deduct from warehouse '{wh}':\n\n{lines}{warn}\n\nContinue?",

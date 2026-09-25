@@ -15,6 +15,13 @@ Design (user decision: deduction is a SEPARATE, explicit confirmation):
 The free-text work_log_entries.spare_parts column is kept as a quick human
 summary and still syncs to mobile; this structured table is desktop/office-only
 (stock management happens in the office, not in the field).
+
+A deduction larger than the stock on hand is REFUSED, not clamped: stock_service
+records the full quantity in stock_transactions while `_adjust_stock` floors
+the item at 0, so writing off 3 of 1 and then reversing it would leave 3 in the
+warehouse — the books would no longer reconcile. The office receives the stock
+(an IN on the Spare parts page) or lowers the quantity first; either way the
+warehouse and its transaction trail keep explaining each other.
 """
 
 from datetime import datetime
@@ -175,10 +182,46 @@ def delete_part(part_id: int):
 
 # ── Deduct / reverse against stock ────────────────────────────────────────────
 
+def plan_deduction(work_log_id: str) -> dict:
+    """What a "write off from stock" on this entry would do, before it does it.
+
+    Returns {'warehouse', 'pending', 'ok', 'short'}:
+      warehouse  the resolved target {'id', 'name', 'project_id'}
+      pending    the rows that would be written off
+      ok         the subset that fits in the stock on hand
+      short      one row per material that does NOT fit, as
+                 {'material_number', 'unit', 'wanted', 'available', 'short'}
+
+    The shortfall is summed **per material over the whole entry**: two rows of
+    2 fuses against 3 in stock are short by 1, even though each row on its own
+    looks affordable. So the confirmation can say it before anything moves.
+    """
+    parts = get_parts_for_entry(work_log_id)
+    pending = [p for p in parts if not p["deducted"]]
+    wh = resolve_warehouse_for_entry(work_log_id)
+
+    want = {}
+    for p in pending:
+        w = want.setdefault(p["material_number"], {
+            "material_number": p["material_number"],
+            "unit": p.get("unit") or "",
+            "wanted": 0.0,
+            "available": float(p.get("available") or 0.0)})
+        w["wanted"] += float(p["quantity"])
+    short = [dict(w, short=w["wanted"] - w["available"])
+             for w in want.values() if w["wanted"] > w["available"] + 1e-9]
+    short_mats = {s["material_number"] for s in short}
+    return {"warehouse": wh, "pending": pending, "short": short,
+            "ok": [p for p in pending if p["material_number"] not in short_mats]}
+
+
 def deduct_part(part_id: int, log_date: Optional[str] = None) -> dict:
     """
     Record an OUT stock transaction for one pending part and mark it deducted.
     Returns {'ok', 'message'}.
+
+    Refused when the warehouse does not hold that much — see the module
+    docstring: a clamped OUT cannot be reversed back to where it started.
     """
     conn = get_connection()
     try:
@@ -197,6 +240,16 @@ def deduct_part(part_id: int, log_date: Optional[str] = None) -> dict:
         return {"ok": False, "message": "Already deducted."}
 
     wh = resolve_warehouse_for_entry(p["work_log_id"])
+    stock = get_stock_quantity(wh["id"], p["material_number"])
+    available = float(stock["quantity"]) if stock else 0.0
+    if float(p["quantity"]) > available + 1e-9:
+        return {"ok": False, "available": available,
+                "short": float(p["quantity"]) - available,
+                "message": f"Not enough in '{wh['name']}': "
+                           f"{p['quantity']:g} asked, {available:g} in stock "
+                           f"(short {float(p['quantity']) - available:g}). "
+                           f"Book the delivery in on Spare parts, or lower the "
+                           f"quantity — nothing was written off."}
     tx_date = log_date or p["log_date"] or datetime.now().strftime("%Y-%m-%d")
 
     tx_id = record_transaction(
@@ -300,6 +353,37 @@ def get_pending_count(work_log_id: str) -> int:
         return row["n"] if row else 0
     finally:
         conn.close()
+
+
+def counts_for_entries(work_log_ids) -> dict:
+    """{work_log_id: {'total', 'pending', 'deducted'}} for many entries in one
+    query — the Work list needs a badge per row and must not ask per row.
+    Entries with no parts are simply absent from the result.
+    """
+    ids = [str(i) for i in work_log_ids if i]
+    out = {}
+    if not ids:
+        return out
+    conn = get_connection()
+    try:
+        for i in range(0, len(ids), 400):        # stay under SQLite's var limit
+            chunk = ids[i:i + 400]
+            rows = conn.execute("""
+                SELECT work_log_id,
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN deducted=0 THEN 1 ELSE 0 END) AS pending,
+                       SUM(CASE WHEN deducted=1 THEN 1 ELSE 0 END) AS deducted
+                FROM worklog_spare_parts
+                WHERE work_log_id IN ({})
+                GROUP BY work_log_id
+            """.format(",".join("?" * len(chunk))), chunk).fetchall()
+            for r in rows:
+                out[r["work_log_id"]] = {"total": r["total"] or 0,
+                                         "pending": r["pending"] or 0,
+                                         "deducted": r["deducted"] or 0}
+    finally:
+        conn.close()
+    return out
 
 
 def get_parts_count(work_log_id: str) -> dict:

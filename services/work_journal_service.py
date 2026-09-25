@@ -364,7 +364,8 @@ def records(project_id: int, date_from: str = None, date_to: str = None,
 
     Each row: key, source, editable, date, block, zone_label, lc, device,
     node, kind, title, work_done, internal_note, status, ptw, sap, hours,
-    sync, age_days, ref (the row id in its own table)."""
+    sync, age_days, parts (the phone's free-text materials note),
+    ref (the row id in its own table)."""
     conn = get_connection()
     out = []
     try:
@@ -394,6 +395,11 @@ def records(project_id: int, date_from: str = None, date_to: str = None,
                 'title': (r.get('fault_name') or '').strip(),
                 'work_done': (r.get('description') or '').strip(),
                 'internal_note': (r.get('internal_note') or '').strip(),
+                # what the field said it used, in its own words ("2 fuses,
+                # 63 A"). The office writes the stock off against it, so the
+                # card has to show it; the structured rows live in
+                # worklog_spare_parts.
+                'parts': (r.get('spare_parts') or '').strip(),
                 'status': _norm_status(r.get('status')),
                 'ptw': r.get('ptw_no') or '', 'sap': r.get('sap_ticket') or '',
                 'hours': r.get('hours'), 'time_from': r.get('time_from') or '',
@@ -440,6 +446,7 @@ def records(project_id: int, date_from: str = None, date_to: str = None,
                     'title': (r.get('fault_description') or '').strip(),
                     'work_done': (r.get('work_performed') or '').strip(),
                     'internal_note': (r.get('comments') or '').strip(),
+                    'parts': '',            # the old format never had one
                     'status': _norm_status(r.get('status')),
                     'ptw': '', 'sap': r.get('sap_ticket') or '',
                     'hours': None, 'time_from': r.get('start_time') or '',

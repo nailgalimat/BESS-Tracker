@@ -12,28 +12,35 @@ Log, Field Records and the Daily Log. One record shape, one list, one card.
   * `work_logs` rows are shown, marked "Old format", and cannot be edited: they
     still count in the report, but new work is written as a record the phones
     understand.
+  * Materials: what the field reported using, the structured rows the office
+    writes off, and the warehouse they leave. Stock moves only when somebody
+    presses the button and confirms it — never on save.
 """
 import datetime
 
 from PyQt5.QtCore import Qt, pyqtSignal, QDate
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QLineEdit, QTextEdit, QCheckBox, QTableWidget, QTableWidgetItem, QSplitter,
     QAbstractItemView, QScrollArea, QFrame, QMessageBox, QHeaderView,
-    QDoubleSpinBox, QSizePolicy, QGridLayout, QDateEdit,
+    QDoubleSpinBox, QSizePolicy, QGridLayout, QDateEdit, QDialog,
 )
 
 import services.team_service as team
 import services.work_journal_service as wj
+import services.worklog_parts_service as wparts
 from ui.components import PageHeader, PrimaryButton, SecondaryButton
 
 TABS = [('all', 'All'), ('open', 'Open'), ('scada', 'Needs a record (SCADA)'),
         ('noblock', 'No block'), ('conflict', 'Conflicts')]
 
 # "Assigned to" is a column, not a detail: the office's first question in the
-# morning is what is with whom.
-COLUMNS = ["Date", "Node", "Work", "Status", "PTW No.", "Assigned to", "Source"]
-ALARM_COLUMNS = ["Start", "Node", "Fault", "Hours", "Class", "", "Source"]
+# morning is what is with whom. "Materials" is the second one: a record with
+# parts still waiting to leave stock is office work nobody has finished.
+COLUMNS = ["Date", "Node", "Work", "Status", "PTW No.", "Assigned to",
+           "Materials", "Source"]
+ALARM_COLUMNS = ["Start", "Node", "Fault", "Hours", "Class", "", "", "Source"]
 
 STATUSES = ['Needs visit', 'Open', 'In progress', 'Done']
 IMPACTS = [('none', 'None'), ('counts', 'Counts'), ('excluded', 'Excluded')]
@@ -59,6 +66,464 @@ def internal():
     return _tag("Internal", "#6B4E00", "#FFF4D6")
 
 
+def parts_badge(count: dict) -> str:
+    """The Materials cell for one record: what the office still has to do."""
+    if not count or not count.get('total'):
+        return ''
+    if count.get('pending'):
+        return f"{count['pending']} pending"
+    return f"{count['deducted']} written off"
+
+
+def _materials_combo(current: str = '') -> QComboBox:
+    """The material catalogue, searchable — type a number or part of a name."""
+    cb = QComboBox()
+    cb.setEditable(True)
+    cb.setInsertPolicy(QComboBox.NoInsert)
+    cb.setMaxVisibleItems(20)
+    # A combo asks to be as wide as its widest entry, and a material
+    # description runs long — left alone, one catalogue row would widen the
+    # whole card. The popup still shows the full text.
+    cb.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+    cb.setMinimumContentsLength(18)
+    cb.addItem('', '')
+    try:
+        from services.material_service import get_all_materials
+        for m in get_all_materials():
+            num = m['material_number']
+            desc = m.get('description') or ''
+            cb.addItem(f"{num} — {desc}" if desc else num, num)
+    except Exception:                                    # noqa: BLE001
+        pass
+    if cb.completer() is not None:
+        cb.completer().setFilterMode(Qt.MatchContains)
+    i = cb.findData(current) if current else 0
+    cb.setCurrentIndex(max(0, i))
+    if current and i < 0:
+        cb.setEditText(current)                  # a number not in the catalogue
+    cb.lineEdit().setPlaceholderText("material number or name")
+    return cb
+
+
+def _combo_number(cb: QComboBox) -> str:
+    """The material number a combo holds — picked from the list or typed."""
+    data = cb.currentData()
+    if data:
+        return str(data)
+    txt = cb.currentText().strip()
+    if ' — ' in txt:
+        txt = txt.split(' — ', 1)[0].strip()
+    return txt
+
+
+class _PartDialog(QDialog):
+    """Edit one pending material row: material, quantity, unit."""
+
+    def __init__(self, part: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Material row")
+        self.setMinimumWidth(380)
+        lay = QVBoxLayout(self)
+        grid = QGridLayout()
+        self.mat = _materials_combo(part.get('material_number') or '')
+        self.qty = QDoubleSpinBox()
+        self.qty.setRange(0.0, 1_000_000.0)
+        self.qty.setDecimals(2)
+        self.qty.setValue(float(part.get('quantity') or 1))
+        self.unit = QLineEdit(part.get('unit') or '')
+        self.unit.setPlaceholderText("pcs, m, l…")
+        for r, (label, w) in enumerate((("Material", self.mat),
+                                        ("Quantity", self.qty),
+                                        ("Unit", self.unit))):
+            grid.addWidget(QLabel(label), r, 0)
+            grid.addWidget(w, r, 1)
+        lay.addLayout(grid)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel = SecondaryButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(cancel)
+        save = PrimaryButton("Save")
+        save.clicked.connect(self.accept)
+        btns.addWidget(save)
+        lay.addLayout(btns)
+
+    def value(self) -> dict:
+        return {'material_number': _combo_number(self.mat),
+                'quantity': self.qty.value(),
+                'unit': self.unit.text().strip()}
+
+
+class MaterialsSection(QWidget):
+    """The materials of one record, and the write-off to stock.
+
+    Three things the office could not see anywhere before: what the field said
+    it used (the phone's own free text), which materials are booked against the
+    record, and which of them have actually left a warehouse.
+
+    Nothing here touches stock until "Write off from stock" is pressed and the
+    confirmation — warehouse, rows, any shortfall — is accepted. That is the
+    service layer's design decision (worklog_parts_service's docstring) and the
+    reason a record can be saved a hundred times without moving a single fuse.
+    """
+    changed = pyqtSignal()
+
+    def __init__(self, entry_id: str, phone_note: str = '', parent=None):
+        super().__init__(parent)
+        self._entry_id = str(entry_id)
+        self._parts = []
+        self._build(phone_note)
+        self.refresh()
+
+    # ── build ────────────────────────────────────────────────────────────
+    def _build(self, phone_note):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        self.head_lbl = QLabel("<b>Materials</b>")
+        head.addWidget(self.head_lbl)
+        head.addWidget(internal())
+        head.addStretch()
+        lay.addLayout(head)
+
+        if phone_note:
+            note = QLabel(f'Reported used: “{phone_note}”')
+            note.setTextFormat(Qt.PlainText)
+            note.setWordWrap(True)
+            note.setStyleSheet("color:#1A2B45;background:#F7F8FA;"
+                               "border:1px solid #E0E4EA;border-radius:4px;"
+                               "padding:6px;")
+            note.setToolTip("What the field wrote on the phone. The office "
+                            "books the materials below against it.")
+            lay.addWidget(note)
+
+        self.wh_lbl = QLabel("")
+        self.wh_lbl.setStyleSheet("color:#6B7A8D;")
+        self.wh_lbl.setWordWrap(True)
+        lay.addWidget(self.wh_lbl)
+
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(
+            ["Material", "Description", "Qty", "Unit", "Status"])
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setFixedHeight(126)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(1, QHeaderView.Stretch)
+        for col, w in ((0, 110), (2, 54), (3, 48), (4, 150)):
+            self.table.setColumnWidth(col, w)
+        self.table.itemSelectionChanged.connect(self._sync_buttons)
+        lay.addWidget(self.table)
+
+        self.empty_lbl = QLabel("No materials on this record yet — pick one below.")
+        self.empty_lbl.setStyleSheet("color:#6B7A8D;")
+        self.empty_lbl.setWordWrap(True)
+        lay.addWidget(self.empty_lbl)
+
+        add = QHBoxLayout()
+        add.setSpacing(6)
+        self.mat_cb = _materials_combo()
+        self.mat_cb.setMinimumWidth(200)
+        add.addWidget(self.mat_cb, 3)
+        self.qty_spin = QDoubleSpinBox()
+        self.qty_spin.setRange(0.0, 1_000_000.0)
+        self.qty_spin.setDecimals(2)
+        self.qty_spin.setValue(1.0)
+        self.qty_spin.setFixedWidth(80)
+        add.addWidget(self.qty_spin)
+        self.unit_edit = QLineEdit()
+        self.unit_edit.setPlaceholderText("unit")
+        self.unit_edit.setFixedWidth(60)
+        self.unit_edit.setToolTip("Leave empty to take the unit from the "
+                                  "material catalogue.")
+        add.addWidget(self.unit_edit)
+        self.add_btn = SecondaryButton("Add")
+        self.add_btn.clicked.connect(self._add)
+        add.addWidget(self.add_btn)
+        lay.addLayout(add)
+
+        # what the warehouse holds of the material being picked, before it is
+        # added — the moment to notice you are booking 5 against a stock of 1
+        self.avail_lbl = QLabel("")
+        self.avail_lbl.setStyleSheet("color:#6B7A8D;")
+        self.avail_lbl.setWordWrap(True)
+        lay.addWidget(self.avail_lbl)
+        self.mat_cb.currentIndexChanged.connect(self._show_available)
+        self.mat_cb.lineEdit().editingFinished.connect(self._show_available)
+
+        self.catalogue_lbl = QLabel(
+            "The material catalogue is empty — add the materials on the "
+            "Spare parts page first, or type a material number here.")
+        self.catalogue_lbl.setStyleSheet("color:#B26B00;")
+        self.catalogue_lbl.setWordWrap(True)
+        self.catalogue_lbl.setVisible(self.mat_cb.count() <= 1)
+        lay.addWidget(self.catalogue_lbl)
+
+        acts = QHBoxLayout()
+        acts.setSpacing(6)
+        self.off_btn = PrimaryButton("Write off from stock")
+        self.off_btn.setToolTip("Records an OUT stock transaction for every "
+                                "pending row. Asks first.")
+        self.off_btn.clicked.connect(self._write_off)
+        acts.addWidget(self.off_btn)
+        self.edit_btn = SecondaryButton("Edit")
+        self.edit_btn.clicked.connect(self._edit)
+        acts.addWidget(self.edit_btn)
+        self.del_btn = SecondaryButton("Remove")
+        self.del_btn.clicked.connect(self._remove)
+        acts.addWidget(self.del_btn)
+        self.undo_btn = SecondaryButton("Undo write-off")
+        self.undo_btn.setToolTip("Returns the quantity to the warehouse it "
+                                 "left, as an IN transaction.")
+        self.undo_btn.clicked.connect(self._undo)
+        acts.addWidget(self.undo_btn)
+        acts.addStretch()
+        lay.addLayout(acts)
+
+        hint = QLabel("Nothing leaves stock until you press “Write off from "
+                      "stock”. Each write-off is an OUT transaction referenced "
+                      f"LOG-{self._entry_id[:8]}; undoing one books it back in.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#6B7A8D;font-size:11px;")
+        lay.addWidget(hint)
+
+    # ── read ─────────────────────────────────────────────────────────────
+    def refresh(self):
+        try:
+            self._parts = wparts.get_parts_for_entry(self._entry_id)
+        except Exception as e:                           # noqa: BLE001
+            self._parts = []
+            self.wh_lbl.setText(f"Stock unavailable: {e}")
+        self.table.setRowCount(0)
+        pending = 0
+        for p in self._parts:
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            first = QTableWidgetItem(p['material_number'])
+            first.setData(Qt.UserRole, p['id'])
+            self.table.setItem(r, 0, first)
+            self.table.setItem(r, 1, QTableWidgetItem(p.get('description') or ''))
+            self.table.setItem(r, 2, QTableWidgetItem(f"{p['quantity']:g}"))
+            self.table.setItem(r, 3, QTableWidgetItem(p.get('unit') or ''))
+            if p['deducted']:
+                st = QTableWidgetItem("Written off · "
+                                      + (p.get('warehouse_name') or 'stock'))
+                st.setForeground(QColor('#2E7D32'))
+            else:
+                avail = float(p.get('available') or 0)
+                short = avail < float(p['quantity'])
+                st = QTableWidgetItem(
+                    f"Pending · in stock {avail:g}"
+                    + (f" — short {float(p['quantity']) - avail:g}" if short else ""))
+                st.setForeground(QColor('#C62828') if short else QColor('#B26B00'))
+                pending += 1
+            self.table.setItem(r, 4, st)
+
+        self.head_lbl.setText(
+            "<b>Materials</b>" if not self._parts else
+            f"<b>Materials · {len(self._parts)}</b>"
+            + (f" · {pending} pending" if pending else " · all written off"))
+        self.empty_lbl.setVisible(not self._parts)
+        self.table.setVisible(bool(self._parts))
+        wh_name = (self._parts[0]['target_warehouse_name'] if self._parts
+                   else self._warehouse_name())
+        self.wh_lbl.setText(f"Write off from: {wh_name}")
+        self.off_btn.setText(f"Write off from stock ({pending})" if pending
+                             else "Write off from stock")
+        self.off_btn.setEnabled(pending > 0)
+        self._sync_buttons()
+
+    def _show_available(self, *_):
+        """The stock on hand for the material in the picker, if it is one the
+        warehouse knows. Queried when a material is chosen, not per keystroke."""
+        mat = _combo_number(self.mat_cb)
+        if not mat:
+            self.avail_lbl.setText("")
+            return
+        try:
+            from services.stock_service import get_stock_quantity
+            wh = wparts.resolve_warehouse_for_entry(self._entry_id)
+            stock = get_stock_quantity(wh['id'], mat)
+        except Exception:                                # noqa: BLE001
+            self.avail_lbl.setText("")
+            return
+        if stock is None:
+            self.avail_lbl.setText(f"{mat} is not stocked in {wh['name']} — "
+                                   "it can be booked, but not written off yet.")
+        else:
+            self.avail_lbl.setText(
+                f"{mat}: {float(stock['quantity']):g} "
+                f"{stock.get('unit') or ''} in {wh['name']}".rstrip())
+
+    def _warehouse_name(self) -> str:
+        try:
+            return wparts.resolve_warehouse_for_entry(self._entry_id)['name']
+        except Exception:                                # noqa: BLE001
+            return '—'
+
+    def _current(self):
+        r = self.table.currentRow()
+        if r < 0:
+            return None
+        it = self.table.item(r, 0)
+        if it is None:
+            return None
+        pid = it.data(Qt.UserRole)
+        return next((p for p in self._parts if p['id'] == pid), None)
+
+    def _sync_buttons(self):
+        p = self._current()
+        done = bool(p and p['deducted'])
+        self.edit_btn.setEnabled(bool(p) and not done)
+        self.del_btn.setEnabled(bool(p) and not done)
+        self.undo_btn.setEnabled(done)
+        why = ("This row is already written off — undo the write-off first."
+               if done else "")
+        for b in (self.edit_btn, self.del_btn):
+            b.setToolTip(why or "Select a pending row.")
+
+    # ── writes ───────────────────────────────────────────────────────────
+    def _add(self):
+        mat = _combo_number(self.mat_cb)
+        if not mat:
+            QMessageBox.information(self, "Material",
+                                    "Pick a material, or type its number.")
+            return
+        qty = self.qty_spin.value()
+        if qty <= 0:
+            QMessageBox.information(self, "Quantity",
+                                    "The quantity has to be more than 0.")
+            return
+        try:
+            wparts.add_part(self._entry_id, mat, qty,
+                            unit=self.unit_edit.text().strip())
+        except Exception as e:                           # noqa: BLE001
+            QMessageBox.warning(self, "Not added", str(e))
+            return
+        self.mat_cb.setCurrentIndex(0)
+        self.qty_spin.setValue(1.0)
+        self.unit_edit.clear()
+        self.refresh()
+        self.changed.emit()
+
+    def _edit(self):
+        p = self._current()
+        if not p:
+            return
+        dlg = _PartDialog(p, self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        v = dlg.value()
+        if not v['material_number'] or v['quantity'] <= 0:
+            QMessageBox.information(self, "Material row",
+                                    "A material and a quantity above 0 are needed.")
+            return
+        try:
+            wparts.update_part(p['id'], **v)
+        except ValueError as e:
+            QMessageBox.warning(self, "Not changed", str(e))
+        self.refresh()
+        self.changed.emit()
+
+    def _remove(self):
+        p = self._current()
+        if not p:
+            return
+        if QMessageBox.question(
+                self, "Remove material",
+                f"Remove {p['quantity']:g} x {p['material_number']} from this "
+                "record?\n\nNothing has left stock, so nothing is booked back.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        try:
+            wparts.delete_part(p['id'])
+        except ValueError as e:
+            QMessageBox.warning(self, "Not removed", str(e))
+        self.refresh()
+        self.changed.emit()
+
+    def _write_off(self):
+        plan = wparts.plan_deduction(self._entry_id)
+        if not plan['pending']:
+            QMessageBox.information(self, "Write off from stock",
+                                    "Every material on this record is already "
+                                    "written off.")
+            return
+        wh = plan['warehouse']['name']
+
+        def lines(rows):
+            return "\n".join(
+                f"  {p['quantity']:g} {p.get('unit') or ''} x {p['material_number']}"
+                f"   (in stock: {float(p.get('available') or 0):g})"
+                for p in rows)
+
+        if plan['short']:
+            short = "\n".join(
+                f"  {s['material_number']}: {s['wanted']:g} asked, "
+                f"{s['available']:g} in stock — short {s['short']:g}"
+                for s in plan['short'])
+            tail = ("\n\nBook the delivery in on Spare parts, or lower the "
+                    "quantity. Nothing has been written off.")
+            if not plan['ok']:
+                QMessageBox.warning(self, "Not enough in stock",
+                                    f"“{wh}” does not hold enough:\n\n{short}{tail}")
+                return
+            if QMessageBox.question(
+                    self, "Not enough in stock",
+                    f"“{wh}” does not hold enough:\n\n{short}\n\n"
+                    f"Write off the other {len(plan['ok'])} row(s) now?\n\n"
+                    f"{lines(plan['ok'])}",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No) != QMessageBox.Yes:
+                return
+        elif QMessageBox.question(
+                self, "Write off from stock",
+                f"Write off from “{wh}”:\n\n{lines(plan['pending'])}\n\n"
+                f"This records an OUT stock transaction referenced "
+                f"LOG-{self._entry_id[:8]}. Continue?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No) != QMessageBox.Yes:
+            return
+
+        res = wparts.deduct_all_pending(self._entry_id)
+        if res['failed']:
+            QMessageBox.warning(
+                self, "Partly written off",
+                f"Written off: {res['deducted']} of {res['total_pending']}.\n\n"
+                "Not written off:\n" + "\n".join("  " + f for f in res['failed']))
+        else:
+            QMessageBox.information(
+                self, "Written off",
+                f"{res['deducted']} material row(s) left “{wh}”. "
+                "The movement is in the stock transactions as "
+                f"LOG-{self._entry_id[:8]}.")
+        self.refresh()
+        self.changed.emit()
+
+    def _undo(self):
+        p = self._current()
+        if not p:
+            return
+        wh = p.get('warehouse_name') or p.get('target_warehouse_name') or 'stock'
+        if QMessageBox.question(
+                self, "Undo write-off",
+                f"Book {p['quantity']:g} x {p['material_number']} back into "
+                f"“{wh}”?\n\nThe write-off stays in the transaction trail; this "
+                "adds the movement that cancels it.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        res = wparts.reverse_part(p['id'])
+        if not res['ok']:
+            QMessageBox.warning(self, "Not undone", res['message'])
+        self.refresh()
+        self.changed.emit()
+
+
 class WorkPage(QWidget):
     record_saved = pyqtSignal(str)
 
@@ -73,6 +538,7 @@ class WorkPage(QWidget):
         self._alarms = []
         self._tab = 'all'
         self._key = None
+        self._parts = None          # the open card's MaterialsSection, if any
         self._build_ui()
 
     # ── UI ───────────────────────────────────────────────────────────────
@@ -166,7 +632,8 @@ class WorkPage(QWidget):
         self.table.verticalHeader().setVisible(False)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(2, QHeaderView.Stretch)      # the work, not the note
-        for col, w in ((0, 96), (1, 190), (3, 96), (4, 110), (5, 110), (6, 92)):
+        for col, w in ((0, 96), (1, 190), (3, 96), (4, 110), (5, 110), (6, 104),
+                       (7, 92)):
             self.table.setColumnWidth(col, w)
         self.table.itemSelectionChanged.connect(self._on_select)
         split.addWidget(self.table)
@@ -291,6 +758,7 @@ class WorkPage(QWidget):
         self._shown = rows
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.setRowCount(0)
+        counts = self._parts_counts(rows)
         for r in rows:
             i = self.table.rowCount()
             self.table.insertRow(i)
@@ -303,7 +771,8 @@ class WorkPage(QWidget):
                 src = 'Conflict'
             who = r.get('assignee_name') or (
                 team.name_for(r.get('assignee')) if r.get('assignee') else '')
-            cells = [r['date'], r['node'], work, r['status'], r['ptw'], who, src]
+            cells = [r['date'], r['node'], work, r['status'], r['ptw'], who,
+                     parts_badge(counts.get(str(r['ref']))), src]
             for c, v in enumerate(cells):
                 it = QTableWidgetItem(str(v or ''))
                 if r['sync'] == 'conflict':
@@ -321,6 +790,18 @@ class WorkPage(QWidget):
                               "or another tab")
         self._show_card(None)
 
+    def _parts_counts(self, rows):
+        """One query for the whole list's Materials column — never one per row.
+        Old-format rows are `work_logs` ids and cannot carry parts."""
+        refs = [str(r['ref']) for r in rows
+                if r.get('ref') and not r.get('old_format')]
+        if not refs:
+            return {}
+        try:
+            return wparts.counts_for_entries(refs)
+        except Exception:                                # noqa: BLE001
+            return {}
+
     def _fill_alarms(self):
         """Needs a record (SCADA): alarms nobody has written up yet."""
         self._shown = []
@@ -336,7 +817,7 @@ class WorkPage(QWidget):
             for c, v in enumerate([str(a.get('activated') or '')[:16], node,
                                    a.get('trigger_name') or '',
                                    f"{a.get('hours') or 0:g}",
-                                   a.get('cls_reason') or '', '', 'SCADA']):
+                                   a.get('cls_reason') or '', '', '', 'SCADA']):
                 self.table.setItem(i, c, QTableWidgetItem(str(v)))
         self.foot.setText(f"{len(self._alarms)} SCADA fault(s) with no work "
                           "record · select one to write it up")
@@ -390,6 +871,7 @@ class WorkPage(QWidget):
     def _show_card(self, row):
         self._clear_card()
         self._fields = {}
+        self._parts = None
         if row is None:
             hint = QLabel("Select a record on the left, or press "
                           "<b>New record</b>.")
@@ -610,6 +1092,8 @@ class WorkPage(QWidget):
 
         if row.get('key') and not row['old_format']:
             self._photos_section(row)
+        if not row['old_format']:
+            self._parts_section(row)
 
         # seen before + guidance (ours, never the customer's)
         if self._pid is not None and row['title']:
@@ -712,6 +1196,48 @@ class WorkPage(QWidget):
         pb.addStretch()
         self.card_l.addLayout(pb)
 
+    def _parts_section(self, row):
+        """Materials: what the field reported, what the office booked, and the
+        write-off to stock. Parts hang on the record's id, so an unsaved record
+        says so instead of offering controls that would have nowhere to write."""
+        if not row.get('key') or not row.get('ref'):
+            self._label("Materials", internal())
+            hint = QLabel("Save the record first — materials and their write-off "
+                          "hang on the saved record.")
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color:#6B7A8D;")
+            self.card_l.addWidget(hint)
+            if row.get('parts'):
+                note = QLabel(f'Reported used: “{row["parts"]}”')
+                note.setTextFormat(Qt.PlainText)
+                note.setWordWrap(True)
+                note.setStyleSheet("color:#1A2B45;background:#F7F8FA;"
+                                   "border:1px solid #E0E4EA;border-radius:4px;"
+                                   "padding:6px;")
+                self.card_l.addWidget(note)
+            return
+        self._parts = MaterialsSection(row['ref'], row.get('parts') or '', self)
+        self._parts.changed.connect(self._parts_changed)
+        self.card_l.addWidget(self._parts)
+
+    def _parts_changed(self):
+        """Keep the list's Materials cell in step with the card. Only that one
+        cell: reloading the list would throw the open card away, and with it
+        whatever the user has typed into it but not saved."""
+        if self._key is None:
+            return
+        i, row = next(((i, r) for i, r in enumerate(self._shown)
+                       if r['key'] == self._key), (None, None))
+        if row is None:
+            return
+        col = COLUMNS.index("Materials")
+        count = wparts.get_parts_count(str(row['ref']))
+        item = self.table.item(i, col)
+        if item is None:
+            item = QTableWidgetItem('')
+            self.table.setItem(i, col, item)
+        item.setText(parts_badge(count))
+
     def _open_photo(self, row, img):
         import os
         path = img.get('file_path') or ''
@@ -754,6 +1280,7 @@ class WorkPage(QWidget):
     def _show_alarm_card(self, alarm):
         self._clear_card()
         self._fields = {}
+        self._parts = None
         blk = alarm.get('block')
         head = QLabel(f"<span style='font-size:16px;font-weight:bold'>"
                       f"{('Block %s' % blk) if blk else (alarm.get('asset_code') or '')}"
@@ -781,6 +1308,10 @@ class WorkPage(QWidget):
         blk = f['block'].text().strip()
         who = f['assignee'].currentData() or ''
         date = f['date'].date().toString("yyyy-MM-dd")
+        # No 'parts' key on purpose. The free-text spare_parts note is the
+        # phone's; the card shows it and never writes it, and save() only
+        # touches the columns whose keys are here — so a desktop save cannot
+        # blank what the field reported. test_work_parts.py pins this.
         return {
             'status': f['status'].currentText(),
             'date': date,
@@ -897,7 +1428,7 @@ class WorkPage(QWidget):
                  'hours': None, 'time_from': '', 'time_to': '', 'impact': 'none',
                  'assignee': '', 'assignee_name': '', 'assigned_by': '', 'due': '',
                  'sync': 'local', 'category': 'fault', 'container_id': None,
-                 'serial': '',
+                 'serial': '', 'parts': '',
                  'node': 'New record', 'age_days': 0}
         blank.update(prefill or {})
         self._key = None
