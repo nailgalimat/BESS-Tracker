@@ -168,7 +168,19 @@ def get_stock_all_warehouses() -> List[dict]:
 def set_stock_level(warehouse_id: int, material_number: str,
                     quantity: float, min_quantity: float = 0,
                     unit: str = ""):
-    """Sets (upserts) stock level for a material in a warehouse."""
+    """Sets (upserts) stock level for a material in a warehouse.
+
+    The material number is upper-cased, as it is everywhere else the catalogue
+    is written (save_material, ensure_stock_item, the Excel import). stock_items
+    is unique on (warehouse_id, material_number), so a hand-typed '6sw00366'
+    and an imported '6SW00366' would otherwise become two rows for one part
+    with nothing to catch it.
+
+    Note this writes all three fields: min_quantity defaults to 0, so a caller
+    with no opinion about the alert threshold must not come through here — see
+    ensure_stock_item / set_min_quantity.
+    """
+    material_number = material_number.strip().upper()
     conn = get_connection()
     try:
         existing = conn.execute("""
@@ -189,6 +201,93 @@ def set_stock_level(warehouse_id: int, material_number: str,
                 VALUES (?, ?, ?, ?, ?)
             """, (warehouse_id, material_number, quantity, min_quantity, unit))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def ensure_stock_item(warehouse_id: int, material_number: str,
+                      unit: str = "") -> bool:
+    """Makes sure a stock item row exists, and records its unit of measure.
+
+    Returns True when the row had to be created.
+
+    Unlike set_stock_level this never writes `min_quantity` — that is the
+    low-stock alert threshold the user set by hand, and set_stock_level's
+    `min_quantity=0` default would zero it. An existing row also keeps its
+    quantity (move that with record_transaction, so the audit trail explains
+    it). A non-empty `unit` is stored; an empty one leaves the stored unit
+    alone, because "the caller said nothing" is not "blank it".
+
+    Used by the Excel stock import; safe for any caller that wants a row to
+    exist without disturbing what the user configured on it.
+    """
+    material_number = material_number.strip().upper()
+    unit = (unit or "").strip()
+    conn = get_connection()
+    try:
+        existing = conn.execute("""
+            SELECT id, unit FROM stock_items
+            WHERE warehouse_id=? AND material_number=?
+        """, (warehouse_id, material_number)).fetchone()
+        if existing is None:
+            conn.execute("""
+                INSERT INTO stock_items
+                    (warehouse_id, material_number, quantity, unit)
+                VALUES (?, ?, 0, ?)
+            """, (warehouse_id, material_number, unit))
+            conn.commit()
+            return True
+        if unit and unit != (existing["unit"] or ""):
+            conn.execute("""
+                UPDATE stock_items SET unit=?, updated_at=datetime('now')
+                WHERE id=?
+            """, (unit, existing["id"]))
+            conn.commit()
+        return False
+    finally:
+        conn.close()
+
+
+def set_min_quantity(warehouse_id: int, material_number: str,
+                     min_quantity: float) -> bool:
+    """Sets the low-stock alert threshold on a stock item — and nothing else.
+
+    Returns True when the stored threshold actually changed, so a caller can
+    count real changes rather than writes attempted.
+
+    The counterpart to ensure_stock_item: that one refuses to touch
+    min_quantity, this one touches only min_quantity and never the quantity on
+    the shelf. Together they let a caller apply exactly the fields it has an
+    opinion about — which is why the Excel import uses this pair instead of
+    set_stock_level, which writes quantity, threshold and unit in one go and so
+    cannot express "I have no opinion about the threshold".
+
+    Does nothing (and returns False) when the material is not stocked in this
+    warehouse yet; call ensure_stock_item first. A negative threshold is a
+    caller error, not data to store.
+    """
+    if min_quantity is None:
+        return False
+    min_quantity = float(min_quantity)
+    if min_quantity < 0:
+        raise ValueError("min_quantity cannot be negative: {!r}".format(min_quantity))
+    material_number = material_number.strip().upper()
+    conn = get_connection()
+    try:
+        existing = conn.execute("""
+            SELECT id, min_quantity FROM stock_items
+            WHERE warehouse_id=? AND material_number=?
+        """, (warehouse_id, material_number)).fetchone()
+        if existing is None:
+            return False
+        if float(existing["min_quantity"] or 0) == min_quantity:
+            return False
+        conn.execute("""
+            UPDATE stock_items SET min_quantity=?, updated_at=datetime('now')
+            WHERE id=?
+        """, (min_quantity, existing["id"]))
+        conn.commit()
+        return True
     finally:
         conn.close()
 

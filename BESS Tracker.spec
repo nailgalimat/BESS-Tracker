@@ -85,6 +85,7 @@ hidden = [
     'services.project_service',
     'services.report_service',
     'services.stock_service',
+    'services.stock_excel_service',
     'services.work_log_service',
     # New: Field Log + Sync
     'services.worklog_entry_service',
