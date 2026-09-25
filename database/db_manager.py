@@ -16,19 +16,52 @@ import os
 import sys
 
 
+def _dir_writable(path: str) -> bool:
+    """Can a file really be created in this directory?
+
+    os.access(path, W_OK) lies on Windows — for a folder under Program Files it
+    can report success and then hand the write to UAC virtualization, or refuse
+    it only at open() time — so probe with an actual file.
+    """
+    probe = os.path.join(path, '.bess_write_probe_{}'.format(os.getpid()))
+    try:
+        with open(probe, 'w'):
+            pass
+        os.remove(probe)
+        return True
+    except OSError:
+        return False
+
+
 def _get_db_path() -> str:
     """Where the database lives.
 
-    The packaged exe keeps it next to itself (dist\\pv_bess_tracker.db); a
-    source run would otherwise use a *different* file in the project root,
-    so trying a new feature from source silently works on an empty database
-    while the real data sits in dist. Set BESS_DB to point both at one file.
+    The packaged exe keeps it next to itself (the installer puts both in
+    %LOCALAPPDATA%\\Programs\\BESS Tracker); a source run would otherwise use a
+    *different* file in the project root, so trying a new feature from source
+    silently works on an empty database while the real data sits beside the exe.
+    Set BESS_DB to point both at one file.
+
+    One exception: if the exe's own folder cannot be written to — someone
+    copied the exe into C:\\Program Files, where the installer never puts it —
+    the database goes to %LOCALAPPDATA%\\BESS Tracker instead. Without this
+    SQLite fails at the first write with "unable to open database file" and
+    nothing says why. A writable folder keeps using its own file exactly as
+    before, so an existing installation is unaffected.
     """
     override = os.getenv('BESS_DB')
     if override:
         return os.path.abspath(override)
     if getattr(sys, 'frozen', False):
         base_dir = os.path.dirname(sys.executable)
+        if not _dir_writable(base_dir):
+            base_dir = os.path.join(
+                os.environ.get('LOCALAPPDATA') or os.path.expanduser('~'),
+                'BESS Tracker')
+            try:
+                os.makedirs(base_dir, exist_ok=True)
+            except OSError:
+                pass            # nothing better to try; SQLite reports it
     else:
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base_dir, 'pv_bess_tracker.db')

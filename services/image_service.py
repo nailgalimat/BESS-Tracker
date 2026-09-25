@@ -22,7 +22,7 @@ import uuid
 from datetime import datetime
 from typing import Optional, List
 
-from database.db_manager import get_connection
+from database.db_manager import DB_PATH, get_connection
 
 # ── Allowed image types (magic bytes) ────────────────────────────────────────
 
@@ -40,8 +40,13 @@ THUMB_SIZE     = (320, 240)
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 def _get_field_images_dir() -> str:
+    # The photos belong beside the database, not beside the exe: when the exe's
+    # own folder cannot be written to, db_manager puts the database in
+    # %LOCALAPPDATA%\BESS Tracker, and photos that stayed next to the exe would
+    # fail to save while everything else worked. For any writable installation
+    # the two folders are the same one, so nothing moves.
     if getattr(sys, 'frozen', False):
-        base_dir = os.path.dirname(sys.executable)
+        base_dir = os.path.dirname(DB_PATH)
     else:
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     d = os.path.join(base_dir, 'field_images')

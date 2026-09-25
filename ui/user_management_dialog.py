@@ -117,9 +117,15 @@ class UserManagementDialog(QDialog):
         self._passwd.setPlaceholderText("min 6 characters")
         gf.addRow("Password:", self._passwd)
 
+        # Technician is what a phone account normally is — the server has always
+        # understood the role (a technician sees only their own records and the
+        # jobs assigned to them, see routers/sync.py and team_service) but this
+        # dialog did not offer it, so there was no way to create one. Added at
+        # the end so the default stays Engineer.
         self._role = QComboBox()
-        self._role.addItem("Engineer", "engineer")
-        self._role.addItem("Admin",    "admin")
+        self._role.addItem("Engineer",   "engineer")
+        self._role.addItem("Admin",      "admin")
+        self._role.addItem("Technician", "technician")
         gf.addRow("Role:", self._role)
 
         grp.setLayout(gf)

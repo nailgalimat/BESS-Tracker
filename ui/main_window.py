@@ -60,6 +60,7 @@ from ui.user_management_dialog import UserManagementDialog
 
 from services.project_service import get_all_projects
 from services.sync_config import sync_config
+from services.version import APP_VERSION
 
 
 # Page index constants — easier to read than magic numbers
@@ -193,7 +194,10 @@ class NavButton(QPushButton):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("BESS Tracker  —  Field Service Portal")
+        # The version is in the title because it is the one thing a user can
+        # read out over the phone when reporting a problem.
+        self.setWindowTitle(
+            f"BESS Tracker {APP_VERSION}  —  Field Service Portal")
         self.setMinimumSize(1150, 720)
         self._nav_buttons = []
         self.sync_worker  = None

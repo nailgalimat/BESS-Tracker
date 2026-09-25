@@ -101,6 +101,7 @@ hidden = [
     # jobs the office gives to a named technician
     'services.team_service',
     'services.crash_guard',
+    'services.version',
     'ui.project_hub_page',
     'ui.today_page',
     'ui.work_page',

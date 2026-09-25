@@ -20,9 +20,20 @@ python run_tashkent_report.py --format both
 # freeze to dist\BESS Tracker.exe
 pyinstaller --clean "BESS Tracker.spec"
 
-# build Windows installer (after PyInstaller)
-# uses Inno Setup compiler against installer.iss → installer\BESS_Tracker_Setup.exe
+# release: version file + exe + clean DB + Inno Setup, in one command
+python tools\build_release.py              # → installer\BESS_Tracker_Setup_<ver>.exe
+python tools\build_release.py --skip-exe   # re-make the installer from the existing exe
 ```
+
+`services/version.py` holds `APP_VERSION` — the window title, the generated
+`installer/version.iss` and the installer's file name all read it. The installer
+ships the exe, a schema-only database from `tools\make_clean_db.py`
+(`build\clean\pv_bess_tracker.db`, never a copy of the live one) and
+[docs/SETUP_FOR_A_NEW_TEAM.md](docs/SETUP_FOR_A_NEW_TEAM.md), the guide for a
+second team standing the app up on their own PC and their own server. Two tests
+pin that: `test_installer_manifest.py` (what the .iss ships, plus the build
+script's refusal to compile an .iss naming the live DB or `sync_config.json`) and
+`test_clean_db.py`.
 
 ### Tests
 
@@ -60,7 +71,8 @@ Strict three-layer split — touch the right layer:
 `database/db_manager._get_db_path()` picks the DB location based on `sys.frozen`:
 
 - dev: `<repo>/pv_bess_tracker.db`
-- frozen exe: `<dir of exe>/pv_bess_tracker.db` (i.e. `dist/pv_bess_tracker.db`, which the Inno installer copies to `{app}\` with `onlyifdoesntexist` so user data survives upgrades)
+- frozen exe: `<dir of exe>/pv_bess_tracker.db` (i.e. `dist/pv_bess_tracker.db`; the installer puts the app in `{localappdata}\Programs\BESS Tracker` and copies the clean DB there with `onlyifdoesntexist` so user data survives upgrades)
+- frozen exe whose own folder is **not writable** (someone copied it into `C:\Program Files`): `%LOCALAPPDATA%\BESS Tracker\pv_bess_tracker.db`. Writability is a real write probe (`_dir_writable`), because `os.access` lies on Windows; a writable folder is unaffected, so existing installations keep their file. `test_db_path_fallback.py` pins all three. `image_service._get_field_images_dir()` follows the database rather than the exe (`dirname(DB_PATH)` when frozen), so photos never end up in a folder the app cannot write to while the database itself has moved.
 
 Any new code that needs a runtime-writable file next to the app must follow the same `sys.frozen` pattern. Read-only bundled resources (e.g. `data/alarm_classifications.csv`) are loaded via `os.path.dirname(__file__)`-relative paths and bundled into the exe through the `datas` list in `BESS Tracker.spec` — see that file's `_hist` block for the "bundle if it exists" pattern.
 
