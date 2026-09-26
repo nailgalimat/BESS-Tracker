@@ -139,6 +139,16 @@ Create one account per person. Accounts are shared between the desktop and the
 phones, and the desktop remembers them locally so an assigned name still shows
 up on a record months later.
 
+**When someone changes job or leaves.** Select them in the list and use
+**Change role** or **Deactivate** (admin only, each asks first). Deactivating is
+how access is revoked: the account can no longer log in, the sessions its phone
+holds are revoked immediately, and it disappears from the "Assigned to" picker.
+Let the phone sync before you deactivate it — work it has not sent yet will no
+longer reach the office. Nothing is deleted and the account can be reactivated
+at any time, because old records name their author. There is deliberately no way
+to deactivate or demote your own admin account, or the last remaining admin:
+that would leave nobody able to administer the server.
+
 ---
 
 ## E. The phones

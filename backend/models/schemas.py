@@ -7,7 +7,7 @@ Pydantic request / response schemas.
 from __future__ import annotations
 
 from typing import Optional, List, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -29,8 +29,35 @@ class UserOut(BaseModel):
     email:      Optional[str]
     role:       str
     created_at: str
+    # Whether the account may still log in. Additive: an older desktop or phone
+    # ignores the field, and /auth/login and /auth/me keep their old shape plus
+    # this one. A row written before the column had a default can hold NULL, and
+    # a validation error here would break login for everyone — so None reads as
+    # active, exactly as the login query's `is_active == True` filter treats it
+    # (a NULL never matches, so such an account cannot log in anyway).
+    is_active:  bool = True
+
+    @field_validator("is_active", mode="before")
+    @classmethod
+    def _active_default(cls, v):
+        return True if v is None else v
 
     model_config = {"from_attributes": True}
+
+
+class UserAdminUpdate(BaseModel):
+    """What an admin may change about an existing account: its role and
+    whether it is active. Both optional — a request sends only what it
+    changes. Nothing else about a user is editable through the API."""
+    role:      Optional[str]  = None
+    is_active: Optional[bool] = None
+
+
+class UserAdminOut(UserOut):
+    """The account after an admin change, plus how many still-valid refresh
+    tokens were revoked with it — a deactivation says how many phone/desktop
+    sessions it actually ended."""
+    revoked_sessions: int = 0
 
 
 class AssignableUser(BaseModel):
