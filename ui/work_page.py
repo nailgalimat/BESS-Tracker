@@ -12,6 +12,10 @@ Log, Field Records and the Daily Log. One record shape, one list, one card.
   * `work_logs` rows are shown, marked "Old format", and cannot be edited: they
     still count in the report, but new work is written as a record the phones
     understand.
+  * Old Daily Log rows are shown too, marked "Daily Log" and read-only: each one
+    is a material issued against a node with the work written beside it. They are
+    closed history — no Save, no Delete, no write-off, no sync — and the same
+    rows are on Spare parts → Consumption history, seen from the material's side.
   * Materials: what the field reported using, the structured rows the office
     writes off, and the warehouse they leave. Stock moves only when somebody
     presses the button and confirms it — never on save.
@@ -600,6 +604,7 @@ class WorkPage(QWidget):
         self.source_cb.addItem("Phone", 'phone')
         self.source_cb.addItem("Desktop", 'desktop')
         self.source_cb.addItem("Old format", 'old')
+        self.source_cb.addItem("Daily Log", wj.SOURCE_DAILY)
         self.assignee_cb = QComboBox()
         self.assignee_cb.setMinimumWidth(130)
         self.assignee_cb.setToolTip("What is with whom — the jobs the office "
@@ -765,8 +770,11 @@ class WorkPage(QWidget):
             work = r['title'] or r['work_done'] or '(no text)'
             if r['kind'] == wj.KIND_PM:
                 work = 'PM · ' + work
-            src = {'phone': 'Phone', 'desktop': 'Desktop', 'old': 'Old format'}.get(
-                r['source'], r['source'])
+            if wj.is_legacy(r):
+                # a Daily Log row is "this material, and what happened": the
+                # title alone would be a bare part number in every cell
+                work = ' · '.join(x for x in (r['title'], r['work_done']) if x)
+            src = wj.SOURCE_LABELS.get(r['source'], r['source'])
             if r['sync'] == 'conflict':
                 src = 'Conflict'
             who = r.get('assignee_name') or (
@@ -886,7 +894,16 @@ class WorkPage(QWidget):
         head.setWordWrap(True)
         self.card_l.addWidget(head)
 
-        if row['old_format']:
+        legacy = wj.is_legacy(row)
+        if legacy:
+            # the owner went looking for these in this list; say plainly what
+            # they are and why the buttons below are grey
+            self._banner("From the old Daily Log — one material issued against "
+                         "this node, with what happened written next to it. Kept "
+                         "as history and read-only: the material already left "
+                         "stock when it was written, and it is ours, not the "
+                         "customer's. Write new work as a new record.", 'info')
+        elif row['old_format']:
             self._banner("Old format — this is a Work Report row. It still counts "
                          "in the monthly report; it is read-only here. Open it on "
                          "Work Reports in the archive to change it.", 'info')
@@ -895,7 +912,12 @@ class WorkPage(QWidget):
                          "on the desktop. Nothing is overwritten until you choose.",
                          'crit')
         suggestion = None
-        if not row['block']:
+        if not row['block'] and legacy:
+            # nothing to ask for: the container this row named is gone, and no
+            # report reads it anyway
+            self._banner("No plant block — the container this row was written "
+                         "against is no longer in the project.", 'info')
+        elif not row['block']:
             self._banner("No plant block — this record cannot go into the customer's "
                          "section 3.2. Set the block below.", 'warn')
             if row.get('location') and self._pid is not None:
@@ -1014,12 +1036,20 @@ class WorkPage(QWidget):
             holder.setLayout(loc_row)
             add("Phone location", holder)
 
+        # A Daily Log row is a material issue, not a fault write-up, and
+        # materials consumption never goes to the customer — so the labels say
+        # what the two fields really hold and neither is tagged "In report".
         self._fields['title'] = QLineEdit(row['title'])
-        add("Fault", self._fields['title'], in_report())
+        add("Material issued" if legacy else "Fault", self._fields['title'],
+            internal() if legacy else in_report())
 
         self._fields['work_done'] = QTextEdit(row['work_done'])
         self._fields['work_done'].setFixedHeight(56)
-        add("What was done", self._fields['work_done'], in_report())
+        add("Comment" if legacy else "What was done", self._fields['work_done'],
+            internal() if legacy else in_report())
+
+        if legacy and row.get('warehouse'):
+            add("Issued from", QLabel(row['warehouse']))
 
         self._fields['internal_note'] = QTextEdit(row['internal_note'])
         self._fields['internal_note'].setFixedHeight(48)
@@ -1346,7 +1376,7 @@ class WorkPage(QWidget):
         try:
             key = wj.save(self._pid, self._key, **data)
         except wj.ReadOnlyRecord as e:
-            QMessageBox.information(self, "Old format", str(e))
+            QMessageBox.information(self, "Read-only record", str(e))
             return
         except Exception as e:                           # noqa: BLE001
             QMessageBox.warning(self, "Not saved", str(e))
@@ -1399,7 +1429,7 @@ class WorkPage(QWidget):
         try:
             wj.delete(self._key)
         except wj.ReadOnlyRecord as e:
-            QMessageBox.information(self, "Old format", str(e))
+            QMessageBox.information(self, "Read-only record", str(e))
             return
         except Exception as e:                           # noqa: BLE001
             QMessageBox.warning(self, "Not deleted", str(e))

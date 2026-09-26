@@ -5,7 +5,7 @@ and Field Records (`work_log_entries`), and the Daily Log. This module reads
 them as **one list** with one shape, so the Work page, the Today page and the
 tests all count the same rows.
 
-Two stores, deliberately not merged in the database:
+Three stores, deliberately not merged in the database:
 
   `work_log_entries`  the live record. Written by the phone and now by the
                       desktop as well; carries the plant block, the node, PTW,
@@ -14,6 +14,16 @@ Two stores, deliberately not merged in the database:
                       labelled "Old format" — its rows stay visible and keep
                       counting for the report (report_workflow_service builds
                       3.2 from both), but new work is not written there.
+  `daily_logs`        the old Daily Log. One row is **one material issued**
+                      against one container, with a comment describing the
+                      work. **Read-only history** — read through
+                      log_service.consumption_history, which the Spare parts
+                      page calls for the same rows seen from the material's
+                      side. They are closed, they carry no status, they are not
+                      outstanding work and they are not in the customer's
+                      report (materials consumption is ours): so they can never
+                      be open, can never be edited, deleted, re-deducted from
+                      stock or synced, and nothing here offers to.
 
 Block numbers: `work_logs` and the container link number blocks *inside a
 zone*; the plant and the customer speak plant-wide (block 57). Records carry
@@ -38,6 +48,12 @@ DONE_STATES = ('done', 'fixed', 'closed', 'complete', 'completed')
 KIND_PM = 'PM'
 KIND_FAULT = 'Fault'
 KIND_OTHER = 'Other'
+
+# Where a row came from. 'daily' is the old Daily Log — read-only history.
+SOURCE_PHONE = 'phone'
+SOURCE_DESKTOP = 'desktop'
+SOURCE_OLD = 'old'
+SOURCE_DAILY = 'daily'
 
 PM_CATEGORIES = ('maintenance',)
 FAULT_CATEGORIES = ('fault', 'repair')
@@ -149,7 +165,9 @@ _EXPORT_COLS = [('Date', 'date', 11), ('Block', 'block', 7), ('Zone', 'zone_labe
                 ('PTW No.', 'ptw', 14), ('SAP', 'sap', 12), ('Start', 'time_from', 7),
                 ('End', 'time_to', 7), ('Hours', 'hours', 7),
                 ('Availability', 'impact', 12), ('Source', 'source', 10)]
-_EXPORT_TEXT = {'source': {'phone': 'Phone', 'desktop': 'Desktop', 'old': 'Old format'},
+SOURCE_LABELS = {SOURCE_PHONE: 'Phone', SOURCE_DESKTOP: 'Desktop',
+                 SOURCE_OLD: 'Old format', SOURCE_DAILY: 'Daily Log'}
+_EXPORT_TEXT = {'source': SOURCE_LABELS,
                 'impact': {'none': '', 'counts': 'Counts', 'excluded': 'Excluded'}}
 
 
@@ -365,7 +383,10 @@ def records(project_id: int, date_from: str = None, date_to: str = None,
     Each row: key, source, editable, date, block, zone_label, lc, device,
     node, kind, title, work_done, internal_note, status, ptw, sap, hours,
     sync, age_days, parts (the phone's free-text materials note),
-    ref (the row id in its own table)."""
+    ref (the row id in its own table).
+
+    `include_old` covers both read-only stores — the old Work Reports and the
+    old Daily Log. mirror_photos passes False: neither of them has photos."""
     conn = get_connection()
     out = []
     try:
@@ -461,9 +482,73 @@ def records(project_id: int, date_from: str = None, date_to: str = None,
                 row['node'] = node_text(row)
                 row['age_days'] = _age_days(row['date'], today)
                 out.append(row)
+
+            out.extend(_daily_rows(project_id, date_from, date_to, today))
     finally:
         conn.close()
     out.sort(key=lambda r: (r['date'] or '', r['key']), reverse=True)
+    return out
+
+
+def _daily_rows(project_id: int, date_from, date_to, today) -> List[dict]:
+    """The old Daily Log as journal rows — read-only history, never open work.
+
+    The record is "this material was issued against this container, and here is
+    what happened", so the material and its quantity are the row's title (the
+    record's identity) and the comment is its text (its only narrative). Both
+    are ours, not the customer's.
+
+    Three independent reasons a row here can never read as outstanding work:
+    kind is Other (open_faults only takes faults), status is Done (is_open is
+    false), and `editable` is False (the card offers nothing to press). The
+    block comes from the container through the project's block map, or stays
+    None — never guessed.
+    """
+    from services.log_service import consumption_history
+    out = []
+    for r in consumption_history(project_id, date_from, date_to):
+        block = r.get('plant_block')
+        qty = r.get('quantity')
+        mat = (r.get('material_number') or '').strip()
+        try:
+            qty_txt = f'{float(qty):g}' if qty is not None else ''
+        except (TypeError, ValueError):
+            qty_txt = str(qty or '')
+        # "BP008089 x1" — how a parts list is written on site, and plain ASCII:
+        # the console this app is started from is cp1251 on a Russian Windows,
+        # which cannot encode '×'.
+        title = (f'{mat} x{qty_txt}' if mat and qty_txt else (mat or qty_txt))
+        row = {
+            'key': 'd:' + str(r['id']), 'ref': r['id'], 'source': SOURCE_DAILY,
+            # read-only, and old_format so the card's photo and materials
+            # write-off sections are skipped the way they are for work_logs
+            'editable': False, 'old_format': True, 'legacy': True,
+            'date': (r.get('date') or '')[:10],
+            'block': int(block) if block else None,
+            'zone_label': zone_label(project_id, block),
+            'lc': '',                       # the Daily Log never recorded one
+            'device': r.get('device') or '', 'location': '',
+            'kind': KIND_OTHER,
+            'title': title or 'Material issued',
+            'work_done': (r.get('comment') or '').strip(),
+            'internal_note': '',
+            'parts': '',                    # the material is the title here
+            'status': 'Done',
+            'ptw': '', 'sap': r.get('sap_ticket') or '',
+            'hours': None, 'time_from': '', 'time_to': '',
+            'impact': 'none',
+            'assignee': '', 'assignee_name': '', 'assigned_by': '', 'due': '',
+            'sync': 'old', 'category': 'consumption',
+            'container_id': r.get('container_id'),
+            'serial': (r.get('serial_number') or '').strip(),
+            'material_number': mat, 'quantity': qty,
+            'description': r.get('description') or '',
+            'warehouse': r.get('warehouse') or '',
+            'project_id': r.get('project_id'),
+        }
+        row['node'] = node_text(row)
+        row['age_days'] = _age_days(row['date'], today)
+        out.append(row)
     return out
 
 
@@ -481,14 +566,28 @@ def is_conflict(r: dict) -> bool:
     return r.get('sync') == 'conflict'
 
 
+def is_legacy(r: dict) -> bool:
+    """A read-only Daily Log row: history, not a job anyone can act on."""
+    return r.get('source') == SOURCE_DAILY
+
+
 def has_no_block(r: dict) -> bool:
     return not r.get('block')
+
+
+def needs_block(r: dict) -> bool:
+    """The "No block" tab is a queue of records somebody must give a block to,
+    which is also the number Today prints. A Daily Log row whose container is
+    gone honestly has no block, but it is read-only history that no report
+    reads — putting it in the queue would ask for work that cannot be done and
+    would inflate the Today counter. It still shows "No block" on its row."""
+    return has_no_block(r) and not is_legacy(r)
 
 
 TABS = (
     ('all', 'All', lambda r: True),
     ('open', 'Open', is_open),
-    ('noblock', 'No block', has_no_block),
+    ('noblock', 'No block', needs_block),
     ('conflict', 'Conflicts', is_conflict),
 )
 
@@ -555,7 +654,15 @@ KIND_TO_CATEGORY = {KIND_FAULT: 'fault', KIND_PM: 'maintenance',
 
 
 class ReadOnlyRecord(RuntimeError):
-    """A `work_logs` row — the old format — cannot be edited here."""
+    """A `work_logs` or `daily_logs` row cannot be edited here."""
+
+
+# What the user is told when a read-only row is written to. The Daily Log row
+# also stands behind a stock movement that was booked when it was made; editing
+# or deleting it here would move stock a second time.
+DAILY_READONLY = ('This is a record from the old Daily Log. It is kept as '
+                  'history and is read-only: its materials already left stock '
+                  'when it was written. Create a new record for new work.')
 
 
 def get(key: str, project_id: int) -> Optional[dict]:
@@ -573,6 +680,8 @@ def save(project_id: int, key: str = None, **fields) -> str:
     container_id, assignee, assignee_name, assigned_by, due.
     """
     import services.worklog_entry_service as wes
+    if key and key.startswith('d:'):
+        raise ReadOnlyRecord(DAILY_READONLY)
     if key and key.startswith('w:'):
         raise ReadOnlyRecord(
             'This record is in the old Work Report format and is read-only. '
@@ -637,6 +746,8 @@ def save(project_id: int, key: str = None, **fields) -> str:
 
 def delete(key: str):
     import services.worklog_entry_service as wes
+    if key.startswith('d:'):
+        raise ReadOnlyRecord(DAILY_READONLY)
     if key.startswith('w:'):
         raise ReadOnlyRecord('Old-format records are deleted on the '
                              'Work Reports page in the archive.')

@@ -3,10 +3,16 @@ ui/stock_page.py
 -----------------
 Spare Parts Stock Management.
 
-Three inner tabs:
+Four inner tabs:
   1. Stock View   — see current levels per warehouse, low-stock alerts
   2. Transaction  — record IN / OUT / TRANSFER
   3. History      — audit trail of all movements
+  4. Consumption  — the old Daily Log: what was issued, to which block, and why.
+                    **Read-only history** — the same rows the Work page shows,
+                    through the one query in services/log_service.py, seen here
+                    from the material's side. Nothing on this tab moves stock:
+                    whatever these rows deducted was booked when they were
+                    written.
 
 Stock counts arrive as SAP exports; Import from Excel reads one through
 services/stock_excel_service.py and always shows what it would change first —
@@ -64,16 +70,25 @@ class StockPage(QWidget):
         self.hist_tab = StockHistoryTab()
         self.tabs.addTab(self.hist_tab, "📋  History")
 
+        self.cons_tab = ConsumptionHistoryTab()
+        self.tabs.addTab(self.cons_tab, "🗂  Consumption history")
+
         self.tabs.currentChanged.connect(self._on_tab)
 
     def _on_tab(self, idx):
         if idx == 0: self.stock_tab.refresh()
         elif idx == 1: self.tx_tab.refresh()
         elif idx == 2: self.hist_tab.refresh()
+        elif idx == 3: self.cons_tab.refresh()
+
+    def set_current_project(self, pid, name=None):
+        """The shell's open project — the consumption history is per project."""
+        self.cons_tab.set_current_project(pid)
 
     def refresh_projects(self):
         self.tx_tab.refresh()
         self.hist_tab.refresh()
+        self.cons_tab.refresh()
 
 
 # ── STOCK VIEW ────────────────────────────────────────────────────────────────
@@ -822,3 +837,130 @@ class StockHistoryTab(QWidget):
                 item.setTextAlignment(Qt.AlignCenter)
                 item.setBackground(bg)
                 self.hist_table.setItem(row, col, item)
+
+
+# ── CONSUMPTION HISTORY (the old Daily Log) ───────────────────────────────────
+
+class ConsumptionHistoryTab(QWidget):
+    """What was issued from stock in the old Daily Log, newest first.
+
+    Read-only. These rows are also in the Work list (same query, in
+    services/log_service.consumption_history) — there as the work, here as the
+    material. Nothing on this tab writes anything: no row can be edited or
+    deleted, and no stock transaction is created or reversed. Whatever these
+    rows took out of a warehouse was booked at the time they were written.
+    """
+
+    COLUMNS = ["Date", "Material #", "Description", "Qty", "Block", "Node",
+               "Warehouse", "SAP ticket", "Comment"]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pid = None
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        note = QLabel(
+            "Materials issued in the old Daily Log — read-only history. Each row "
+            "is one material against one block, with what was done written next to "
+            "it. The same rows are on the Work page. Internal: materials "
+            "consumption is not part of the customer's monthly report.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#6B4E00;background:#FFF4D6;border:1px solid #E0C97F;"
+                           "border-radius:4px;padding:6px 8px;")
+        layout.addWidget(note)
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Project:"))
+        self.proj_filter = QComboBox()
+        self.proj_filter.setMinimumWidth(220)
+        top.addWidget(self.proj_filter)
+        top.addWidget(QLabel("Warehouse:"))
+        self.wh_filter = QComboBox()
+        self.wh_filter.setMinimumWidth(180)
+        top.addWidget(self.wh_filter)
+        top.addWidget(QLabel("Find:"))
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("material, description, comment or SAP")
+        self.search.setMinimumWidth(200)
+        top.addWidget(self.search)
+        top.addStretch()
+        load_btn = PrimaryButton("🔍  Load")
+        load_btn.clicked.connect(self._load)
+        top.addWidget(load_btn)
+        layout.addLayout(top)
+
+        self.cons_table = make_table(self.COLUMNS)
+        layout.addWidget(self.cons_table)
+
+        self.foot = QLabel("")
+        self.foot.setStyleSheet("color:#6B7A8D;")
+        layout.addWidget(self.foot)
+
+        self.search.returnPressed.connect(self._load)
+        self.proj_filter.currentIndexChanged.connect(self._load)
+        self.wh_filter.currentIndexChanged.connect(self._load)
+
+    # ── shell hook ───────────────────────────────────────────────────────
+    def set_current_project(self, pid):
+        self._pid = pid
+        self.refresh()
+
+    def refresh(self):
+        """Rebuild the choosers (a project or warehouse may be new), keeping
+        what is selected, then load."""
+        for combo, items, blank in (
+                (self.proj_filter, [(p.name, p.id) for p in get_all_projects()], None),
+                (self.wh_filter, [(w["name"], w["id"]) for w in get_all_warehouses()],
+                 ("All warehouses", None))):
+            want = combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            if blank:
+                combo.addItem(blank[0], userData=blank[1])
+            for label, data in items:
+                combo.addItem(label, userData=data)
+            if combo is self.proj_filter and self._pid is not None:
+                want = self._pid
+            i = combo.findData(want)
+            combo.setCurrentIndex(i if i >= 0 else 0)
+            combo.blockSignals(False)
+        self._load()
+
+    def _load(self):
+        from services.log_service import consumption_history
+        self.cons_table.setRowCount(0)
+        pid = self.proj_filter.currentData()
+        if pid is None:
+            self.foot.setText("Open a project to see its consumption history.")
+            return
+        rows = consumption_history(
+            pid, warehouse_id=self.wh_filter.currentData(),
+            text=self.search.text().strip() or None)
+        for r in rows:
+            i = self.cons_table.rowCount()
+            self.cons_table.insertRow(i)
+            qty = r.get("quantity")
+            try:
+                qty_txt = f"{float(qty):g}" if qty is not None else ""
+            except (TypeError, ValueError):
+                qty_txt = str(qty or "")
+            blk = r.get("plant_block")
+            cells = [r.get("date", ""), r.get("material_number", ""),
+                     r.get("description", ""), qty_txt,
+                     str(blk) if blk else "—", r.get("device", ""),
+                     r.get("warehouse", ""), r.get("sap_ticket", ""),
+                     r.get("comment", "")]
+            for col, val in enumerate(cells):
+                item = QTableWidgetItem(str(val) if val else "")
+                if col != len(cells) - 1:
+                    item.setTextAlignment(Qt.AlignCenter)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.cons_table.setItem(i, col, item)
+        self.foot.setText(
+            f"{len(rows)} row(s) · newest first · read-only" if rows else
+            "No Daily Log rows for this filter.")

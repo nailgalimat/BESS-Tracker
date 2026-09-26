@@ -13,6 +13,7 @@ Stock integration:
 
 from database.db_manager import get_connection
 from models.models import LogEntry
+from services.project_service import zone_block_to_plant
 from services.stock_service import _adjust_stock
 from typing import List, Optional
 
@@ -197,6 +198,96 @@ def get_log_entries(
 
     # Convert sqlite3.Row objects to plain dicts
     return [dict(r) for r in rows]
+
+
+# ── The old Daily Log, read-only ─────────────────────────────────────────────
+# `daily_logs` is not a work report despite the name: one row is **one material
+# issued** against one container, with a free-text comment describing the work.
+# The redesign stopped writing it, and the rows that are there became invisible.
+# They are history — the Work page and the Spare parts page both show them, both
+# read-only, and both through this one function so the two views can never
+# disagree. Nothing here writes, and no stock movement is created or reversed:
+# whatever `save_log_entry` booked at the time already stands.
+
+# What the container type is called on a node ("Block 47 · PCS"). A block holds
+# one LC cabinet, one PCS/converter and four batteries; the battery's number is
+# its ordinal among that block's batteries in container_index order, which is
+# exactly how work_journal_service.container_for_node reads it back. The LC of a
+# battery or PCS row is not recorded, so it is left empty rather than guessed.
+_DEVICE_BY_TYPE = {'Battery': 'BESS', 'PCS / Converter': 'PCS',
+                   'LC Cabinet': 'LC cabinet'}
+
+
+def _device_label(container_type: str, unit_no) -> str:
+    name = _DEVICE_BY_TYPE.get((container_type or '').strip())
+    if name is None:
+        return (container_type or '').strip()
+    if name == 'BESS' and unit_no:
+        return f'BESS {int(unit_no)}'
+    return name
+
+
+def consumption_history(project_id: int, date_from: Optional[str] = None,
+                        date_to: Optional[str] = None,
+                        material_number: Optional[str] = None,
+                        warehouse_id: Optional[int] = None,
+                        text: Optional[str] = None) -> List[dict]:
+    """The project's old Daily Log rows, newest first. **Read-only.**
+
+    Each row: id, date, material_number, description, quantity, comment,
+    sap_ticket, container_id, zone_number, block_number, container_type,
+    unit_no, device, serial_number, plant_block, warehouse_id, warehouse,
+    created_at, project_id.
+
+    `plant_block` is translated from the container's (zone, local block) pair
+    through the project's block map — the only thing that knows zone 6 block 8
+    is plant block 47. A row whose container is gone keeps `plant_block` None:
+    the block is unknown, and an unknown block is not guessed.
+    """
+    conn = get_connection()
+    try:
+        q = """
+            SELECT dl.id, dl.project_id, dl.container_id, dl.date,
+                   dl.material_number, dl.quantity, dl.comment, dl.created_at,
+                   dl.sap_ticket, dl.warehouse_id,
+                   c.zone_number, c.block_number, c.container_index,
+                   c.container_type, c.serial_number,
+                   (SELECT COUNT(*) FROM containers c2
+                     WHERE c2.project_id     = c.project_id
+                       AND c2.zone_number    = c.zone_number
+                       AND c2.block_number   = c.block_number
+                       AND c2.container_type = c.container_type
+                       AND c2.container_index <= c.container_index) AS unit_no,
+                   COALESCE(w.name, '')        AS warehouse,
+                   COALESCE(m.description, '') AS description
+            FROM daily_logs dl
+            LEFT JOIN containers c ON dl.container_id   = c.id
+            LEFT JOIN warehouses w ON dl.warehouse_id   = w.id
+            LEFT JOIN materials  m ON dl.material_number = m.material_number
+            WHERE dl.project_id = ?
+        """
+        p = [project_id]
+        if date_from:
+            q += " AND dl.date >= ?"; p.append(date_from)
+        if date_to:
+            q += " AND dl.date <= ?"; p.append(date_to)
+        if material_number:
+            q += " AND dl.material_number = ?"; p.append(material_number)
+        if warehouse_id is not None:
+            q += " AND dl.warehouse_id = ?"; p.append(warehouse_id)
+        if text:
+            q += (" AND (dl.comment LIKE ? OR dl.material_number LIKE ?"
+                  " OR m.description LIKE ? OR dl.sap_ticket LIKE ?)")
+            p += ['%' + text + '%'] * 4
+        q += " ORDER BY dl.date DESC, dl.created_at DESC, dl.id DESC"
+        rows = [dict(r) for r in conn.execute(q, p).fetchall()]
+    finally:
+        conn.close()
+    for r in rows:
+        r['plant_block'] = zone_block_to_plant(
+            project_id, r.get('zone_number'), r.get('block_number'))
+        r['device'] = _device_label(r.get('container_type'), r.get('unit_no'))
+    return rows
 
 
 def delete_log_entry(entry_id: int):
