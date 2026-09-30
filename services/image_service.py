@@ -261,6 +261,13 @@ def download_remote_image(image_id: str, work_log_id: str) -> Optional[str]:
         log_dir  = get_image_dir(work_log_id)
         filename = row.get("filename") or f"{image_id}.jpg"
         dest     = os.path.join(log_dir, filename)
+        # Phones name every photo "image.jpg", so two photos on one record used
+        # to land on the same path and the second overwrote the first: one row
+        # then pointed at another photo's file, and the only good copy of the
+        # loser was the server's. Same convention as the readable photo folders.
+        if os.path.exists(dest):
+            stem, ext = os.path.splitext(filename)
+            dest = os.path.join(log_dir, f"{stem}_{image_id[:8]}{ext or '.jpg'}")
 
         if download_image_file(image_id, dest):
             thumb = os.path.join(log_dir, f"{image_id}_thumb.jpg")

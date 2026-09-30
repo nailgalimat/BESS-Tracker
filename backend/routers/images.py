@@ -3,8 +3,17 @@ routers/images.py
 ------------------
 POST   /worklogs/{id}/images        — upload image (multipart)
 GET    /worklogs/{id}/images        — list images for an entry
+GET    /images/storage              — how much the server holds vs has handed over
+POST   /images/archived             — the desktop confirms; the server drops files
 GET    /images/{image_id}/download  — serve/redirect to file
 DELETE /images/{image_id}           — delete image
+
+Photo retention: this server is a staging post, not the archive. A phone
+uploads a photo here, the office desktop downloads it and verifies its SHA-256
+against the hash stored at upload, and only then confirms — at which point the
+file and its thumbnail are deleted while the row and all of its metadata stay.
+Nothing is ever deleted on a timer or on a guess; an unconfirmed photo is kept
+for ever, so a desktop that never confirms anything loses nothing.
 """
 
 import os
@@ -19,10 +28,18 @@ from sqlalchemy.orm import Session
 from database import get_db
 from dependencies import get_current_user
 from models.db_models import User, WorkLogEntry, WorkLogImage
-from models.schemas import WorkLogImageOut, ImageUploadResponse
+from models.schemas import (
+    WorkLogImageOut, ImageUploadResponse,
+    ImageArchiveRequest, ImageArchiveResult, ImageArchiveResponse,
+    ImageStorageReport,
+)
 from services.storage_service import save_upload, delete_files, get_file_path, MAX_BYTES
 
 router = APIRouter(tags=["images"])
+
+# One sweep of a desktop that has never confirmed anything has hundreds of
+# photos to hand over; a cap keeps one request's work and body bounded.
+MAX_ARCHIVE_BATCH = 500
 
 
 def _now() -> str:
@@ -31,6 +48,7 @@ def _now() -> str:
 
 def _image_out(img: WorkLogImage, request: Request) -> WorkLogImageOut:
     base = str(request.base_url)
+    archived_at = getattr(img, "file_archived_at", None)
     return WorkLogImageOut(
         id           = img.id,
         work_log_id  = img.work_log_id,
@@ -42,6 +60,8 @@ def _image_out(img: WorkLogImage, request: Request) -> WorkLogImageOut:
         uploaded_at  = img.uploaded_at,
         updated_at   = img.updated_at,
         download_url = f"{base}images/{img.id}/download",
+        archived     = bool(archived_at),
+        archived_at  = archived_at,
     )
 
 
@@ -188,11 +208,144 @@ def download_image(
     if user.role != "admin" and (not entry or entry.user_id != user.id):
         raise HTTPException(status_code=403, detail="Not your image")
 
+    # Archived: the photo exists, this server just no longer keeps the bytes.
+    # 410 Gone, not 404 — a client must be able to tell "the office desktop has
+    # it" from "your photo is lost", and say so to the person holding the phone.
+    archived_at = getattr(img, "file_archived_at", None)
+    if archived_at:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                f"Photo archived on the office desktop on {archived_at[:10]}. "
+                "The server no longer keeps a copy — ask the office for it. "
+                "Nothing is lost."
+            ),
+        )
+
     abs_path = get_file_path(img.file_path)
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found on disk")
 
     return FileResponse(abs_path, filename=img.filename or "image.jpg")
+
+
+# ── The desktop confirms it holds the photo; the server drops its file ────────
+
+@router.post("/images/archived", response_model=ImageArchiveResponse)
+def confirm_archived(
+    body: ImageArchiveRequest,
+    db:   Session = Depends(get_db),
+    user: User    = Depends(get_current_user),
+):
+    """The desktop says: these photos are safe here, you may delete your files.
+
+    File-only: the `work_log_images` row and every field on it survive, so the
+    record still shows a photo exists, `GET /worklogs/{id}/images` still lists
+    it (flagged `archived`), and the stored sha256 still identifies the
+    desktop's copy. This is deliberately NOT `DELETE /images/{id}`, which
+    removes the record itself.
+
+    Idempotent: confirming an already-archived photo is counted as `already`,
+    never an error, so a confirm call that was interrupted after the files were
+    deleted can simply be repeated on the next sync.
+
+    `updated_at` is intentionally left alone. None of the photo's metadata
+    changed, only where its bytes live, and bumping it would re-deliver every
+    archived row to every client on their next pull for no gain.
+    """
+    ids = [i for i in (body.image_ids or []) if i]
+    if not ids:
+        return ImageArchiveResponse(results=[], archived=0, already=0, freed_bytes=0)
+    if len(ids) > MAX_ARCHIVE_BATCH:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Too many ids in one call. Max {MAX_ARCHIVE_BATCH}.",
+        )
+
+    rows = {r.id: r for r in db.query(WorkLogImage).filter(WorkLogImage.id.in_(ids)).all()}
+    # One query for the parent entries, so a 500-photo sweep is not 500 lookups.
+    entry_ids = {r.work_log_id for r in rows.values()}
+    entries = {}
+    if entry_ids:
+        entries = {e.id: e for e in db.query(WorkLogEntry).filter(
+            WorkLogEntry.id.in_(entry_ids)).all()}
+
+    now = _now()
+    results: list[ImageArchiveResult] = []
+    n_archived = n_already = freed = 0
+
+    for image_id in ids:
+        img = rows.get(image_id)
+        if img is None:
+            results.append(ImageArchiveResult(id=image_id, outcome="not_found"))
+            continue
+
+        entry = entries.get(img.work_log_id)
+        if user.role != "admin" and (not entry or entry.user_id != user.id):
+            results.append(ImageArchiveResult(id=image_id, outcome="forbidden"))
+            continue
+
+        if img.file_archived_at:
+            n_already += 1
+            results.append(ImageArchiveResult(id=image_id, outcome="already"))
+            continue
+
+        # Measure before deleting: size_bytes is the original upload size, and
+        # the thumbnail is freed too.
+        bytes_here = 0
+        for rel in (img.file_path, img.thumbnail_path):
+            if not rel:
+                continue
+            try:
+                p = get_file_path(rel)
+                if os.path.isfile(p):
+                    bytes_here += os.path.getsize(p)
+            except OSError:
+                pass
+
+        delete_files(img.file_path, img.thumbnail_path)
+        img.file_archived_at = now
+        img.archived_by      = user.id
+        n_archived += 1
+        freed += bytes_here
+        results.append(ImageArchiveResult(id=image_id, outcome="archived",
+                                          freed_bytes=bytes_here))
+
+    db.commit()
+    return ImageArchiveResponse(results=results, archived=n_archived,
+                                already=n_already, freed_bytes=freed)
+
+
+# ── What the server is holding ────────────────────────────────────────────────
+
+@router.get("/images/storage", response_model=ImageStorageReport)
+def image_storage(
+    db:   Session = Depends(get_db),
+    user: User    = Depends(get_current_user),
+):
+    """Counts and bytes: photos whose files are still here vs handed over, plus
+    the disk under the uploads directory. Numbers only, no paths. Admin only —
+    it is a whole-deployment figure, not one person's photos."""
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    from sqlalchemy import func
+    from config import disk_report
+
+    on_n, on_b = db.query(
+        func.count(WorkLogImage.id), func.coalesce(func.sum(WorkLogImage.size_bytes), 0)
+    ).filter(WorkLogImage.file_archived_at == None).one()
+    ar_n, ar_b = db.query(
+        func.count(WorkLogImage.id), func.coalesce(func.sum(WorkLogImage.size_bytes), 0)
+    ).filter(WorkLogImage.file_archived_at != None).one()
+
+    return ImageStorageReport(
+        on_server_count = int(on_n or 0),
+        on_server_bytes = int(on_b or 0),
+        archived_count  = int(ar_n or 0),
+        archived_bytes  = int(ar_b or 0),
+        disk            = disk_report(),
+    )
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────

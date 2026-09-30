@@ -6,6 +6,9 @@ Dialog for configuring the sync server connection.
   - Test connection button
   - Enable/disable auto-sync toggle
   - Shows last sync time + pending count
+  - Photos: how many this PC has archived, how many the server is still holding,
+    how full the server's disk is, and the action that frees it
+    (see services/photo_retention_service.py)
 """
 
 from PyQt5.QtWidgets import (
@@ -71,6 +74,35 @@ class _PingThread(QThread):
             self.result.emit(ok, msg)
         except Exception as ex:
             self.result.emit(False, f"Error: {ex}")
+
+
+class _StorageThread(QThread):
+    """Asks the server what it is still holding and how full its disk is."""
+    result = pyqtSignal(dict)
+
+    def run(self):
+        try:
+            from services.sync_client import server_storage
+            self.result.emit(server_storage() or {})
+        except Exception:                                    # noqa: BLE001
+            self.result.emit({})
+
+
+class _SweepThread(QThread):
+    """Verifies the local copies and lets the server delete its own files.
+
+    Hashes every photo not yet confirmed, so it can read hundreds of megabytes
+    on its first run — never on the UI thread.
+    """
+    done    = pyqtSignal(dict)
+    failure = pyqtSignal(str)
+
+    def run(self):
+        try:
+            from services import photo_retention_service as prs
+            self.done.emit(prs.sweep())
+        except Exception as ex:                              # noqa: BLE001
+            self.failure.emit(str(ex))
 
 
 # ── Dialog ────────────────────────────────────────────────────────────────────
@@ -161,6 +193,41 @@ class SyncSettingsDialog(QDialog):
         status_group.setLayout(sf)
         lay.addWidget(status_group)
 
+        # ── Photos: where the files actually are ─────────────────────────────
+        # The server's disk is small and the phones fill it; this says how much
+        # of it is still holding photos this desktop already has.
+        photo_group = QGroupBox("Photos")
+        pf = QFormLayout()
+        pf.setSpacing(4)
+
+        self._ph_here_lbl   = QLabel("—")
+        self._ph_server_lbl = QLabel("—")
+        self._ph_disk_lbl   = QLabel("—")
+        self._ph_warn_lbl   = QLabel("")
+        self._ph_warn_lbl.setWordWrap(True)
+        self._ph_warn_lbl.setStyleSheet("color:#C62828;")
+
+        pf.addRow("Archived on this PC:", self._ph_here_lbl)
+        pf.addRow("Still on the server:", self._ph_server_lbl)
+        pf.addRow("Server disk:",         self._ph_disk_lbl)
+
+        self._sweep_btn = QPushButton("🧹  Free space on the server")
+        self._sweep_btn.setToolTip(
+            "Check every photo this PC holds against the hash the server stored,\n"
+            "then let the server delete the files it no longer needs to keep.\n"
+            "A photo that cannot be verified is kept on the server.")
+        self._sweep_btn.setStyleSheet(
+            "QPushButton{border:1px solid #90A4AE;border-radius:4px;padding:5px 12px;}"
+            "QPushButton:hover{background:#E3F2FD;}"
+            "QPushButton:disabled{color:#90A4AE;}"
+        )
+        self._sweep_btn.clicked.connect(self._do_sweep)
+        pf.addRow("", self._sweep_btn)
+
+        photo_group.setLayout(pf)
+        lay.addWidget(photo_group)
+        lay.addWidget(self._ph_warn_lbl)
+
         # ── Auto-sync toggle ──────────────────────────────────────────────────
         self._enable_cb = QCheckBox("Enable automatic sync (every 60 s)")
         lay.addWidget(self._enable_cb)
@@ -208,6 +275,96 @@ class SyncSettingsDialog(QDialog):
             self._pending_lbl.setText(str(n))
         except Exception:
             pass
+
+        self._populate_photos()
+
+    # ── Photos ────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _mb(n) -> str:
+        from services.photo_retention_service import human_bytes
+        return human_bytes(n)
+
+    def _populate_photos(self):
+        """Local figures first — they need no network and are always true."""
+        try:
+            from services.photo_retention_service import local_status
+            st = local_status()
+        except Exception:                                    # noqa: BLE001
+            return
+        self._ph_here_lbl.setText("{} photo(s), {} — the server has dropped these"
+                                  .format(st['archived_count'],
+                                          self._mb(st['archived_bytes'])))
+        self._ph_server_lbl.setText("{} photo(s), {}".format(
+            st['on_server_count'], self._mb(st['on_server_bytes'])))
+        self._sweep_btn.setEnabled(bool(st['on_server_count']))
+
+        bad = st.get('unverified') or []
+        if bad:
+            self._ph_warn_lbl.setText(
+                "⚠  {} photo(s) could not be verified against the stored hash, so "
+                "the server still keeps them: {}. Sync again — the copy here is "
+                "downloaded afresh; if it keeps failing, say so before anything is "
+                "deleted.".format(len(bad),
+                                  ", ".join(w['item_id'][:8] for w in bad[:6])))
+        else:
+            self._ph_warn_lbl.setText("")
+
+        # The server's own figure, including its disk — off the UI thread.
+        running = getattr(self, "_storage_thread", None)
+        if sync_config.is_configured() and not (running and running.isRunning()):
+            self._ph_disk_lbl.setText("asking the server…")
+            self._storage_thread = _StorageThread()
+            self._storage_thread.result.connect(self._on_storage)
+            self._storage_thread.start()
+
+    def _on_storage(self, st: dict):
+        disk = (st or {}).get('disk') or {}
+        self._ph_disk_lbl.setStyleSheet("")      # a disk that has drained is not red
+        if not st:
+            self._ph_disk_lbl.setText("could not be read")
+            return
+        if disk:
+            self._ph_disk_lbl.setText(
+                "{:.0f} MB used of {:.0f} MB ({:.0f}% full) · "
+                "{} photo file(s) there, {}".format(
+                    disk.get('used_mb', 0), disk.get('total_mb', 0),
+                    disk.get('used_pct', 0), st.get('on_server_count', 0),
+                    self._mb(st.get('on_server_bytes', 0))))
+            if float(disk.get('used_pct') or 0) >= 85:
+                self._ph_disk_lbl.setStyleSheet("color:#C62828;font-weight:bold;")
+        else:
+            self._ph_disk_lbl.setText("{} photo file(s) there, {}".format(
+                st.get('on_server_count', 0), self._mb(st.get('on_server_bytes', 0))))
+
+    def _do_sweep(self):
+        if not sync_config.is_configured():
+            QMessageBox.information(self, "Not configured", "Log in first.")
+            return
+        if getattr(self, "_sweep_thread", None) and self._sweep_thread.isRunning():
+            return
+        self._sweep_btn.setEnabled(False)
+        self._status_lbl.setStyleSheet("color:#555;")
+        self._status_lbl.setText("Checking photos against their stored hashes…")
+        self._sweep_thread = _SweepThread()
+        self._sweep_thread.done.connect(self._on_sweep_done)
+        self._sweep_thread.failure.connect(self._on_sweep_failed)
+        self._sweep_thread.start()
+
+    def _on_sweep_done(self, rep: dict):
+        from services.photo_retention_service import describe
+        text = describe(rep)
+        self._sweep_btn.setEnabled(True)
+        self._status_lbl.setStyleSheet("color:#2E7D32;" if not rep.get('skipped')
+                                       else "color:#EF6C00;")
+        self._status_lbl.setText(text[:160])
+        QMessageBox.information(self, "Free space on the server", text)
+        self._populate_photos()
+
+    def _on_sweep_failed(self, msg: str):
+        self._sweep_btn.setEnabled(True)
+        self._status_lbl.setStyleSheet("color:#C62828;")
+        self._status_lbl.setText(f"❌  {msg[:120]}")
 
     # ── Actions ───────────────────────────────────────────────────────────────
 

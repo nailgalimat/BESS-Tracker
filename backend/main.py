@@ -198,7 +198,13 @@ async def lifespan(app: FastAPI):
                                   ("done_by", "TEXT DEFAULT ''"),
                                   ("updated_at", "TEXT"),
                                   ("client_updated_at", "TEXT"),
-                                  ("deleted_at", "TEXT")))):
+                                  ("deleted_at", "TEXT"))),
+                # Photo retention: once the office desktop confirms it holds a
+                # hash-verified copy, this server deletes the file and stamps
+                # the row. Nullable and unread by older clients, so an older
+                # desktop or phone keeps working exactly as before.
+                ("work_log_images", (("file_archived_at", "TEXT"),
+                                     ("archived_by", "TEXT")))):
             _have = {r[1] for r in _conn.exec_driver_sql(
                 f"PRAGMA table_info({_tbl})").fetchall()}
             if not _have:
@@ -306,7 +312,11 @@ def healthz():
     misconfigured server answers "ok" perfectly well while silently losing
     every account on each deploy, so the answer has to be visible without
     logging in — the accounts may be the thing that just disappeared.
-    Configuration booleans only: no paths, no secrets, no counts.
+
+    `storage.disk` carries how full the volume holding the uploads is, for the
+    same reason: a server about to run out of space answers "ok" until the
+    first upload fails. Configuration booleans and numbers only — no paths, no
+    secrets, no row counts.
     """
     from config import storage_report
     st = storage_report()

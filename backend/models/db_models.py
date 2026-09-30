@@ -308,6 +308,12 @@ class WorkLogImage(Base):
     uploaded_at    = Column(String, default=_now, nullable=False)
     updated_at     = Column(String, default=_now, nullable=False, index=True)
     upload_status  = Column(String, default="uploaded")
+    # The office desktop has a hash-verified copy, so this server dropped its
+    # own file. The row stays: the record still shows a photo exists, and the
+    # metadata (filename, size, sha256, dimensions) is what lets the desktop's
+    # copy be identified later. NULL = the file is still here.
+    file_archived_at = Column(String, nullable=True)
+    archived_by      = Column(String, nullable=True)   # user id that confirmed
 
     entry = relationship("WorkLogEntry", back_populates="images")
 

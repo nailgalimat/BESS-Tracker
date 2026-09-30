@@ -98,6 +98,11 @@ def _image_to_dict(img: WorkLogImage) -> dict:
         "uploaded_at":    img.uploaded_at,
         "updated_at":     img.updated_at,
         "upload_status":  img.upload_status,
+        # The office desktop holds this one and the server has dropped its file,
+        # so there is nothing here to download. Extra key, ignored by every
+        # client that does not read it — it is here so a second desktop can be
+        # taught to skip the download without needing another server deploy.
+        "archived":       bool(getattr(img, "file_archived_at", None)),
     }
 
 

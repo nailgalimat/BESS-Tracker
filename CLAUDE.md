@@ -67,6 +67,27 @@ Strict three-layer split — touch the right layer:
 - The Monthly report's availability-inputs tab is **hosted** by `ui/availability_page.py` (`take_inputs_tab` / `adopt_editor`): one editor, shown on the Availability page. The page never computes the availability percentage — the report generator owns that number.
 - **`models/models.py`** — dataclasses (`Project`, `Container`, `LogEntry`) and the `PROJECT_TYPES` / `CONTAINER_TYPES_BY_PROJECT` / `default_container_type()` lookups that the project-creation wizard depends on. Three project types coexist: `BESS`, `PV String`, `PV Central`, each with its own container-type list and default-assignment rule.
 
+### Photos: the desktop is the archive, the server is a staging post
+
+The Render disk is 1 GB and shared with the server database, while the phones add
+~600 MB of photos a month, so nothing could be kept there for ever.
+[services/photo_retention_service.py](services/photo_retention_service.py)
+verifies each local copy — **the file present *and* its SHA-256 equal to the
+`sha256` stored at upload; size is not enough**, because two photos of one record
+both called `image.jpg` used to overwrite each other locally — and only then calls
+`POST /images/archived`, which deletes the server's **file and thumbnail but keeps
+the `work_log_images` row**. `GET /worklogs/{id}/images` still lists it with
+`archived: true`, and `GET /images/{id}/download` answers **410** saying the office
+desktop has it. Confirmation is idempotent; `server_archived_at` on the desktop is
+the only "already confirmed" marker, so an interrupted confirm simply retries. A
+photo that will not verify is **never** confirmed and waits in `sync_inbox` as
+`photo_verify`. The automatic pass at the end of `sync_now` is capped
+(`AUTO_LIMIT`; 0 turns it off) and never re-downloads; the button in
+Project → Synchronisation sweeps everything and repairs a wrong local copy from
+the server. Nothing is deleted on a timer, so a client that never confirms loses
+nothing. `/healthz` and `GET /images/storage` report disk usage — numbers only, no
+paths. `test_photo_retention.py` pins all of it, server half included.
+
 ### Frozen-vs-dev path resolution
 
 `database/db_manager._get_db_path()` picks the DB location based on `sys.frozen`:

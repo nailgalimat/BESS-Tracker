@@ -53,8 +53,10 @@ def storage_report() -> dict:
         restart invalidates every access and refresh token and forces
         everyone to log in again.
 
-    Reports which of those are in force. No paths or secrets are returned —
-    only whether each one is configured.
+    Reports which of those are in force, and how full the disk holding the
+    uploads is: the server could not previously tell anyone it was running out
+    of space, which is how it filled up unnoticed. No paths or secrets are
+    returned — only booleans and numbers.
     """
     url = settings.DATABASE_URL
     sqlite_path = ''
@@ -75,4 +77,36 @@ def storage_report() -> dict:
         'database_env_set': bool(os.getenv('DATABASE_URL')),
         'uploads_env_set': bool(os.getenv('UPLOAD_DIR')),
         'secret_key_env_set': bool(os.getenv('SECRET_KEY')),
+        'disk': disk_report(),
+    }
+
+
+def disk_report() -> dict:
+    """Free space on the volume holding the uploads, in MB and percent.
+
+    Render's disk is 1 GB and the photos plus the SQLite database share it.
+    Nothing used to report this, so 'the disk is nearly full' only became
+    visible as uploads starting to fail. Numbers only — the caller may be
+    unauthenticated, so the directory itself is never named.
+
+    An empty dict when the directory cannot be measured (it does not exist yet
+    on a fresh container): a health probe must not fail over a missing folder.
+    """
+    import shutil
+    try:
+        usage = shutil.disk_usage(settings.UPLOAD_DIR)
+    except OSError:
+        try:
+            os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+            usage = shutil.disk_usage(settings.UPLOAD_DIR)
+        except OSError:
+            return {}
+    mb = 1024 * 1024
+    return {
+        'total_mb': round(usage.total / mb, 1),
+        'used_mb':  round(usage.used / mb, 1),
+        'free_mb':  round(usage.free / mb, 1),
+        # Of total, not of (used+free): on Linux a few percent are reserved for
+        # root, so used+free < total and the two definitions differ.
+        'used_pct': round(usage.used * 100.0 / usage.total, 1) if usage.total else 0.0,
     }

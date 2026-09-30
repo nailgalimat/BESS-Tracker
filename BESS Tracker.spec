@@ -113,6 +113,7 @@ hidden = [
     'ui.equipment_page',
     'ui.planner_page',
     'services.image_service',
+    'services.photo_retention_service',
     'services.sync_config',
     'services.sync_client',
     'services.sync_worker',

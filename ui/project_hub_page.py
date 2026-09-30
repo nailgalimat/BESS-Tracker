@@ -64,7 +64,8 @@ class ProjectHubPage(QWidget):
              lambda: self.action_requested.emit("new_project"), False),
             ("Serial numbers", "Bulk-edit container serial numbers",
              lambda: self.action_requested.emit("edit_serials"), False),
-            ("Synchronisation", "Server, login, what is waiting from the phones",
+            ("Synchronisation", "Server, login, what is waiting from the phones, "
+                                "space on the server",
              lambda: self.action_requested.emit("sync"), False),
             ("Users and roles", "Who may log in from a phone",
              lambda: self.action_requested.emit("users"), False),

@@ -121,6 +121,12 @@ class WorkLogImageOut(BaseModel):
     uploaded_at:    str
     updated_at:     str
     download_url:   str              # injected by router
+    # The photo exists, but this server no longer keeps the file — the office
+    # desktop holds it. Both default so an older client's payload is unchanged;
+    # download_url stays a plain string (a client that follows it anyway gets a
+    # 410 that says where the photo is, not a broken null).
+    archived:       bool          = False
+    archived_at:    Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -426,3 +432,36 @@ class ImageUploadResponse(BaseModel):
     taken_at:       Optional[str]
     uploaded_at:    str
     download_url:   str
+
+
+# ── Photo retention: the desktop confirms, the server drops its file ──────────
+
+class ImageArchiveRequest(BaseModel):
+    """The desktop holds a hash-verified copy of these photos, so their files
+    may go. A list, because the first sweep has hundreds to confirm and one
+    request per photo would take minutes."""
+    image_ids: List[str]
+
+
+class ImageArchiveResult(BaseModel):
+    id:          str
+    # archived | already | not_found | forbidden
+    outcome:     str
+    freed_bytes: int = 0
+
+
+class ImageArchiveResponse(BaseModel):
+    results:     List[ImageArchiveResult]
+    archived:    int              # files deleted by this call
+    already:     int              # were already archived (a repeat confirm)
+    freed_bytes: int
+
+
+class ImageStorageReport(BaseModel):
+    """Numbers only — no paths. What the server still holds, what it has handed
+    over, and how full the disk under the uploads directory is."""
+    on_server_count:  int
+    on_server_bytes:  int
+    archived_count:   int
+    archived_bytes:   int
+    disk:             dict[str, float]

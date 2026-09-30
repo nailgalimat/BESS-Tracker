@@ -918,9 +918,21 @@ def initialize_database():
                 taken_at       TEXT,                        -- EXIF datetime if available
                 uploaded_at    TEXT    DEFAULT (datetime('now')),
                 upload_status  TEXT    NOT NULL DEFAULT 'local',
+                server_archived_at TEXT,                     -- see below
                 FOREIGN KEY (work_log_id) REFERENCES work_log_entries(id) ON DELETE CASCADE
             )
         """)
+
+        # When this desktop told the server it holds a hash-verified copy and
+        # the server may drop its own file. NULL = not confirmed yet, which is
+        # the only state in which the server still has a copy — so the sweep
+        # simply re-offers every NULL row, and an interrupted confirm retries
+        # itself on the next sync. It says nothing about the LOCAL file, which
+        # is the archive and is never deleted here.
+        _wli_cols = [r[1] for r in c.execute(
+            "PRAGMA table_info(work_log_images)").fetchall()]
+        if 'server_archived_at' not in _wli_cols:
+            c.execute("ALTER TABLE work_log_images ADD COLUMN server_archived_at TEXT")
 
         # ── FIELD-LOG SPARE PARTS (structured, stock-linked) ───────────────
         # Optional structured spare parts attached to a work_log_entry.

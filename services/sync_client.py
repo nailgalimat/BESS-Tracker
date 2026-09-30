@@ -663,6 +663,16 @@ def _inbox_items(kind: str) -> list:
         conn.close()
 
 
+def inbox_put(kind: str, item: dict, error) -> None:
+    """Park an item for another module (see photo_retention_service) — the inbox
+    is the one place a failure waits to be retried and reported."""
+    _inbox_put(kind, item, error)
+
+
+def inbox_clear(kind: str, item_id) -> None:
+    _inbox_done(kind, item_id)
+
+
 def inbox_waiting() -> list:
     """What is waiting to be applied, for display: [{kind, item_id, error, attempts}]."""
     conn = get_connection()
@@ -1121,6 +1131,48 @@ def download_image_file(image_id: str, dest_path: str) -> bool:
     return False
 
 
+def confirm_server_archive(image_ids: list) -> dict:
+    """Tell the server the office desktop holds these photos, so it may delete
+    its own files. The caller must have verified each local copy's SHA-256 —
+    see photo_retention_service, which is the only thing that should call this.
+
+    Returns the server's reply: {'results': [{'id','outcome','freed_bytes'}],
+    'archived', 'already', 'freed_bytes'}. Raises on a transport failure or a
+    non-200, so the caller leaves the photos unconfirmed and tries again.
+    """
+    if not image_ids:
+        return {"results": [], "archived": 0, "already": 0, "freed_bytes": 0}
+    if not sync_config.is_configured():
+        # Raise rather than answer "nothing archived": the sweep would otherwise
+        # count one error per photo in the batch instead of one for the call.
+        raise RuntimeError("sync is not configured — log in first")
+    resp = _request("post", "/images/archived",
+                    json={"image_ids": list(image_ids)})
+    if resp.status_code == 404:
+        # An older server without the endpoint: keep every file, say so plainly.
+        raise RuntimeError("this server does not support photo archiving yet "
+                           "— deploy the backend first")
+    if resp.status_code != 200:
+        raise RuntimeError("confirm archive: HTTP {} {}".format(
+            resp.status_code, resp.text[:160]))
+    return resp.json()
+
+
+def server_storage() -> dict:
+    """What the server still holds, what it has handed over, and how full its
+    disk is: {'on_server_count','on_server_bytes','archived_count',
+    'archived_bytes','disk':{...}}. Empty dict if it cannot be asked."""
+    if not sync_config.is_configured():
+        return {}
+    try:
+        resp = _request("get", "/images/storage")
+        if resp.status_code == 200:
+            return resp.json()
+    except RequestException:
+        pass
+    return {}
+
+
 def download_pending_remote_images() -> int:
     """
     Fetch the binaries for images pulled as metadata-only (upload_status
@@ -1182,6 +1234,26 @@ def sync_now() -> SyncResult:
     except Exception as ex:                          # noqa: BLE001
         import logging
         logging.getLogger("bess.sync").warning(f"photo folders: {ex}")
+
+    # Photos safely here may leave the server: its disk is 1 GB and the phones
+    # add ~600 MB a month, so without this it fills and uploads start failing.
+    # Bounded per cycle — a sync runs every 60 s and this hashes files — and it
+    # only ever offers photos whose local copy verified, so nothing that has not
+    # arrived intact is confirmed. Runs AFTER mirror_photos, which needs the
+    # local files (it never needed the server's).
+    try:
+        from services import photo_retention_service as prs
+        # No repairs here: verify and confirm only. A photo whose local copy is
+        # wrong is reported and left on the server — downloading it again is the
+        # button's job, once per press, not something a 60-second loop does.
+        photo_rep = prs.sweep(limit=prs.AUTO_LIMIT, repair_mismatches=False)
+        if photo_rep.get('confirmed') or photo_rep.get('skipped'):
+            import logging
+            logging.getLogger("bess.sync").info(
+                "photo retention: " + prs.describe(photo_rep))
+    except Exception as ex:                          # noqa: BLE001
+        import logging
+        logging.getLogger("bess.sync").warning(f"photo retention: {ex}")
 
     sync_config.last_sync_at = _now()
     sync_config.save()
