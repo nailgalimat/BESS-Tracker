@@ -1420,10 +1420,25 @@ class WorkPage(QWidget):
         row = next((r for r in self._shown if r['key'] == self._key), None)
         what = (f"{row['date']} · {row['node']} · "
                 f"{row['title'] or row['work_done'][:50]}") if row else ''
+        # The photos go with it: work_log_images cascades on the record. That
+        # used to be recoverable because the server kept its own copy; it no
+        # longer does once the photo has been archived here, so say so before
+        # the only copy goes.
+        photos = ''
+        try:
+            import services.image_service as imgs
+            n = len(imgs.get_images_for_log(str(row['ref']))) if row else 0
+            if n:
+                photos = (f"\n\nIt also deletes {n} photo"
+                          f"{'s' if n > 1 else ''}. The server does not keep a "
+                          "copy once a photo has reached this computer, so this "
+                          "is the only one.")
+        except Exception:                                # noqa: BLE001
+            pass
         if QMessageBox.question(
                 self, "Delete record",
                 f"Delete this record?\n\n{what}\n\nIt leaves the journal and the "
-                "monthly report, and the phones after the next sync.",
+                "monthly report, and the phones after the next sync." + photos,
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         try:
