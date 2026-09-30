@@ -133,6 +133,44 @@ _DEV = re.compile(r'^\s*(BESS|PCS|LC)\b\s*(\d+)?', re.IGNORECASE)
 _DEV_TYPE = {'BESS': 'Battery', 'PCS': 'PCS / Converter', 'LC': 'LC Cabinet'}
 
 
+def _serial_index(project_id: int) -> dict:
+    """{(zone, block, container_type): [serial by container_index]} in one query.
+
+    `container_for_node` opens a connection per call, which is fine for one
+    card and far too slow for a list: the journal draws hundreds of rows and
+    most of them need this. Same lookup, read once.
+    """
+    idx = {}
+    conn = get_connection()
+    try:
+        for r in conn.execute(
+                "SELECT zone_number, block_number, container_type, serial_number "
+                "FROM containers WHERE project_id=? ORDER BY container_index",
+                (project_id,)):
+            idx.setdefault((r[0], r[1], r[2]), []).append((r[3] or '').strip())
+    finally:
+        conn.close()
+    return idx
+
+
+def _serial_from_index(idx: dict, project_id: int, plant_block, device: str) -> str:
+    """The serial the node names, read from a prepared index. Mirrors
+    container_for_node exactly — a node that names no single container, such as
+    a bare 'BESS' or an inspection of a whole block, still gets nothing."""
+    m = _DEV.match(device or '')
+    if not plant_block or not m:
+        return ''
+    z, b = plant_block_to_zone(project_id, int(plant_block))
+    if z is None:
+        return ''
+    kind = m.group(1).upper()
+    serials = idx.get((z, b, _DEV_TYPE[kind])) or []
+    n = int(m.group(2)) if (kind == 'BESS' and m.group(2)) else 1
+    if (kind == 'BESS' and not m.group(2)) or not 1 <= n <= len(serials):
+        return ''
+    return serials[n - 1]
+
+
 def container_for_node(project_id: int, plant_block, device: str):
     """(container_id, serial) of the container the node names, or (None, '')."""
     m = _DEV.match(device or '')
@@ -398,6 +436,7 @@ def records(project_id: int, date_from: str = None, date_to: str = None,
             q += " AND e.log_date >= ?"; p.append(date_from)
         if date_to:
             q += " AND e.log_date <= ?"; p.append(date_to)
+        _sidx = None                 # serial index, read once and only if needed
         for r in conn.execute(q, p).fetchall():
             r = dict(r)
             block = r.get('plant_block') or zone_block_to_plant(
@@ -440,6 +479,17 @@ def records(project_id: int, date_from: str = None, date_to: str = None,
             }
             row['node'] = node_text(row)
             row['age_days'] = _age_days(row['date'], today)
+            # The serial is stored on the record only when the desktop saved
+            # it — save() fills equipment_serial from the node. A record that
+            # came off a phone never passes through that, so the column was
+            # empty for most rows in the list and in the Excel export while
+            # the card showed a serial, because the card looks it up live.
+            # Look it up here too, so all three agree.
+            if not row['serial'] and row['block'] and row['device']:
+                if _sidx is None:
+                    _sidx = _serial_index(project_id)
+                row['serial'] = _serial_from_index(
+                    _sidx, project_id, row['block'], row['device'])
             out.append(row)
 
         if include_old:
