@@ -263,16 +263,25 @@ def import_from_excel(project_id: int, path: str, mapping: dict, sheet=0,
 
 # ── Reading ──────────────────────────────────────────────────────────────────
 
-def _row(r) -> dict:
+def _row(r, today: str = None) -> dict:
+    """One item, with `overdue` judged against `today`.
+
+    The caller's date has to win. `due_soon` takes a `today` and honours it,
+    so an `overdue` measured against the real date instead disagreed with the
+    very list it was in: the same item could sit inside the horizon and be
+    flagged late, or be late and not flagged. Live, both dates are the real
+    one and nothing showed — it surfaced only when a caller passed a date.
+    """
     d = dict(r)
     d['overdue'] = bool(d.get('due_date')
-                        and d['due_date'] < _today()
+                        and d['due_date'] < (today or _today())
                         and (d.get('status') or '') in OPEN_STATUSES)
     return d
 
 
 def items(project_id: int, status: str = None, assigned_to: str = None,
-          include_done: bool = True, search: str = '') -> List[dict]:
+          include_done: bool = True, search: str = '',
+          today: str = None) -> List[dict]:
     """The project's action items, soonest due first. Items with no date come
     last — a row nobody has dated is not more urgent than one due tomorrow."""
     q = ["SELECT * FROM action_items WHERE deleted_at IS NULL"]
@@ -294,17 +303,17 @@ def items(project_id: int, status: str = None, assigned_to: str = None,
     q.append("ORDER BY CASE WHEN due_date='' THEN 1 ELSE 0 END, due_date, seq, id")
     conn = get_connection()
     try:
-        return [_row(r) for r in conn.execute(' '.join(q), p)]
+        return [_row(r, today) for r in conn.execute(' '.join(q), p)]
     finally:
         conn.close()
 
 
-def get(uuid: str) -> Optional[dict]:
+def get(uuid: str, today: str = None) -> Optional[dict]:
     conn = get_connection()
     try:
         r = conn.execute("SELECT * FROM action_items WHERE uuid=?",
                          (uuid,)).fetchone()
-        return _row(r) if r else None
+        return _row(r, today) if r else None
     finally:
         conn.close()
 
@@ -316,7 +325,8 @@ def due_soon(project_id: int, today: datetime.date = None,
     link opens can never drift apart."""
     today = today or datetime.date.today()
     horizon = (today + datetime.timedelta(days=days)).isoformat()
-    return [it for it in items(project_id, include_done=False)
+    return [it for it in items(project_id, include_done=False,
+                               today=today.isoformat())
             if it.get('due_date') and it['due_date'] <= horizon]
 
 

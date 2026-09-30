@@ -253,10 +253,15 @@ H.check(page.act_tbl.columnCount() == 6
 H.check(page.act_tbl.rowCount() == len(als.items(PID, include_done=False)),
         'and the open items in it: {} row(s)'.format(page.act_tbl.rowCount()))
 
-# overdue in red
+# overdue in red. Counted against the service rather than a fixed number: the
+# page reads the real calendar, so a fixture date that was in the future when
+# this was written becomes overdue a week later and the number moves on its own.
+overdue_now = [i for i in als.items(PID, include_done=False) if i['overdue']]
 red = [r for r in range(page.act_tbl.rowCount())
        if page.act_tbl.item(r, 1).foreground().color().name() == '#b4232a']
-H.check(len(red) == 1, 'the overdue item is red: {} row(s)'.format(len(red)))
+H.check(overdue_now and len(red) == len(overdue_now),
+        'the overdue items are red: {} red for {} overdue'.format(
+            len(red), len(overdue_now)))
 
 # a multi-line "to do" is one line in the table, whole in the tooltip
 multi = [r for r in range(page.act_tbl.rowCount())
@@ -313,14 +318,20 @@ rows = ts.actions(PID, today=TODAY)
 H.check(rows == als.due_soon(PID, today=TODAY),
         'Today asks the service that owns the table, it does not count twice')
 
+# The page reads the real calendar and cannot be told otherwise, so the panel
+# is checked against the list the page itself would open. Comparing it with a
+# frozen TODAY made this test rot: the fixture's dates drifted past the real
+# date and the two counts parted company days later, for no code reason.
+page_rows = ts.actions(PID)
+
 today_page = tp.TodayPage()
 today_page.set_current_project(PID, 'TK')
 today_page.set_month(2026, 9)
 H.check(today_page._grid.count() == 8,
         'the board has eight panels now: {}'.format(today_page._grid.count()))
-H.check(today_page.p_actions.count_lbl.text() == str(len(rows)),
+H.check(today_page.p_actions.count_lbl.text() == str(len(page_rows)),
         'the Action list panel prints {} for {} row(s)'.format(
-            today_page.p_actions.count_lbl.text(), len(rows)))
+            today_page.p_actions.count_lbl.text(), len(page_rows)))
 
 asked = []
 today_page.open_filtered.connect(lambda label, flt: asked.append((label, dict(flt))))
@@ -331,9 +342,9 @@ H.check(asked and asked[0][0] == 'Plan'
 
 page.apply_filter(asked[0][1])
 H.check(page.tabs.currentIndex() == 4
-        and page.act_tbl.rowCount() == len(rows),
+        and page.act_tbl.rowCount() == len(page_rows),
         'and that filter opens exactly {} row(s) for a count of {}'.format(
-            page.act_tbl.rowCount(), len(rows)))
+            page.act_tbl.rowCount(), len(page_rows)))
 
 # the board still fits a narrow window
 today_page.show()
