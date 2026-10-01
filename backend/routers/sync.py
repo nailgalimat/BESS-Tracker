@@ -103,6 +103,14 @@ def _image_to_dict(img: WorkLogImage) -> dict:
         # client that does not read it — it is here so a second desktop can be
         # taught to skip the download without needing another server deploy.
         "archived":       bool(getattr(img, "file_archived_at", None)),
+        # A short clip is a row in this table too. mime_type is what tells it
+        # from a photo, duration_ms is its length, and has_poster says whether
+        # there is a still to fetch — the desktop cannot make one from a clip.
+        # NULL/False on every photo, and ignored by a client that does not read
+        # them, so an older desktop sees the payload it has always seen.
+        "mime_type":      getattr(img, "mime_type", None),
+        "duration_ms":    getattr(img, "duration_ms", None),
+        "has_poster":     bool(img.thumbnail_path),
     }
 
 
@@ -510,6 +518,10 @@ def _apply_image_change(change, user: User, db: Session) -> SyncChangeResult:
             uploaded_at    = payload.get("uploaded_at", now),
             updated_at     = now,
             upload_status  = "pending",   # binary not yet on this server
+            # Absent from an older client's payload, which is exactly right:
+            # a row with no mime_type is read as a photo, as it always was.
+            mime_type      = payload.get("mime_type"),
+            duration_ms    = payload.get("duration_ms"),
         )
         db.add(new_img)
         return SyncChangeResult(id=change.id, outcome="applied")

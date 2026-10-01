@@ -146,6 +146,45 @@ H.check('.tcard.action' in css and '.action-head' in css,
 H.check('No block — office action' in app,
         'and the card says so in words, not only in colour')
 
+# ── v21: short video, recorded in the app and capped at capture ──────────
+for ident in ('video-add-btn', 'video-rec', 'video-rec-preview',
+              'video-rec-time', 'video-stop-btn', 'video-hint'):
+    H.check('id="{}"'.format(ident) in html,
+            'the record form has {}'.format(ident))
+H.check('App.startVideo()' in html and 'App.stopVideo()' in html,
+        'the clip is started and stopped from the form')
+# The decision this feature stands on: a phone film is ~5 MB/s, so the clip is
+# constrained where it is MADE. A file picker would let a 200 MB roll-camera
+# clip in and nothing downstream could refuse it in time.
+H.check('accept="video/' not in html and 'capture=' not in html
+        and 'video/*' not in html,
+        'there is no video file input and no capture= attribute — a clip is '
+        'recorded by the app, never chosen from the camera roll')
+H.check('getUserMedia' in app and 'MediaRecorder' in app,
+        'it is recorded through getUserMedia + MediaRecorder, which is what '
+        'lets the bitrate and the 30 s be enforced at all')
+for fn in ('startVideo', 'stopVideo', '_videoMime', '_videoWhyNot',
+           '_posterFrame', '_stampPoster', '_finishVideo', '_cancelVideo'):
+    H.check(fn in app, 'app.js implements {}'.format(fn))
+H.check('VIDEO_MAX_MS: 30000' in app,
+        'the 30-second cap is in the code, not in a habit')
+H.check('audioBitsPerSecond' in app and 'videoBitsPerSecond' in app,
+        'both bitrates are asked for — sound is on, and neither is left to '
+        'the browser to guess')
+H.check('.video-rec' in css and '.video-thumb' in css and '.video-stop-btn' in css,
+        'the recorder, the stop button and the staged clip tile are styled')
+H.check('duration_ms' in jsapi and 'poster' in jsapi,
+        "api.js sends the clip's poster frame and its length with it")
+
+# ── the phone's recording, actually executed ─────────────────────────────
+try:
+    p = subprocess.run(['node', os.path.join(H.MVP, 'tests', 'video_check.js')],
+                       capture_output=True, text=True, shell=True, timeout=180)
+    print((p.stdout or p.stderr).rstrip())
+    H.check('RESULT PASS' in (p.stdout or ''), 'the video recording check passes')
+except Exception as e:                                   # noqa: BLE001
+    print('   note   node not available or failed:', e)
+
 # ── the JS actually parses ───────────────────────────────────────────────
 try:
     for f in ('js/app.js', 'js/db.js', 'js/api.js', 'sw.js'):

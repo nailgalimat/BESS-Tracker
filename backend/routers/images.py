@@ -1,12 +1,21 @@
 """
 routers/images.py
 ------------------
-POST   /worklogs/{id}/images        — upload image (multipart)
+POST   /worklogs/{id}/images        — upload image or short clip (multipart)
 GET    /worklogs/{id}/images        — list images for an entry
 GET    /images/storage              — how much the server holds vs has handed over
 POST   /images/archived             — the desktop confirms; the server drops files
 GET    /images/{image_id}/download  — serve/redirect to file
+GET    /images/{image_id}/poster    — the still that stands for a clip
 DELETE /images/{image_id}           — delete image
+
+Short video rides this same route and the same table: the upload carries an
+optional `poster` part (a still the phone grabbed from its own camera stream)
+and an optional `duration_ms`, and a clip is measured against its own cap
+(MAX_VIDEO_SIZE_MB) and its own mime list. There is no ffmpeg here, so the
+poster is the only thumbnail a clip can ever have. Every video field is
+optional and every response field defaults, so a client that knows nothing
+about video sees exactly the API it saw before.
 
 Photo retention: this server is a staging post, not the archive. A phone
 uploads a photo here, the office desktop downloads it and verifies its SHA-256
@@ -21,7 +30,8 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile, File, Request
+from fastapi import (APIRouter, Depends, Form, Header, HTTPException, UploadFile,
+                     File, Request)
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -33,7 +43,10 @@ from models.schemas import (
     ImageArchiveRequest, ImageArchiveResult, ImageArchiveResponse,
     ImageStorageReport,
 )
-from services.storage_service import save_upload, delete_files, get_file_path, MAX_BYTES
+from services.storage_service import (save_upload, delete_files, get_file_path,
+                                      is_video, max_bytes_for, sniff_mime,
+                                      MAX_BYTES, MAX_VIDEO_BYTES,
+                                      MAX_POSTER_BYTES)
 
 router = APIRouter(tags=["images"])
 
@@ -62,15 +75,60 @@ def _image_out(img: WorkLogImage, request: Request) -> WorkLogImageOut:
         download_url = f"{base}images/{img.id}/download",
         archived     = bool(archived_at),
         archived_at  = archived_at,
+        mime_type    = getattr(img, "mime_type", None),
+        duration_ms  = getattr(img, "duration_ms", None),
+        has_poster   = bool(img.thumbnail_path),
     )
 
 
 # ── Upload ────────────────────────────────────────────────────────────────────
 
+async def _spool(file: UploadFile, limit: int, what: str,
+                 sniff_limit: bool = False) -> str:
+    """Stream an upload to a temp file, refusing it the moment it passes its cap.
+
+    With *sniff_limit* the cap is decided from the first chunk's magic bytes, so
+    a clip is measured against MAX_VIDEO_BYTES and a photo against MAX_BYTES —
+    and neither is loaded into memory to find out which it is. The answer stays
+    413 either way: "too large" is the same problem whichever cap was passed.
+
+    Returns the temp file's path; the caller always unlinks it.
+    """
+    suffix = os.path.splitext(file.filename or "upload")[1] or ".bin"
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    try:
+        total = 0
+        first = True
+        while chunk := await file.read(65536):
+            if first:
+                first = False
+                if sniff_limit:
+                    mime  = sniff_mime(chunk[:16])
+                    limit = max_bytes_for(mime)
+                    what  = "Clip" if is_video(mime) else "File"
+            total += len(chunk)
+            if total > limit:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"{what} too large. Max {limit // (1024*1024)} MB.")
+            tmp.write(chunk)
+    except BaseException:
+        tmp.close()
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+        raise
+    tmp.close()
+    return tmp.name
+
+
 @router.post("/worklogs/{entry_id}/images", response_model=ImageUploadResponse, status_code=201)
 async def upload_image(
     entry_id:     str,
     file:         UploadFile      = File(...),
+    poster:       Optional[UploadFile] = File(None),
+    duration_ms:  Optional[int]   = Form(None),
     request:      Request         = None,
     x_image_id:   Optional[str]   = Header(None, alias="X-Image-ID"),
     db:           Session         = Depends(get_db),
@@ -104,34 +162,30 @@ async def upload_image(
                 taken_at     = existing.taken_at,
                 uploaded_at  = existing.uploaded_at,
                 download_url = f"{base}images/{existing.id}/download",
+                mime_type    = getattr(existing, "mime_type", None),
+                duration_ms  = getattr(existing, "duration_ms", None),
+                has_poster   = bool(existing.thumbnail_path),
             )
 
-    # Stream to temp file (avoids loading whole file into memory)
-    suffix = os.path.splitext(file.filename or "upload")[1] or ".jpg"
-    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    # Stream to temp files (avoids loading the whole upload into memory). The
+    # cap for the main part is chosen from its own first bytes, so a clip gets
+    # the video cap and a photo the photo one.
+    tmp_path = await _spool(file, MAX_BYTES, "File", sniff_limit=True)
+    tmp_poster = None
     try:
-        total = 0
-        while chunk := await file.read(65536):
-            total += len(chunk)
-            if total > MAX_BYTES:
-                tmp.close()
-                os.unlink(tmp.name)
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"File too large. Max {MAX_BYTES // (1024*1024)} MB."
-                )
-            tmp.write(chunk)
-        tmp.close()
-
-        meta = save_upload(entry_id, tmp.name, file.filename or "upload")
+        if poster is not None:
+            tmp_poster = await _spool(poster, MAX_POSTER_BYTES, "Poster")
+        meta = save_upload(entry_id, tmp_path, file.filename or "upload",
+                           poster_path=tmp_poster, duration_ms=duration_ms)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     finally:
-        if os.path.exists(tmp.name):
-            try:
-                os.unlink(tmp.name)
-            except OSError:
-                pass
+        for p in (tmp_path, tmp_poster):
+            if p and os.path.exists(p):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
 
     now = _now()
     img = WorkLogImage(
@@ -148,6 +202,8 @@ async def upload_image(
         uploaded_at    = now,
         updated_at     = now,
         upload_status  = "uploaded",
+        mime_type      = meta.get("mime_type"),
+        duration_ms    = meta.get("duration_ms"),
     )
     db.add(img)
     db.commit()
@@ -165,6 +221,9 @@ async def upload_image(
         taken_at     = img.taken_at,
         uploaded_at  = img.uploaded_at,
         download_url = f"{base}images/{img.id}/download",
+        mime_type    = img.mime_type,
+        duration_ms  = img.duration_ms,
+        has_poster   = bool(img.thumbnail_path),
     )
 
 
@@ -227,6 +286,50 @@ def download_image(
         raise HTTPException(status_code=404, detail="File not found on disk")
 
     return FileResponse(abs_path, filename=img.filename or "image.jpg")
+
+
+# ── The still that stands for a clip ──────────────────────────────────────────
+
+@router.get("/images/{image_id}/poster")
+def download_poster(
+    image_id: str,
+    db:       Session = Depends(get_db),
+    user:     User    = Depends(get_current_user),
+):
+    """The poster frame of a clip — the only thumbnail a clip can have here.
+
+    The office desktop regenerates a photo's thumbnail from the photo with
+    Pillow; it cannot do that for a clip and there is no ffmpeg on either side,
+    so the poster the phone recorded has to be fetchable on its own. 404 when
+    the row has none, 410 once the desktop has taken the files over: the same
+    answers /download gives, for the same reasons.
+    """
+    img = db.query(WorkLogImage).filter(WorkLogImage.id == image_id).first()
+    if not img:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    entry = db.query(WorkLogEntry).filter(WorkLogEntry.id == img.work_log_id).first()
+    if user.role != "admin" and (not entry or entry.user_id != user.id):
+        raise HTTPException(status_code=403, detail="Not your image")
+
+    archived_at = getattr(img, "file_archived_at", None)
+    if archived_at:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                f"Archived on the office desktop on {archived_at[:10]}. "
+                "The server no longer keeps a copy — ask the office for it. "
+                "Nothing is lost."
+            ),
+        )
+
+    if not img.thumbnail_path:
+        raise HTTPException(status_code=404, detail="No poster for this item")
+    abs_path = get_file_path(img.thumbnail_path)
+    if not os.path.isfile(abs_path):
+        raise HTTPException(status_code=404, detail="Poster not found on disk")
+    return FileResponse(abs_path, media_type="image/jpeg",
+                        filename=f"{image_id}_poster.jpg")
 
 
 # ── The desktop confirms it holds the photo; the server drops its file ────────

@@ -203,8 +203,14 @@ async def lifespan(app: FastAPI):
                 # hash-verified copy, this server deletes the file and stamps
                 # the row. Nullable and unread by older clients, so an older
                 # desktop or phone keeps working exactly as before.
+                # Short video rides the photo table: mime_type tells a clip from
+                # a photo, duration_ms is its length. Both nullable and unread
+                # by older clients — a phone or desktop that knows nothing about
+                # video keeps working exactly as before.
                 ("work_log_images", (("file_archived_at", "TEXT"),
-                                     ("archived_by", "TEXT")))):
+                                     ("archived_by", "TEXT"),
+                                     ("mime_type", "TEXT"),
+                                     ("duration_ms", "INTEGER")))):
             _have = {r[1] for r in _conn.exec_driver_sql(
                 f"PRAGMA table_info({_tbl})").fetchall()}
             if not _have:

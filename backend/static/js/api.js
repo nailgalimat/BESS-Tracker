@@ -190,10 +190,29 @@ const API = (() => {
    * imageId is a client-generated UUID; the server uses it as X-Image-ID for idempotency.
    * Returns image metadata from server.
    */
-  async function uploadImage(worklogId, blob, filename, imageId) {
+  /** Upload one photo or one clip.
+   *
+   * *row* is the stored image row, used only for the two things a clip needs
+   * and a photo has not got: its poster frame (the server has no ffmpeg, so
+   * the still the phone grabbed is the only thumbnail there will ever be) and
+   * its length. Both are extra multipart parts an older server simply ignores,
+   * so this call is unchanged for a photo and safe against a server that has
+   * not been deployed yet.
+   */
+  async function uploadImage(worklogId, blob, filename, imageId, row) {
     const token = localStorage.getItem('access_token');
     const form  = new FormData();
     form.append('file', blob, filename || 'photo.jpg');
+
+    if (row && row.poster_data_url) {
+      try {
+        const pb = await fetch(row.poster_data_url).then(x => x.blob());
+        form.append('poster', pb, 'poster.jpg');
+      } catch (_) { /* a clip without its poster still goes up */ }
+    }
+    if (row && row.duration_ms) {
+      form.append('duration_ms', String(Math.round(row.duration_ms)));
+    }
 
     const headers = { 'Authorization': `Bearer ${token}` };
     if (imageId) headers['X-Image-ID'] = imageId;

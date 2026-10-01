@@ -309,6 +309,205 @@ H.check(prs.verify(dict(id=first, file_path=p1, sha256=sha256_of(GOOD))) == 'ok'
         and prs.verify(dict(id=second, file_path=p2, sha256=sha256_of(OTHER))) == 'ok',
         'so both verify, and both can be freed on the server')
 
+print('\n=== a video clip goes through the SAME sweep, nothing beside it ===')
+# The clip is a work_log_images row whose mime type is a video one. That is the
+# whole design: a clip is ~3 MB against a photo's ~0.5 MB, so a clip that never
+# got archived would refill the 1 GB disk faster than photos ever did — it has
+# to inherit this sweep rather than sit next to it.
+CLIP = b'\x1a\x45\xdf\xa3' + b'webm payload, about 3 MB in real life' * 40
+
+
+def add_clip(name, data, poster=True, sha=None, mime='video/webm', ms=29840):
+    image_id = str(uuid.uuid4())
+    folder = isvc.get_image_dir(ENTRY)
+    path = os.path.join(folder, name)
+    with open(path, 'wb') as f:
+        f.write(data)
+    thumb = os.path.join(folder, image_id + '_thumb.jpg')
+    if poster:
+        with open(thumb, 'wb') as f:
+            f.write(b'\xff\xd8\xffthe stamped poster frame')
+    c = get_connection()
+    c.execute("""INSERT INTO work_log_images
+                 (id, work_log_id, file_path, thumbnail_path, filename, size_bytes,
+                  sha256, uploaded_at, upload_status, mime_type, duration_ms)
+                 VALUES (?,?,?,?,?,?,?,datetime('now'),'uploaded',?,?)""",
+              (image_id, ENTRY, path, thumb, name, len(data),
+               sha or sha256_of(data), mime, ms))
+    c.commit()
+    c.close()
+    return image_id, path, thumb
+
+
+clip_id, clip_path, clip_thumb = add_clip('clip_20260930-0812.webm', CLIP)
+H.check(isvc.is_video({'mime_type': 'video/webm'})
+        and not isvc.is_video({'mime_type': 'image/jpeg'})
+        and isvc.is_video({'mime_type': '', 'filename': 'a.mp4'}),
+        'a clip is told from a photo by its mime type, the name as a fallback')
+H.check(isvc.duration_text(29840) == '0:30' and isvc.duration_text(7400) == '0:07'
+        and isvc.duration_text(None) == '',
+        'and its length reads as a clock: {} / {}'.format(
+            isvc.duration_text(29840), isvc.duration_text(7400)))
+
+rec_v = Recorder(freed=3_100_000)
+rep_v = prs.sweep(confirm=rec_v, repair_mismatches=False)
+H.check(clip_id in rec_v.all_ids(),
+        'THE CLIP IS OFFERED TO THE SERVER BY photo_retention_service ITSELF')
+H.check(stamped(clip_id)[0] is not None,
+        'and stamped locally once the server confirms')
+H.check(rep_v['freed_bytes'] >= 3_100_000,
+        "the bytes it freed are in the sweep's figure: {}".format(rep_v['freed_bytes']))
+H.check(os.path.isfile(clip_path) and os.path.isfile(clip_thumb),
+        'while both local files — the clip and its poster — are untouched')
+
+print('\n=== a clip whose poster is not here is NOT confirmed ===')
+# The server deletes the poster with the clip, and nothing on this desktop can
+# ever make another one: there is no ffmpeg on either side. So the poster is
+# part of what has to be safely here first.
+nop_id, nop_path, nop_thumb = add_clip('noposter.webm', CLIP + b'x', poster=False)
+H.check(prs.verify({'id': nop_id, 'file_path': nop_path, 'sha256': sha256_of(CLIP + b'x'),
+                    'thumbnail_path': nop_thumb, 'mime_type': 'video/webm'})
+        == 'noposter',
+        'verify() calls it out by name, even though the clip itself hashes fine')
+rec_np = Recorder()
+rep_np = prs.sweep(confirm=rec_np, repair_mismatches=False)
+H.check(nop_id not in rec_np.all_ids() and stamped(nop_id)[0] is None,
+        'so the server keeps it, and is never told it may delete the poster')
+skip_np = {s['id']: s for s in rep_np['skipped']}
+H.check(nop_id in skip_np and 'poster' in skip_np[nop_id]['reason'],
+        'the reason says which file is missing: {}'.format(
+            skip_np.get(nop_id, {}).get('reason')))
+H.check(nop_id in {w['item_id'] for w in sc.inbox_waiting()},
+        'and it waits in the inbox, so it is reported until someone looks')
+
+print('\n=== the manual sweep fetches the poster, then confirms ===')
+poster_calls = []
+
+
+def fake_poster(image_id, dest):
+    poster_calls.append(image_id)
+    if image_id not in served_posters:
+        return False
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, 'wb') as f:
+        f.write(served_posters[image_id])
+    return True
+
+
+served_posters = {nop_id: b'\xff\xd8\xffthe poster the phone recorded'}
+sc.download_image_poster = fake_poster
+
+# the automatic pass never re-fetches — a poster that will never arrive must
+# not be asked for every 60 s for ever
+poster_calls.clear()
+prs.sweep(limit=prs.AUTO_LIMIT, confirm=Recorder(), repair_mismatches=False)
+H.check(poster_calls == [],
+        'the automatic pass does not re-fetch the poster: {}'.format(poster_calls))
+H.check(stamped(nop_id)[0] is None, 'and still confirms nothing')
+
+rec_fix = Recorder(freed=3_100_000)
+rep_fix = prs.sweep(confirm=rec_fix)          # the button: repair is on
+H.check(nop_id in poster_calls, 'the button does fetch it')
+H.check(rep_fix['repaired'] >= 1, 'and counts it as repaired: {}'.format(
+    rep_fix['repaired']))
+H.check(nop_id in rec_fix.all_ids() and stamped(nop_id)[0] is not None,
+        'and only NOW is the clip confirmed')
+H.check(nop_id not in {w['item_id'] for w in sc.inbox_waiting()},
+        'the inbox row is cleared')
+
+print('\n=== a clip arriving from the server brings its poster, not Pillow ===')
+# Pillow cannot open a clip. download_remote_image must fetch the poster the
+# phone recorded instead of trying to generate a thumbnail from the video.
+c = get_connection()
+remote_clip = str(uuid.uuid4())
+c.execute("""INSERT INTO work_log_images (id, work_log_id, file_path, filename,
+             size_bytes, sha256, upload_status, mime_type, duration_ms)
+             VALUES (?,?,'',?,?,?, 'remote', 'video/webm', 12000)""",
+          (remote_clip, ENTRY, 'arrived.webm', len(CLIP), sha256_of(CLIP)))
+c.commit()
+c.close()
+served[remote_clip] = CLIP
+served_posters[remote_clip] = b'\xff\xd8\xffposter from the server'
+got = isvc.download_remote_image(remote_clip, ENTRY)
+H.check(got and open(got, 'rb').read() == CLIP, 'the clip lands locally')
+c = get_connection()
+rc = dict(c.execute("SELECT * FROM work_log_images WHERE id=?", (remote_clip,)).fetchone())
+c.close()
+H.check(rc['thumbnail_path'] and os.path.isfile(rc['thumbnail_path'])
+        and open(rc['thumbnail_path'], 'rb').read() == served_posters[remote_clip],
+        'and its poster comes down beside it, byte for byte from the server')
+H.check(rc['upload_status'] == 'uploaded',
+        'only then is it counted as held here: {}'.format(rc['upload_status']))
+H.check(prs.verify(rc) == 'ok', 'so it verifies and can be freed on the server')
+
+# a clip whose poster download fails stays 'remote' — and a 'remote' row is
+# never a retention candidate, so the server cannot be told to drop a poster
+# this desktop has not got
+c = get_connection()
+lost_poster = str(uuid.uuid4())
+c.execute("""INSERT INTO work_log_images (id, work_log_id, file_path, filename,
+             size_bytes, sha256, upload_status, mime_type)
+             VALUES (?,?,'',?,?,?, 'remote', 'video/webm')""",
+          (lost_poster, ENTRY, 'half.webm', len(CLIP), sha256_of(CLIP)))
+c.commit()
+c.close()
+served[lost_poster] = CLIP                    # the clip is served
+clip_downloads = []
+_dl = sc.download_image_file
+sc.download_image_file = lambda i, d: (clip_downloads.append(i), _dl(i, d))[1]
+isvc.download_remote_image(lost_poster, ENTRY)   # but no poster is
+c = get_connection()
+lp = dict(c.execute("SELECT * FROM work_log_images WHERE id=?", (lost_poster,)).fetchone())
+c.close()
+H.check(lp['upload_status'] == 'remote',
+        'a clip whose poster did not arrive is left "remote": {}'.format(
+            lp['upload_status']))
+H.check(lp['file_path'] and os.path.isfile(lp['file_path']),
+        'but its file_path IS recorded, so the next sync does not fetch the '
+        'clip all over again')
+rec_lp = Recorder()
+prs.sweep(confirm=rec_lp, repair_mismatches=False)
+H.check(lost_poster not in rec_lp.all_ids(),
+        'which keeps it out of the sweep entirely until the poster is here')
+
+# three more syncs with the poster still missing: the clip must not be
+# re-downloaded once per sync, each copy under its own non-colliding name
+for _ in range(3):
+    isvc.download_remote_image(lost_poster, ENTRY)
+folder_now = [n for n in os.listdir(isvc.get_image_dir(ENTRY)) if 'half' in n]
+H.check(len(clip_downloads) == 1 and len(folder_now) == 1,
+        'a poster that never arrives does NOT leave a copy of the clip per '
+        'sync on disk: {} download(s), {}'.format(len(clip_downloads), folder_now))
+sc.download_image_file = _dl
+
+served_posters[lost_poster] = b'\xff\xd8\xfflate poster'
+isvc.download_remote_image(lost_poster, ENTRY)   # the next sync tops it up
+c = get_connection()
+lp2 = dict(c.execute("SELECT * FROM work_log_images WHERE id=?", (lost_poster,)).fetchone())
+c.close()
+H.check(lp2['thumbnail_path'] and os.path.isfile(lp2['thumbnail_path']),
+        'and the next sync tops the poster up')
+H.check(lp2['upload_status'] == 'uploaded',
+        'which is when the clip finally counts as held here, and only then '
+        'can be freed on the server: {}'.format(lp2['upload_status']))
+rec_ok = Recorder()
+prs.sweep(confirm=rec_ok, repair_mismatches=False)
+H.check(lost_poster in rec_ok.all_ids(),
+        'and the very next ordinary sweep offers it')
+
+print('\n=== the clips are visible in the figures, not hidden inside them ===')
+add_clip('fresh.webm', CLIP + b'fresh')       # just uploaded, not swept yet
+vst = prs.local_status()
+H.check(vst['video_count'] == 5,
+        'the clips are counted: {} of {} rows'.format(vst['video_count'],
+                                                      vst['total']))
+H.check(vst['video_bytes'] > 0 and vst['video_bytes'] <= vst['total_bytes'],
+        'their bytes are part of the total, not beside it: {} of {}'.format(
+            vst['video_bytes'], vst['total_bytes']))
+H.check(vst['video_archived'] == 4 and vst['video_on_server'] == 1,
+        '4 are archived here and 1 is still the server\'s to keep: {} / {}'
+        .format(vst['video_archived'], vst['video_on_server']))
+
 print('\n=== Project -> Synchronisation shows the state ===')
 # The owner runs this desktop himself, so the figures and the action live on the
 # screen he already opens, not in a log. Sync is off in tests, so the dialog
@@ -329,6 +528,15 @@ H.check(server.startswith('{} photo(s)'.format(now['on_server_count']))
         'and what the server is still holding: "{}"'.format(server))
 H.check('kB' in here or 'MB' in here or 'bytes' in here,
         'with a size, not just a count')
+# A clip is one of those photos — same row, same sweep — but it is ~6x the
+# size, so how many of the figure are clips is the first question when the
+# 1 GB disk fills.
+H.check(now['video_archived'] and '({} video)'.format(now['video_archived']) in here,
+        'and says how many of them are clips: "{}"'.format(here))
+H.check(now['video_on_server'] and '({} video)'.format(now['video_on_server']) in server,
+        'on both sides of the figure: "{}"'.format(server))
+H.check('(0 video)' not in here and '(0 video)' not in server,
+        'and says nothing at all when there are none')
 H.check('could not be verified' in dlg._ph_warn_lbl.text(),
         'the unverifiable photo is called out: "{}"'
         .format(dlg._ph_warn_lbl.text()[:80]))

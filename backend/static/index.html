@@ -10,7 +10,7 @@
   <title>BESS Field Log</title>
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="apple-touch-icon" href="/app/icons/icon-192.png" />
-  <link rel="stylesheet" href="/app/css/app.css?v=20" />
+  <link rel="stylesheet" href="/app/css/app.css?v=21" />
 </head>
 <body>
 
@@ -250,18 +250,47 @@
       <input id="f-tags" type="text" />
     </div>
 
-    <!-- Photos -->
+    <!-- Photos and short video.
+         The clip is RECORDED here, never picked from the camera roll: a phone
+         film is about 5 MB a second, and capping it at capture is the only
+         thing that keeps the server's 1 GB disk affordable. 30 s hard stop,
+         sound on, ~0.7 Mbit/s — about 2 MB, the size of three photos. -->
     <div class="form-group">
-      <label>Photos</label>
+      <label>Photos and video</label>
       <div class="photo-area">
-        <button type="button" class="photo-add-btn" onclick="document.getElementById('photo-input').click()">
-          📷 Add Photos
-        </button>
+        <div class="photo-btn-row">
+          <button type="button" class="photo-add-btn" onclick="document.getElementById('photo-input').click()">
+            📷 Add Photos
+          </button>
+          <button type="button" class="photo-add-btn" id="video-add-btn"
+                  onclick="App.startVideo()">
+            🎥 Record video
+          </button>
+        </div>
         <input id="photo-input" type="file" accept="image/*" multiple
                style="display:none" onchange="App.addPhotos(this)" />
+
+        <!-- While recording: what the camera sees, how long it has run, and
+             one obvious way to stop. It also stops itself at 30 s. -->
+        <div id="video-rec" class="video-rec" style="display:none">
+          <video id="video-rec-preview" class="video-rec-preview"
+                 muted playsinline autoplay></video>
+          <div class="video-rec-bar">
+            <span class="video-rec-dot"></span>
+            <span id="video-rec-time" class="video-rec-time">0:00</span>
+            <span class="video-rec-max">of 0:30 max</span>
+            <span id="video-rec-note" class="video-rec-note"></span>
+            <button type="button" class="video-stop-btn" id="video-stop-btn"
+                    onclick="App.stopVideo()">■ Stop</button>
+          </div>
+        </div>
+        <p class="hint-line" id="video-hint" style="display:none"></p>
+
         <div id="photo-preview" class="photo-grid"></div>
         <p class="hint-line" id="photo-hint">Each photo is saved with the project,
-           the date and time, the node and the location written on it.</p>
+           the date and time, the node and the location written on it. A video clip
+           is recorded here (30 s maximum, with sound) and its first frame carries
+           the same caption.</p>
       </div>
     </div>
 
@@ -703,10 +732,10 @@
   <button class="tab" data-tab="more" onclick="App.goSettings()"><span>More</span></button>
 </nav>
 
-<script>window.APP_VERSION = 'v20';</script>
-<script src="/app/js/db.js?v=20"></script>
-<script src="/app/js/api.js?v=20"></script>
-<script src="/app/js/app.js?v=20"></script>
+<script>window.APP_VERSION = 'v21';</script>
+<script src="/app/js/db.js?v=21"></script>
+<script src="/app/js/api.js?v=21"></script>
+<script src="/app/js/app.js?v=21"></script>
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/app/sw.js').then(reg => {

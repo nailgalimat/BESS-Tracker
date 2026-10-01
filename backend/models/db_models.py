@@ -308,6 +308,12 @@ class WorkLogImage(Base):
     uploaded_at    = Column(String, default=_now, nullable=False)
     updated_at     = Column(String, default=_now, nullable=False, index=True)
     upload_status  = Column(String, default="uploaded")
+    # A short clip is a row in this table too, told apart by its mime type; the
+    # phone's poster frame is its thumbnail_path, because there is no ffmpeg
+    # here to make one. Both NULL for every photo ever uploaded, so an older
+    # client that sends neither is unaffected.
+    mime_type      = Column(String, nullable=True)
+    duration_ms    = Column(Integer, nullable=True)
     # The office desktop has a hash-verified copy, so this server dropped its
     # own file. The row stays: the record still shows a photo exists, and the
     # metadata (filename, size, sha256, dimensions) is what lets the desktop's

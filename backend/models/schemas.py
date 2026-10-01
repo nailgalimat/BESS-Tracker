@@ -127,6 +127,13 @@ class WorkLogImageOut(BaseModel):
     # 410 that says where the photo is, not a broken null).
     archived:       bool          = False
     archived_at:    Optional[str] = None
+    # A short clip is a row in this table, told apart by its mime type. All
+    # three default, so an older client's payload is byte-for-byte what it was:
+    # mime_type is NULL on every photo already uploaded, and a client that does
+    # not read these fields cannot tell the difference.
+    mime_type:      Optional[str] = None
+    duration_ms:    Optional[int] = None
+    has_poster:     bool          = False
 
     model_config = {"from_attributes": True}
 
@@ -432,6 +439,11 @@ class ImageUploadResponse(BaseModel):
     taken_at:       Optional[str]
     uploaded_at:    str
     download_url:   str
+    # What the server decided this upload actually is, so the phone can see
+    # its clip was accepted as a clip. Defaulted: an older client ignores them.
+    mime_type:      Optional[str] = None
+    duration_ms:    Optional[int] = None
+    has_poster:     bool          = False
 
 
 # ── Photo retention: the desktop confirms, the server drops its file ──────────

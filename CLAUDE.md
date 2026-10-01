@@ -88,6 +88,23 @@ the server. Nothing is deleted on a timer, so a client that never confirms loses
 nothing. `/healthz` and `GET /images/storage` report disk usage — numbers only, no
 paths. `test_photo_retention.py` pins all of it, server half included.
 
+**Short video rides this same pipeline.** A clip is a `work_log_images` row
+whose `mime_type` is a video one (`mime_type` / `duration_ms` were added to the
+table on both sides; a NULL mime_type reads as a photo), so sync, hashing,
+archiving, the readable folders, the desktop mirror and the Synchronisation
+figures all work with no second implementation — which matters because a clip
+is ~2 MB against a photo's ~0.5 MB and one that never got archived would refill
+the 1 GB disk faster than photos ever did. Two things are video-specific:
+the **poster frame**, which the phone grabs at capture and uploads as a second
+multipart part (there is no ffmpeg on either side, so it is the only thumbnail
+a clip can have; it is stored as the row's `thumbnail_path` and fetched by
+`GET /images/{id}/poster`), and video's **own size cap** (`MAX_VIDEO_SIZE_MB`,
+separate from `MAX_IMAGE_SIZE_MB`) with its own magic-byte-validated mime list.
+The sweep will not confirm a clip whose poster it was told about and does not
+hold (`verify()` → `noposter`). Recording is constrained at capture in
+`backend/static/js/app.js` — 854×480, 600 kbit/s video + 64 kbit/s audio, a
+hard 30 s stop — never by a file picker: `tests/video_check.js` pins that.
+
 ### Frozen-vs-dev path resolution
 
 `database/db_manager._get_db_path()` picks the DB location based on `sys.frozen`:

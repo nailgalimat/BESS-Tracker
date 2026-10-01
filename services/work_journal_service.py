@@ -333,7 +333,12 @@ def _record_dir(root: str, row: dict, index: dict = None) -> str:
 def mirror_record_photos(project_name: str, row: dict, indexes: dict = None) -> Optional[dict]:
     """Copy one record's photos into its readable folder. None if it has none.
     Returns {'folder', 'copied', 'missing'}; a photo still on the server is
-    'missing' until a sync downloads it."""
+    'missing' until a sync downloads it.
+
+    Video clips come along with no special handling: they are rows of the same
+    `work_log_images` table and they keep their own extension, so the folder a
+    person opens holds the record's whole evidence — the photos and the clip —
+    and not two places to look."""
     import os
     import shutil
     from services.image_service import get_images_for_log

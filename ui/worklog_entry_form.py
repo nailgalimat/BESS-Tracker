@@ -115,8 +115,16 @@ def _load_pixmap_safe(path: str, w: int, h: int) -> QPixmap:
 # ── Photo thumbnail (clickable) ───────────────────────────────────────────────
 
 class PhotoThumb(QLabel):
-    """80×60 px clickable thumbnail.  Emits clicked(file_path)."""
+    """80×60 px clickable thumbnail.  Emits clicked(file_path).
+
+    A clip uses the same tile: its poster frame is its picture, a ▶ badge says
+    it is a clip, and doubleClicked is what plays it. Photos have always opened
+    on a single click and still do — video is the one that needs the second
+    click, because handing a file to the system player is not something to do
+    by accident.
+    """
     clicked = pyqtSignal(str)
+    doubleClicked = pyqtSignal(str)
 
     def __init__(
         self,
@@ -124,16 +132,20 @@ class PhotoThumb(QLabel):
         image_id:      str = "",
         upload_status: str = "local",
         parent=None,
+        is_video:      bool = False,
+        badge:         str = "",
     ):
         super().__init__(parent)
         self._path          = file_path
         self._image_id      = image_id
         self._upload_status = upload_status
+        self._is_video      = bool(is_video)
         self.setFixedSize(82, 62)
         self.setAlignment(Qt.AlignCenter)
         self.setCursor(Qt.PointingHandCursor)
 
         has_local = bool(file_path and os.path.isfile(file_path))
+        what = "Clip" if self._is_video else "Photo"
 
         if has_local:
             self.setStyleSheet(
@@ -141,24 +153,64 @@ class PhotoThumb(QLabel):
             )
             self.setPixmap(_load_pixmap_safe(file_path, 80, 60))
             self.setToolTip(os.path.basename(file_path))
+        elif self._is_video:
+            # A clip with no poster: the phone could not make one, or it has not
+            # arrived yet. Say it is a clip rather than showing a broken photo.
+            self.setStyleSheet(
+                "border: 1px solid #B39DDB; border-radius: 4px;"
+                " background: #EDE7F6; color: #4527A0; font-size: 20px;"
+            )
+            self.setText("▶")
+            self.setToolTip("Video clip — no poster frame on this computer")
         elif upload_status == "remote":
             self.setStyleSheet(
                 "border: 1px solid #90CAF9; border-radius: 4px;"
                 " background: #E3F2FD; color: #1565C0; font-size: 20px;"
             )
             self.setText("☁")
-            self.setToolTip("Photo stored on server — click to download")
+            self.setToolTip(f"{what} stored on server — click to download")
         else:
             self.setStyleSheet(
                 "border: 1px dashed #BDBDBD; border-radius: 4px;"
                 " background: #F5F5F5; color: #9E9E9E; font-size: 18px;"
             )
             self.setText("?")
-            self.setToolTip("Photo file not found locally")
+            self.setToolTip(f"{what} file not found locally")
+
+        if badge:
+            self.setToolTip((self.toolTip() + "\n" + badge).strip())
+
+    def is_video(self) -> bool:
+        return self._is_video
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if not self._is_video or not self.pixmap():
+            return
+        # A play triangle over the poster, so a clip is never mistaken for a
+        # photo at a glance.
+        from PyQt5.QtGui import QPainter, QPolygon
+        from PyQt5.QtCore import QPoint
+        p = QPainter(self)
+        try:
+            cx, cy = self.width() // 2, self.height() // 2
+            p.setRenderHint(QPainter.Antialiasing)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(0, 0, 0, 130))
+            p.drawEllipse(cx - 13, cy - 13, 26, 26)
+            p.setBrush(QColor("#FFFFFF"))
+            p.drawPolygon(QPolygon([QPoint(cx - 5, cy - 8), QPoint(cx - 5, cy + 8),
+                                    QPoint(cx + 8, cy)]))
+        finally:
+            p.end()
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
             self.clicked.emit(self._path)
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.doubleClicked.emit(self._path)
 
 
 # ── Full-size image viewer dialog ─────────────────────────────────────────────

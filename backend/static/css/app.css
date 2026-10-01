@@ -456,6 +456,71 @@ html, body {
   justify-content: center;
 }
 
+/* ── Video: recorded here, 30 s maximum, sound on ────────────────────────── */
+.photo-btn-row { display: flex; gap: 8px; }
+.photo-btn-row .photo-add-btn { width: auto; flex: 1; }
+.photo-add-btn[disabled] { opacity: .5; }
+
+.video-rec {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #0B1220;
+}
+.video-rec-preview {
+  display: block;
+  width: 100%;
+  max-height: 240px;
+  background: #000;
+  object-fit: cover;
+}
+.video-rec-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  color: #E8EDF5;
+  font-size: 13px;
+}
+.video-rec-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: #E53935; flex-shrink: 0;
+  animation: video-rec-blink 1s steps(2, start) infinite;
+}
+@keyframes video-rec-blink { to { visibility: hidden; } }
+.video-rec-time { font-variant-numeric: tabular-nums; font-weight: 600; }
+.video-rec-max  { color: #8FA3BF; }
+.video-rec-note { color: #FFCC80; flex: 1; font-size: 12px; }
+.video-stop-btn {
+  margin-left: auto;
+  background: #E53935;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.video-stop-btn:active { background: #C62828; }
+
+/* A staged clip: its poster frame, a play mark, its length and its size. */
+.photo-thumb.video-thumb { background: #101826; }
+.photo-thumb.video-thumb .video-play {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 22px; text-shadow: 0 1px 4px rgba(0,0,0,.8);
+  pointer-events: none;
+}
+.photo-thumb.video-thumb .video-meta {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,.66);
+  color: #fff; font-size: 9px; line-height: 1.5;
+  text-align: center;
+  pointer-events: none;
+}
+.detail-clip { width: 100%; border-radius: 8px; background: #000; display: block; }
+
 /* ── Detail view ──────────────────────────────────────────────────────────── */
 .detail-card {
   background: var(--card);

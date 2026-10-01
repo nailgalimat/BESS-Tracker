@@ -372,4 +372,72 @@ page._select_key(key)
 texts = [w.text() for w in page.card.findChildren(QLabel)]
 H.check(any('Photos · 2' in t for t in texts), 'the card shows the record\'s photos')
 
+# ── a video clip on the card, and in the record's folder ────────────────────
+# A clip is a work_log_images row whose mime type is a video one — the same
+# table, the same folder, the same "Save photos to…". It shows its poster with
+# a ▶ over it, its length and its size, and plays on a double click through the
+# system player (Qt has no bundled video backend, and adding one to play a
+# 30-second clip would be a large dependency for nothing).
+import services.image_service as isvc
+clip = os.path.join(H.WORK, 'clip_20260914-0812.webm')
+with open(clip, 'wb') as f:
+    # the size a real 30-second clip measured: 1.8 MB, about three photos
+    f.write(b'\x1a\x45\xdf\xa3' + b'webm payload' * 157000)
+poster = os.path.join(H.WORK, 'clip_poster.jpg')
+QImage(854, 480, QImage.Format_RGB32).save(poster, 'JPG')
+c = dbm.get_connection()
+c.execute("INSERT INTO work_log_images (id, work_log_id, file_path, thumbnail_path, "
+          "filename, size_bytes, upload_status, mime_type, duration_ms) "
+          "VALUES ('vid1', ?, ?, ?, 'clip_20260914-0812.webm', ?, 'uploaded', "
+          "'video/webm', 29840)", (key[2:], clip, poster, os.path.getsize(clip)))
+c.commit(); c.close()
+
+page.refresh()
+page._select_key(key)
+texts = [w.text() for w in page.card.findChildren(QLabel)]
+H.check(any('Photos · 3 · 1 video' in t for t in texts),
+        'the card counts the clip with the photos and says one is video: {}'
+        .format([t for t in texts if 'Photos' in t]))
+H.check(any('0:30' in t and 'MB' in t for t in texts),
+        'and shows its length and its size: {}'
+        .format([t for t in texts if '0:30' in t]))
+
+from ui.worklog_entry_form import PhotoThumb
+thumbs = page.card.findChildren(PhotoThumb)
+vids = [t for t in thumbs if t.is_video()]
+H.check(len(vids) == 1 and vids[0].pixmap() is not None
+        and not vids[0].pixmap().isNull(),
+        'the clip tile shows its poster frame, not a placeholder')
+H.check(hasattr(vids[0], 'doubleClicked'),
+        'and a double click is what plays it')
+
+# a double click hands the clip to the system player — os.startfile, patched
+# here, because a test must not open Windows Media Player
+played = []
+_orig_startfile = os.startfile
+os.startfile = lambda p: played.append(p)
+try:
+    row_v = [r for r in wj.records(PID, today=TODAY) if r['key'] == key][0]
+    page._open_photo(row_v, {'id': 'vid1', 'file_path': clip,
+                             'mime_type': 'video/webm'})
+finally:
+    os.startfile = _orig_startfile
+H.check(played == [clip], 'the clip itself is played, not its poster: {}'
+        .format([os.path.basename(p) for p in played]))
+
+res = wj.mirror_photos()
+H.check(os.path.isfile(os.path.join(renamed, 'clip_20260914-0812.webm')),
+        'the clip is copied into the readable record folder beside the photos: '
+        '{}'.format(sorted(os.listdir(renamed))))
+H.check(wj.mirror_photos()['copied'] == 0,
+        'and a second pass copies nothing — it is not re-copied every sync')
+
+exp = os.path.join(H.WORK, 'export_clip')
+out = isvc.export_entry_images(key[2:], exp)
+H.check(out['videos'] == 1 and out['saved'] == out['total'] == 3,
+        '"Save photos to…" takes the clip with the photos: {}'.format(out))
+H.check(any(n.endswith('.webm') for n in os.listdir(exp)),
+        'under its own extension, so it still plays: {}'
+        .format(sorted(os.listdir(exp))))
+
 H.finish()

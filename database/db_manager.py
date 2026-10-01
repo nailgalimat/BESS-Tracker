@@ -934,6 +934,18 @@ def initialize_database():
         if 'server_archived_at' not in _wli_cols:
             c.execute("ALTER TABLE work_log_images ADD COLUMN server_archived_at TEXT")
 
+        # A short clip recorded on the phone is a row in THIS table, not in a
+        # table of its own: that is how it inherits sync, the sha256 check,
+        # archiving on the server, the readable photo folders and the work
+        # card, with no second implementation of any of them. `mime_type` is
+        # what tells a clip from a photo; `duration_ms` is its length, so the
+        # card can say "0:12" without opening the file. Both NULL on every
+        # photo already here, and a NULL mime_type reads as a photo.
+        if 'mime_type' not in _wli_cols:
+            c.execute("ALTER TABLE work_log_images ADD COLUMN mime_type TEXT")
+        if 'duration_ms' not in _wli_cols:
+            c.execute("ALTER TABLE work_log_images ADD COLUMN duration_ms INTEGER")
+
         # ── FIELD-LOG SPARE PARTS (structured, stock-linked) ───────────────
         # Optional structured spare parts attached to a work_log_entry.
         # The free-text work_log_entries.spare_parts stays as a quick summary;

@@ -70,6 +70,21 @@ def internal():
     return _tag("Internal", "#6B4E00", "#FFF4D6")
 
 
+def _file_size_text(n) -> str:
+    """'2.7 MB' — a clip's size on the card, so the owner sees what a phone
+    actually sent before it fills the server's 1 GB disk."""
+    try:
+        n = float(n or 0)
+    except (TypeError, ValueError):
+        return ''
+    if n <= 0:
+        return ''
+    for unit, step in (('MB', 1024 ** 2), ('kB', 1024)):
+        if n >= step:
+            return '{:.1f} {}'.format(n / step, unit)
+    return '{:.0f} B'.format(n)
+
+
 def parts_badge(count: dict) -> str:
     """The Materials cell for one record: what the office still has to do."""
     if not count or not count.get('total'):
@@ -1188,21 +1203,48 @@ class WorkPage(QWidget):
             os.startfile(path)
 
     def _photos_section(self, row):
-        """Thumbnails (click to view), the record's photo folder, save a copy."""
-        from services.image_service import get_images_for_log
+        """Thumbnails (click to view), the record's photo folder, save a copy.
+
+        Clips share the section rather than getting a panel of their own: they
+        are rows of the same table, they live in the same folder, and they come
+        out of the same "Save photos to…". A clip shows its poster frame with a
+        ▶ over it and its length and size under it, and plays on a double click.
+        """
+        from services.image_service import get_images_for_log, is_video, duration_text
         imgs = get_images_for_log(row['ref'])
         if not imgs:
             return
-        self._label(f"Photos · {len(imgs)}")
+        clips = [i for i in imgs if is_video(i)]
+        head = f"Photos · {len(imgs)}"
+        if clips:
+            head += f" · {len(clips)} video"
+        self._label(head)
         from ui.worklog_entry_form import PhotoThumb
         strip = QHBoxLayout()
         strip.setSpacing(6)
         for img in imgs[:8]:
-            th = PhotoThumb(img.get('thumbnail_path') or img.get('file_path') or '',
+            vid = is_video(img)
+            cap = ' · '.join(x for x in (duration_text(img.get('duration_ms')),
+                                         _file_size_text(img.get('size_bytes'))) if x)
+            tile = QVBoxLayout()
+            tile.setSpacing(2)
+            th = PhotoThumb(img.get('thumbnail_path') or
+                            ('' if vid else (img.get('file_path') or '')),
                             image_id=img.get('id', ''),
-                            upload_status=img.get('upload_status', 'local'))
+                            upload_status=img.get('upload_status', 'local'),
+                            is_video=vid,
+                            badge=('Double-click to play' if vid else ''))
             th.clicked.connect(lambda _=None, i=img: self._open_photo(row, i))
-            strip.addWidget(th)
+            th.doubleClicked.connect(lambda _=None, i=img: self._open_photo(row, i))
+            tile.addWidget(th)
+            if vid:
+                lab = QLabel(cap or 'video')
+                lab.setAlignment(Qt.AlignHCenter)
+                lab.setStyleSheet("color:#6B7A8D;font-size:10px;")
+                tile.addWidget(lab)
+            holder_tile = QWidget()
+            holder_tile.setLayout(tile)
+            strip.addWidget(holder_tile)
         if len(imgs) > 8:
             strip.addWidget(QLabel(f"+{len(imgs) - 8}"))
         strip.addStretch()
@@ -1221,6 +1263,7 @@ class WorkPage(QWidget):
         opn.clicked.connect(lambda: self._open_photo_folder(row))
         pb.addWidget(opn)
         sv = SecondaryButton("Save photos to…")
+        sv.setToolTip("Photos and video clips of this record, as files.")
         sv.clicked.connect(lambda: self._save_photos(row))
         pb.addWidget(sv)
         pb.addStretch()
@@ -1270,14 +1313,28 @@ class WorkPage(QWidget):
 
     def _open_photo(self, row, img):
         import os
+        from services.image_service import is_video
+        vid = is_video(img)
         path = img.get('file_path') or ''
         if not os.path.isfile(path):
             from services.image_service import download_remote_image
             path = download_remote_image(img['id'], row['ref']) or ''
         if not os.path.isfile(path):
-            QMessageBox.information(self, "Photo on the server",
-                                    "This photo is not on this computer yet. "
-                                    "It arrives with the next sync.")
+            QMessageBox.information(
+                self, "Clip on the server" if vid else "Photo on the server",
+                ("This clip is not on this computer yet. "
+                 if vid else "This photo is not on this computer yet. ")
+                + "It arrives with the next sync.")
+            return
+        if vid:
+            # Qt has no bundled video backend here, and adding one to ship a
+            # 30-second clip would be a large dependency for nothing: the
+            # system player already knows how to play WebM and MP4.
+            try:
+                os.startfile(path)
+            except OSError as e:                         # noqa: BLE001
+                QMessageBox.warning(self, "Cannot play the clip",
+                                    f"Windows could not open\n{path}\n\n{e}")
             return
         from ui.worklog_entry_form import ImageViewerDialog
         ImageViewerDialog(path, self).exec_()
@@ -1301,6 +1358,8 @@ class WorkPage(QWidget):
             return
         res = export_entry_images(row['ref'], os.path.join(root, wj.photo_folder_name(row)))
         msg = f"Saved {res['saved']} of {res['total']} photo(s) to\n{res['dest']}"
+        if res.get('videos'):
+            msg += f"\n({res['videos']} of them video clip(s).)"
         if res['failed']:
             msg += f"\n\nNot saved: {len(res['failed'])} (still on the server — sync first)."
         if QMessageBox.question(self, "Photos saved", msg + "\n\nOpen the folder?",

@@ -28,6 +28,12 @@ class Settings:
     DATABASE_URL: str                  = _normalize_db_url(os.getenv("DATABASE_URL", "sqlite:///./backend.db"))
     UPLOAD_DIR: str                    = os.getenv("UPLOAD_DIR", "./uploads")
     MAX_IMAGE_SIZE_MB: int             = int(os.getenv("MAX_IMAGE_SIZE_MB", "25"))
+    # A short clip is bigger than a photo but must not be allowed to be a film:
+    # the phone caps recording at 30 s and asks its encoder for ~0.75 Mbit/s, so
+    # a clip lands around 3 MB. 40 MB is headroom for a browser that ignores the
+    # bitrate hint, not a licence to upload a 4K minute. Separate from
+    # MAX_IMAGE_SIZE_MB on purpose — raising the photo cap must not raise this.
+    MAX_VIDEO_SIZE_MB: int             = int(os.getenv("MAX_VIDEO_SIZE_MB", "40"))
     FIRST_ADMIN_USERNAME: str          = os.getenv("FIRST_ADMIN_USERNAME", "admin")
     FIRST_ADMIN_PASSWORD: str          = os.getenv("FIRST_ADMIN_PASSWORD", "admin123")
     # Comma-separated allowed browser origins for the PWA/clients ('*' = any).

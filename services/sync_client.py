@@ -319,13 +319,38 @@ def push_pending() -> dict:
             continue
         try:
             filename = img.get("filename") or os.path.basename(file_path)
+            # The server decides what this is from the magic bytes, but send the
+            # row's own mime type rather than always claiming image/jpeg — and
+            # a clip's poster and length with it, the same parts the phone
+            # sends, so a clip attached here arrives complete.
+            mime = img.get("mime_type") or "image/jpeg"
+            parts = {}
+            data = {}
+            # Only a clip's poster is worth sending: the server regenerates a
+            # photo's thumbnail from the photo itself, and uploading one with
+            # every photo would add a file per photo for nothing.
+            from services.image_service import is_video as _is_video
+            poster = (img.get("thumbnail_path") or "") if _is_video(img) else ""
+            if img.get("duration_ms") is not None:
+                data["duration_ms"] = str(int(img["duration_ms"]))
             with open(file_path, "rb") as f:
-                resp = _request(
-                    "post",
-                    f"/worklogs/{img['work_log_id']}/images",
-                    extra_headers={"X-Image-ID": img["id"]},   # idempotency
-                    files={"file": (filename, f, "image/jpeg")},
-                )
+                parts["file"] = (filename, f, mime)
+                if poster and os.path.isfile(poster):
+                    with open(poster, "rb") as pf:
+                        parts["poster"] = ("poster.jpg", pf, "image/jpeg")
+                        resp = _request(
+                            "post",
+                            f"/worklogs/{img['work_log_id']}/images",
+                            extra_headers={"X-Image-ID": img["id"]},
+                            files=parts, data=data or None,
+                        )
+                else:
+                    resp = _request(
+                        "post",
+                        f"/worklogs/{img['work_log_id']}/images",
+                        extra_headers={"X-Image-ID": img["id"]},   # idempotency
+                        files=parts, data=data or None,
+                    )
             if resp.status_code in (200, 201):
                 _mark_image_uploaded(img["id"])
                 stats["pushed"] += 1
@@ -1040,8 +1065,9 @@ def _apply_pulled_image(data: dict):
         conn.execute("""
             INSERT OR IGNORE INTO work_log_images
                 (id, work_log_id, file_path, thumbnail_path, filename,
-                 size_bytes, sha256, taken_at, uploaded_at, upload_status)
-            VALUES (?, ?, '', NULL, ?, ?, ?, ?, ?, 'remote')
+                 size_bytes, sha256, taken_at, uploaded_at, upload_status,
+                 mime_type, duration_ms)
+            VALUES (?, ?, '', NULL, ?, ?, ?, ?, ?, 'remote', ?, ?)
         """, (
             data["id"],
             data["work_log_id"],
@@ -1050,6 +1076,10 @@ def _apply_pulled_image(data: dict):
             data.get("sha256", ""),
             data.get("taken_at"),
             data.get("uploaded_at", _now()),
+            # An older server sends neither; a NULL mime_type reads as a photo,
+            # which is what every row in this table was before clips existed.
+            data.get("mime_type"),
+            data.get("duration_ms"),
         ))
         conn.commit()
     finally:
@@ -1131,6 +1161,33 @@ def download_image_file(image_id: str, dest_path: str) -> bool:
     return False
 
 
+def download_image_poster(image_id: str, dest_path: str) -> bool:
+    """Download a clip's poster frame to *dest_path*. Returns True on success.
+
+    A photo's thumbnail is regenerated here from the photo itself; a clip's
+    cannot be — there is no ffmpeg on either side — so the still the phone
+    grabbed at capture is fetched as its own file. 404 means the server has no
+    poster for this row (an older server, or a clip whose poster never made it),
+    which is a plain False: the clip is still worth having without one.
+    """
+    if not sync_config.is_configured():
+        return False
+    try:
+        url = f"{sync_config.server_url}/images/{image_id}/poster"
+        resp = requests.get(url, headers=_headers(), timeout=30)
+        if resp.status_code == 401:
+            if refresh_access_token():
+                resp = requests.get(url, headers=_headers(), timeout=30)
+        if resp.status_code == 200 and resp.content:
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            with open(dest_path, "wb") as fh:
+                fh.write(resp.content)
+            return True
+    except RequestException:
+        pass
+    return False
+
+
 def confirm_server_archive(image_ids: list) -> dict:
     """Tell the server the office desktop holds these photos, so it may delete
     its own files. The caller must have verified each local copy's SHA-256 —
@@ -1180,15 +1237,26 @@ def download_pending_remote_images() -> int:
     about. Uses the on-demand downloader, which also writes the local file,
     generates a thumbnail and flips the row to 'uploaded'. Failures are left
     'remote' and retried on the next sync. Returns the count downloaded.
+
+    A clip's poster is a second file and can fail on its own, so a clip that
+    arrived without one is topped up here too. That matters: the retention sweep
+    will not confirm a clip whose poster it knows about and has not got, and
+    without this the poster would never be retried.
     """
     if not sync_config.is_configured():
         return 0
-    from services.image_service import download_remote_image
+    from services.image_service import download_remote_image, ensure_poster
     conn = get_connection()
     try:
         rows = conn.execute(
             "SELECT id, work_log_id FROM work_log_images "
             "WHERE upload_status='remote'"
+        ).fetchall()
+        posterless = conn.execute(
+            "SELECT id, work_log_id, filename, file_path, thumbnail_path, mime_type "
+            "FROM work_log_images "
+            "WHERE upload_status='uploaded' AND server_archived_at IS NULL "
+            "  AND COALESCE(thumbnail_path, '') = ''"
         ).fetchall()
     finally:
         conn.close()
@@ -1197,6 +1265,11 @@ def download_pending_remote_images() -> int:
         try:
             if download_remote_image(r["id"], r["work_log_id"]):
                 n += 1
+        except Exception:
+            pass
+    for r in posterless:
+        try:
+            ensure_poster(dict(r))
         except Exception:
             pass
     return n

@@ -8,7 +8,13 @@
 const App = {
   // ── State ──────────────────────────────────────────────────────────────────
   _currentCat:     '',
-  _stagedPhotos:   [],   // { id, file, dataUrl }
+  // Photos AND clips, in the order they were taken. A photo is
+  // { id, file, dataUrl, geo, taken }; a clip is
+  // { id, kind:'video', blob, mime, durationMs, posterDataUrl, size, filename,
+  //   geo, taken }. One list because they are one thing to the engineer and
+  //   one thing to the server: rows of work_log_images on the same record.
+  _stagedPhotos:   [],
+  _rec:            null,   // the recording in progress, or null
   _currentEntryId: null,
   _tab:            'tasks',
   _taskSeg:        'today',
@@ -364,8 +370,10 @@ const App = {
   },
 
   async goCreate(kind, keep) {
+    this._cancelVideo();               // a recorder left running holds the camera
     this._stagedPhotos = [];
     document.getElementById('photo-preview').innerHTML = '';
+    this._showVideoAvailability();
     document.getElementById('f-date').value    = _today();
     document.getElementById('f-cat').value     = kind || 'fault';
     document.getElementById('f-loc').value     = '';
@@ -1031,6 +1039,33 @@ const App = {
     const imageIds = [];
     for (const staged of this._stagedPhotos) {
       const imgId = _uuid();
+
+      if (staged.kind === 'video') {
+        // The clip's bytes are kept as a Blob, not as a base64 data URL: a
+        // 2 MB clip is a 2.7 MB string, and turning it into one twice (to
+        // store and to upload) is memory a phone in a container has not got.
+        //
+        // Its poster frame is stamped with exactly the caption a photo gets,
+        // and stamped HERE rather than at capture, for the same reason photos
+        // are: the project and the node are whatever the form finally says,
+        // which is not knowable while the camera is running.
+        const poster = await this._stampPoster(
+          staged, { project: projName, node: nodeText });
+        await DB.saveImage({
+          id:              imgId,
+          entry_id:        id,
+          blob:            staged.blob,
+          poster_data_url: poster,
+          filename:        staged.filename,
+          size:            staged.size,
+          mime_type:       staged.mime,
+          duration_ms:     staged.durationMs,
+          upload_status:   'local',
+        });
+        imageIds.push(imgId);
+        continue;
+      }
+
       let dataUrl = staged.dataUrl;
       let size = staged.file.size;
       let filename = staged.file.name || 'photo.jpg';
@@ -1120,6 +1155,287 @@ const App = {
     input.value = '';   // allow re-selecting same file
   },
 
+  // ── Video: recorded here, capped at capture ────────────────────────────────
+  // A phone film is roughly 5 MB a second. The server's disk is 1 GB and was
+  // nearly full a week ago on photos alone, so a clip is constrained where it
+  // is made, not where it lands: a modest frame size, an explicit bitrate, and
+  // a hard stop at 30 seconds. ~2 MB a clip, about three photos.
+  VIDEO_MAX_MS: 30000,
+  VIDEO_BPS:    600000,     // video; measured 1.8 MB for 30 s of a real scene
+  AUDIO_BPS:    64000,      // sound is the point of half of these clips
+  VIDEO_W:      854,
+  VIDEO_H:      480,
+  VIDEO_FPS:    24,
+
+  // MP4/H.264 first: it is what iOS Safari can record at all, and what a
+  // Windows desktop plays without a codec pack. WebM/VP8 is the floor that
+  // every Android Chrome has. Nothing is assumed — each one is asked for.
+  VIDEO_MIMES: [
+    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+    'video/mp4',
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm',
+  ],
+
+  /** The first container this browser will actually record, or '' for none. */
+  _videoMime() {
+    if (typeof MediaRecorder === 'undefined') return '';
+    if (typeof MediaRecorder.isTypeSupported !== 'function') return '';
+    for (const m of this.VIDEO_MIMES) {
+      try {
+        if (MediaRecorder.isTypeSupported(m)) return m;
+      } catch (_) { /* a browser that throws on the question says no */ }
+    }
+    return '';
+  },
+
+  /** '' when recording will work here, otherwise one plain sentence saying
+      why it will not. Checked before the button is shown, never after it is
+      pressed: an engineer in a container should not discover this by tapping. */
+  _videoWhyNot() {
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+      return 'This browser cannot open the camera, so video is not available '
+           + 'here. Photos still work. (Open the app over https or on the '
+           + 'server itself — a camera needs a secure connection.)';
+    }
+    if (typeof MediaRecorder === 'undefined') {
+      return 'This browser cannot record video. Photos still work.';
+    }
+    if (!this._videoMime()) {
+      return 'This browser can open the camera but cannot record a format the '
+           + 'server accepts. Photos still work.';
+    }
+    return '';
+  },
+
+  _showVideoAvailability() {
+    const btn  = document.getElementById('video-add-btn');
+    const hint = document.getElementById('video-hint');
+    if (!btn || !hint) return;
+    const why = this._videoWhyNot();
+    btn.style.display  = why ? 'none' : '';
+    btn.disabled       = false;
+    hint.style.display = why ? '' : 'none';
+    hint.textContent   = why;
+  },
+
+  async startVideo() {
+    if (this._rec) return;                      // already running
+    const why = this._videoWhyNot();
+    if (why) { this._showVideoAvailability(); return; }
+    const mime = this._videoMime();
+    const err  = document.getElementById('create-error');
+
+    // Sound is wanted on every clip, but a refused microphone must not cost
+    // the picture of the leak: ask for both, fall back to video only, and say
+    // in the bar that the clip will be silent.
+    let stream = null, silent = false;
+    const video = { facingMode: { ideal: 'environment' },
+                    width:      { ideal: this.VIDEO_W },
+                    height:     { ideal: this.VIDEO_H },
+                    frameRate:  { ideal: this.VIDEO_FPS, max: 30 } };
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video, audio: true });
+    } catch (e) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
+        silent = true;
+      } catch (e2) {
+        _showErr(err, 'The camera was not allowed. Give this app permission to '
+                    + 'use the camera and the microphone, then try again.');
+        return;
+      }
+    }
+    if (!stream.getAudioTracks().length) silent = true;
+
+    let rec;
+    try {
+      rec = new MediaRecorder(stream, {
+        mimeType:           mime,
+        videoBitsPerSecond: this.VIDEO_BPS,
+        audioBitsPerSecond: this.AUDIO_BPS,
+      });
+    } catch (e) {
+      stream.getTracks().forEach(t => { try { t.stop(); } catch (_) {} });
+      _showErr(err, 'This browser refused to record ' + mime + '. Photos still work.');
+      return;
+    }
+
+    const chunks = [];
+    rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = () => this._finishVideo();
+    this._rec = { rec, stream, chunks, mime, silent, t0: Date.now(),
+                  ms: 0, poster: null, timer: null, hardStop: null,
+                  // asked once, never blocking — same rule as a photo's stamp
+                  geo: this._location() };
+
+    const pv = document.getElementById('video-rec-preview');
+    if (pv) {
+      pv.srcObject = stream;
+      pv.muted = true;                 // no howling feedback while recording
+      const p = pv.play();
+      if (p && p.catch) p.catch(() => {});
+    }
+    const panel = document.getElementById('video-rec');
+    if (panel) panel.style.display = '';
+    const note = document.getElementById('video-rec-note');
+    if (note) note.textContent = silent ? 'no microphone — silent clip' : '';
+    const btn = document.getElementById('video-add-btn');
+    if (btn) btn.disabled = true;
+    this._videoTick();
+
+    // The hard stop. Everything else about this feature is a preference; this
+    // is the constraint that makes it affordable, so it is a timer the
+    // engineer cannot forget rather than a rule they are asked to follow.
+    this._rec.hardStop = setTimeout(() => this.stopVideo(true), this.VIDEO_MAX_MS);
+    this._rec.timer    = setInterval(() => this._videoTick(), 200);
+    rec.start(1000);
+  },
+
+  _videoTick() {
+    const r = this._rec;
+    if (!r) return;
+    const ms = Math.min(Date.now() - r.t0, this.VIDEO_MAX_MS);
+    const el = document.getElementById('video-rec-time');
+    if (el) el.textContent = _fmtClipLen(ms);
+    // The poster is grabbed as soon as the stream has a real frame — not at the
+    // end, where a clip that was stopped by having the phone put away would
+    // give a still of the inside of a pocket.
+    if (!r.poster && ms > 400) r.poster = this._posterFrame();
+  },
+
+  /** One JPEG from the live stream, unstamped. The server has no ffmpeg and
+      must not grow one, so this is the only still a clip will ever have. */
+  _posterFrame() {
+    const pv = document.getElementById('video-rec-preview');
+    if (!pv) return null;
+    const w = pv.videoWidth || 0, h = pv.videoHeight || 0;
+    if (!w || !h) return null;
+    try {
+      const cv = document.createElement('canvas');
+      cv.width = w; cv.height = h;
+      cv.getContext('2d').drawImage(pv, 0, 0, w, h);
+      const out = cv.toDataURL('image/jpeg', 0.85);
+      // Same trap as a stamped photo: a phone low on memory answers "data:,"
+      // instead of throwing, and a poster that short is not a picture.
+      if (!out || out.indexOf('data:image/') !== 0 || out.length < 100) return null;
+      return out;
+    } catch (_) {
+      return null;
+    }
+  },
+
+  stopVideo(auto) {
+    const r = this._rec;
+    if (!r) return;
+    clearTimeout(r.hardStop);
+    clearInterval(r.timer);
+    r.hardStop = r.timer = null;
+    r.ms = Math.min(Date.now() - r.t0, this.VIDEO_MAX_MS);
+    r.autoStopped = !!auto;
+    if (!r.poster) r.poster = this._posterFrame();     // last chance
+    // stop() is what makes the recorder hand over its last chunk, so the clip
+    // is finished from its onstop. If stop() itself fails, finish by hand —
+    // whatever was recorded so far is still the evidence.
+    let stopped = false;
+    try {
+      if (r.rec.state !== 'inactive') { r.rec.stop(); stopped = true; }
+    } catch (e) {
+      console.warn('recorder would not stop', e);
+    }
+    if (!stopped) this._finishVideo();
+  },
+
+  /** Give up whatever is running and let go of the camera. Called when the
+      form is reopened or abandoned: a live camera track left behind keeps the
+      lamp on and the battery draining. */
+  _cancelVideo() {
+    const r = this._rec;
+    if (!r) return;
+    this._rec = null;
+    clearTimeout(r.hardStop);
+    clearInterval(r.timer);
+    try { r.rec.onstop = null; if (r.rec.state !== 'inactive') r.rec.stop(); } catch (_) {}
+    r.stream.getTracks().forEach(t => { try { t.stop(); } catch (_) {} });
+    this._closeRecorder();
+  },
+
+  _closeRecorder() {
+    const pv = document.getElementById('video-rec-preview');
+    if (pv) { try { pv.pause(); } catch (_) {} pv.srcObject = null; }
+    const panel = document.getElementById('video-rec');
+    if (panel) panel.style.display = 'none';
+    const btn = document.getElementById('video-add-btn');
+    if (btn) btn.disabled = false;
+  },
+
+  _finishVideo() {
+    const r = this._rec;
+    if (!r) return;
+    this._rec = null;
+    r.stream.getTracks().forEach(t => { try { t.stop(); } catch (_) {} });
+    this._closeRecorder();
+
+    const type = String(r.mime).split(';')[0];
+    const blob = new Blob(r.chunks, { type });
+    if (!blob.size) {
+      _showErr(document.getElementById('create-error'),
+               'Nothing was recorded. Try again, and keep the app in the '
+             + 'foreground while it records.');
+      return;
+    }
+    const ms  = Math.min(r.ms || (this.VIDEO_MAX_MS), this.VIDEO_MAX_MS);
+    const id  = _uuid();
+    const ext = type.indexOf('mp4') >= 0 ? '.mp4'
+              : type.indexOf('quicktime') >= 0 ? '.mov' : '.webm';
+    const staged = {
+      id, kind: 'video', blob, mime: type, durationMs: ms,
+      posterDataUrl: r.poster || null, size: blob.size,
+      filename: 'clip_' + _fileStamp(new Date(r.t0)) + ext,
+      geo: r.geo, taken: r.t0,
+    };
+    this._stagedPhotos.push(staged);
+
+    // The clip is staged above, BEFORE this tile is drawn, and drawing it can
+    // never undo that: a 30-second clip of a fault cannot be re-taken once the
+    // fault has been fixed, so nothing about showing it may lose it.
+    try {
+      const preview = document.getElementById('photo-preview');
+      if (!preview) return;
+      const wrap = document.createElement('div');
+      wrap.className = 'photo-thumb video-thumb';
+      wrap.innerHTML =
+        (r.poster ? `<img src="${r.poster}" alt="" />` : '')
+        + '<span class="video-play">▶</span>'
+        + `<span class="video-meta">${_fmtClipLen(ms)} · ${_fmtBytes(blob.size)}</span>`
+        + '<button class="photo-remove" type="button">×</button>';
+      wrap.querySelector('.photo-remove').addEventListener('click', () => {
+        this._stagedPhotos = this._stagedPhotos.filter(p => p.id !== id);
+        wrap.remove();
+      });
+      preview.appendChild(wrap);
+    } catch (e) {
+      console.warn('could not draw the clip tile', e);
+    }
+  },
+
+  /** A clip's poster frame, carrying the same caption strip a photo does.
+      Null when there is no poster, or when the caption could not be drawn on
+      it — an unstamped poster still beats no poster, and no poster still beats
+      losing the clip, so nothing here ever throws upward. */
+  async _stampPoster(staged, meta) {
+    const raw = staged.posterDataUrl || null;
+    if (!raw) return null;
+    try {
+      return await this._stampPhoto(
+        { file: null, dataUrl: raw, geo: staged.geo, taken: staged.taken }, meta);
+    } catch (e) {
+      console.warn('poster stamp failed', e);
+      return raw;
+    }
+  },
+
   /** The phone's position, or null. Never rejects and never blocks the form:
       indoors, in a container, or with the permission refused, the stamp simply
       carries no coordinates — the node already says where the work was. */
@@ -1200,10 +1516,26 @@ const App = {
 
     document.getElementById('detail-title').textContent = _fmtDate(entry.log_date);
 
+    // Object URLs from the last record looked at: revoked here rather than
+    // never, or every clip opened leaks its own megabytes for the session.
+    (this._objUrls || []).forEach(u => { try { URL.revokeObjectURL(u); } catch (_) {} });
+    this._objUrls = [];
+
     const images = await DB.getImagesForEntry(entryId);
-    const imgHtml = images.map(img =>
-      `<img class="detail-img" src="${img.data_url}" alt="" data-img-id="${img.id}" />`
-    ).join('');
+    const imgHtml = images.map(img => {
+      if (_isVideoRow(img)) {
+        // A clip plays in place, with its stamped poster as the still and its
+        // own controls, so the sound is there. `src` is set below: it needs an
+        // object URL for the stored Blob, which cannot go in a string.
+        return `<video class="detail-clip" controls playsinline preload="none"`
+             + ` data-img-id="${img.id}"`
+             + (img.poster_data_url ? ` poster="${img.poster_data_url}"` : '')
+             + `></video>`;
+      }
+      return `<img class="detail-img" src="${img.data_url}" alt="" data-img-id="${img.id}" />`;
+    }).join('');
+    const byId = {};
+    images.forEach(i => { byId[i.id] = i; });
 
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-card">
@@ -1230,6 +1562,22 @@ const App = {
         document.getElementById('lightbox-img').src = img.src;
         document.getElementById('lightbox').style.display = 'flex';
       });
+    });
+
+    // A clip's bytes are a Blob in IndexedDB; the player needs a URL for them.
+    document.querySelectorAll('.detail-clip').forEach(el => {
+      const img = byId[el.getAttribute('data-img-id')];
+      if (!img) return;
+      try {
+        const b = img.blob instanceof Blob ? img.blob : null;
+        if (b) {
+          const url = URL.createObjectURL(b);
+          this._objUrls.push(url);
+          el.src = url;
+        } else if (img.download_url) {
+          el.src = img.download_url;      // already uploaded, kept nowhere local
+        }
+      } catch (_) { /* a clip that will not play is not worth an error screen */ }
     });
 
     this._show('screen-detail');
@@ -2285,8 +2633,8 @@ const App = {
           const imgs = await DB.getImagesForEntry(r.id);
           for (const img of imgs.filter(i => i.upload_status === 'local')) {
             try {
-              const blob = await fetch(img.data_url).then(x => x.blob());
-              await API.uploadImage(r.id, blob, img.filename, img.id);
+              const blob = await _imageBlob(img);
+              await API.uploadImage(r.id, blob, img.filename, img.id, img);
               img.upload_status = 'uploaded';
               await DB.saveImage(img);
             } catch (_) { /* image upload optional — retry next sync */ }
@@ -2321,18 +2669,19 @@ const App = {
       }
     }
 
-    // ── Photos that failed to upload earlier ─────────────────────────────────
+    // ── Photos and clips that failed to upload earlier ───────────────────────
     // Photos used to go up only with an entry applied in this same push, and a
     // failure was swallowed — so a photo that missed its moment never went.
     // Every sync now retries each photo still waiting whose entry is on the
-    // server (the upload is idempotent by photo id).
+    // server (the upload is idempotent by photo id). A clip rides the same
+    // retry: it is a bigger file on a worse connection, so it needs it more.
     try {
       for (const img of await DB.getPendingImages()) {
         const entry = await DB.getEntry(img.entry_id);
         if (!entry || entry.sync_status !== 'synced') continue;
         try {
-          const blob = await fetch(img.data_url).then(x => x.blob());
-          await API.uploadImage(img.entry_id, blob, img.filename, img.id);
+          const blob = await _imageBlob(img);
+          await API.uploadImage(img.entry_id, blob, img.filename, img.id, img);
           img.upload_status = 'uploaded';
           await DB.saveImage(img);
         } catch (_) { /* still offline or rejected — next sync tries again */ }
@@ -2541,11 +2890,50 @@ function _fmtStampTime(d) {
        + `${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+/** Is this stored image row a clip? The mime type decides; the file name is
+    the fallback, for a row written before clips existed. */
+function _isVideoRow(img) {
+  const m = (img && img.mime_type) || '';
+  if (m) return String(m).indexOf('video/') === 0;
+  return /\.(webm|mp4|m4v|mov|mkv)$/i.test((img && img.filename) || '');
+}
+
+/** The bytes to upload for one stored row: a clip keeps a Blob, a photo keeps
+    a base64 data URL. Reading the Blob straight through avoids turning a
+    2 MB clip into a 2.7 MB string on a phone that is short of memory. */
+async function _imageBlob(img) {
+  if (img && img.blob instanceof Blob) return img.blob;
+  return await fetch(img.data_url).then(x => x.blob());
+}
+
+/** '0:07' — a clip's length as a person reads it. */
+function _fmtClipLen(ms) {
+  const s = Math.max(0, Math.round((ms || 0) / 1000));
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
+/** '2.1 MB' — what the clip will cost the server, shown before it is sent. */
+function _fmtBytes(n) {
+  n = Number(n) || 0;
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+  if (n >= 1024)    return Math.round(n / 1024) + ' kB';
+  return n + ' B';
+}
+
+/** '20260930-1432' — a file name that sorts by when it was taken. */
+function _fileStamp(d) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`
+       + `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
 /** Decode a camera photo the way it should be seen. createImageBitmap honours
     the EXIF rotation, so a portrait photo does not land on its side; an older
-    browser falls back to the data URL, which it rotates itself. */
+    browser falls back to the data URL, which it rotates itself. A clip's poster
+    frame arrives as a data URL with no Blob behind it — there is no file to
+    decode and no EXIF to honour — so that path goes straight to the fallback. */
 async function _decodeImage(file, dataUrl) {
-  if (window.createImageBitmap) {
+  if (file && window.createImageBitmap) {
     try {
       return await createImageBitmap(file, { imageOrientation: 'from-image' });
     } catch (_) { /* fall through */ }

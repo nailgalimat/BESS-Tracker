@@ -292,11 +292,19 @@ class SyncSettingsDialog(QDialog):
             st = local_status()
         except Exception:                                    # noqa: BLE001
             return
-        self._ph_here_lbl.setText("{} photo(s), {} — the server has dropped these"
+        # A clip is one of these photos — same table, same sweep, same bytes —
+        # but it is ~3 MB against a photo's ~0.5 MB, so how many of the figure
+        # are clips is the first thing to ask when the 1 GB disk fills.
+        def _vid(n):
+            return " ({} video)".format(n) if n else ""
+
+        self._ph_here_lbl.setText("{} photo(s){}, {} — the server has dropped these"
                                   .format(st['archived_count'],
+                                          _vid(st.get('video_archived', 0)),
                                           self._mb(st['archived_bytes'])))
-        self._ph_server_lbl.setText("{} photo(s), {}".format(
-            st['on_server_count'], self._mb(st['on_server_bytes'])))
+        self._ph_server_lbl.setText("{} photo(s){}, {}".format(
+            st['on_server_count'], _vid(st.get('video_on_server', 0)),
+            self._mb(st['on_server_bytes'])))
         self._sweep_btn.setEnabled(bool(st['on_server_count']))
 
         bad = st.get('unverified') or []

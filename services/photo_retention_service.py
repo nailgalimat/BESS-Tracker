@@ -26,6 +26,16 @@ Three rules this module exists to enforce:
 
 ``server_archived_at`` marks the SERVER's copy as gone. The local file is the
 archive and is never deleted by anything here.
+
+**A clip goes through all of this unchanged.** Short video is a row in the same
+``work_log_images`` table, so it is verified by the same sha256, confirmed by
+the same call, counted in the same figures and freed from the same disk — there
+is no second retention path and there must not be. One thing is added: a clip's
+poster frame is a second file the server also deletes on confirm, and unlike a
+photo's thumbnail it cannot be regenerated here (no ffmpeg, on either side). So
+a clip whose poster this desktop was told about and does not hold is **not**
+confirmed — state ``noposter`` — and the manual sweep fetches it. The clip's own
+bytes are still judged exactly as a photo's: nothing is confirmed unverified.
 """
 
 import os
@@ -46,6 +56,8 @@ _REASONS = {
     'missing':  'the local file is not there',
     'mismatch': 'the local file does not match the stored hash',
     'nosha':    'no hash was stored, so the copy cannot be verified',
+    'noposter': "the clip's poster frame is not on this computer, and the "
+                'server is the only place it can still be fetched from',
 }
 
 
@@ -53,7 +65,8 @@ _REASONS = {
 
 def _fetch(where: str, params: tuple = (), limit: Optional[int] = None) -> list:
     sql = ("SELECT id, work_log_id, file_path, thumbnail_path, filename, "
-           "       size_bytes, sha256, uploaded_at, upload_status, server_archived_at "
+           "       size_bytes, sha256, uploaded_at, upload_status, "
+           "       server_archived_at, mime_type, duration_ms "
            "FROM work_log_images WHERE " + where + " ORDER BY uploaded_at")
     if limit:
         sql += " LIMIT %d" % int(limit)
@@ -88,7 +101,16 @@ def _sha256(path: str) -> str:
 
 
 def verify(row: dict) -> str:
-    """'ok' | 'missing' | 'mismatch' | 'nosha' for one work_log_images row."""
+    """'ok' | 'missing' | 'mismatch' | 'nosha' | 'noposter' for one row.
+
+    'noposter' only ever applies to a clip, and only when the row already names
+    a poster file that is not on disk. Confirming then would have the server
+    delete the poster as well as the clip, and nothing here could ever make
+    another one. A clip the server never sent a poster for (`thumbnail_path`
+    empty) is judged exactly like a photo — the clip is the evidence, and
+    holding it on the server for ever over a missing still is the failure the
+    1 GB disk cannot afford.
+    """
     path = row.get('file_path') or ''
     if not (path and os.path.isfile(path)):
         return 'missing'
@@ -99,7 +121,14 @@ def verify(row: dict) -> str:
         got = _sha256(path)
     except OSError:
         return 'missing'
-    return 'ok' if got == want else 'mismatch'
+    if got != want:
+        return 'mismatch'
+    poster = row.get('thumbnail_path') or ''
+    if poster and not os.path.isfile(poster):
+        from services.image_service import is_video
+        if is_video(row):
+            return 'noposter'
+    return 'ok'
 
 
 # ── Repairing a mismatch ──────────────────────────────────────────────────────
@@ -112,6 +141,26 @@ def _repair_dest(row: dict) -> str:
     stem, ext = os.path.splitext(os.path.basename(name))
     return os.path.join(folder, '{}_{}{}'.format(stem or 'photo',
                                                  str(row['id'])[:8], ext or '.jpg'))
+
+
+def _refetch_poster(row: dict) -> bool:
+    """Fetch a clip's poster frame again, so the clip can be confirmed."""
+    try:
+        from services.image_service import ensure_poster
+    except Exception:                                        # noqa: BLE001
+        return False
+    try:
+        # ensure_poster short-circuits on a poster that is already there, and
+        # this row's is not — its path is stale, so clear it and let the
+        # downloader choose the name. It writes the new path to the database;
+        # copy it back so the re-verify in the sweep looks at the new file.
+        probe = dict(row, thumbnail_path='')
+        if not ensure_poster(probe):
+            return False
+        row['thumbnail_path'] = probe.get('thumbnail_path') or ''
+        return True
+    except Exception:                                        # noqa: BLE001
+        return False
 
 
 def repair(row: dict, download=None) -> bool:
@@ -222,6 +271,14 @@ def sweep(limit: Optional[int] = None, repair_mismatches: bool = True,
             if repair(row, download=download):
                 rep['repaired'] += 1
                 state = verify(row)
+        if state == 'noposter' and repair_mismatches:
+            # Same rule as a mismatch: the deliberate sweep tries once, with the
+            # result in front of the person who pressed the button; the automatic
+            # pass never re-fetches, or a poster that will never arrive would be
+            # asked for every 60 s for ever.
+            if _refetch_poster(row):
+                rep['repaired'] += 1
+                state = verify(row)
         if state == 'ok':
             if row['id'] in parked:
                 _inbox_clear(row['id'])
@@ -231,6 +288,8 @@ def sweep(limit: Optional[int] = None, repair_mismatches: bool = True,
                                'filename': row.get('filename') or row['id'],
                                'work_log_id': row.get('work_log_id') or '',
                                'reason': _REASONS.get(state, state)})
+        if state == 'noposter':
+            _inbox_park(row, _REASONS['noposter'])
         if state == 'mismatch':
             # Surface it: a corrupted copy is exactly when deleting the only
             # good one would be unforgivable, so it is reported until resolved.
@@ -313,7 +372,22 @@ def local_status() -> dict:
                        THEN 1 ELSE 0 END)                                 AS on_server_count,
               COALESCE(SUM(CASE WHEN upload_status='uploaded' AND server_archived_at IS NULL
                                 THEN size_bytes ELSE 0 END), 0)           AS on_server_bytes,
-              SUM(CASE WHEN upload_status='remote' THEN 1 ELSE 0 END)      AS not_downloaded
+              SUM(CASE WHEN upload_status='remote' THEN 1 ELSE 0 END)      AS not_downloaded,
+              -- Clips, counted apart so the Synchronisation screen can say how
+              -- much of the figure is video: a clip is ~3 MB against a photo's
+              -- ~0.5 MB, which is exactly what the owner needs to see when the
+              -- server's 1 GB disk is the thing under pressure. They are
+              -- INSIDE the totals above, not beside them — one pipeline.
+              SUM(CASE WHEN LOWER(COALESCE(mime_type,'')) LIKE 'video/%'
+                       THEN 1 ELSE 0 END)                                   AS video_count,
+              COALESCE(SUM(CASE WHEN LOWER(COALESCE(mime_type,'')) LIKE 'video/%'
+                                THEN size_bytes ELSE 0 END), 0)             AS video_bytes,
+              SUM(CASE WHEN LOWER(COALESCE(mime_type,'')) LIKE 'video/%'
+                        AND server_archived_at IS NOT NULL
+                       THEN 1 ELSE 0 END)                                   AS video_archived,
+              SUM(CASE WHEN LOWER(COALESCE(mime_type,'')) LIKE 'video/%'
+                        AND upload_status='uploaded' AND server_archived_at IS NULL
+                       THEN 1 ELSE 0 END)                                   AS video_on_server
             FROM work_log_images
         """).fetchone()
         out = {k: (row[k] or 0) for k in row.keys()}
@@ -344,7 +418,12 @@ def human_bytes(n) -> str:
 
 
 def describe(rep: dict) -> str:
-    """The sweep's result as something the owner can read."""
+    """The sweep's result as something the owner can read.
+
+    Still worded as photos: a clip is one of them, and the sweep does not treat
+    it differently. The Synchronisation screen says how many of the figure are
+    clips, which is where that question is actually asked.
+    """
     bits = ['Checked {} photo(s).'.format(rep.get('checked', 0))]
     if rep.get('confirmed'):
         bits.append('The server freed {} file(s), {}.'
