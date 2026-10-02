@@ -176,6 +176,48 @@ H.check('.video-rec' in css and '.video-thumb' in css and '.video-stop-btn' in c
 H.check('duration_ms' in jsapi and 'poster' in jsapi,
         "api.js sends the clip's poster frame and its length with it")
 
+# ── v22: correcting a record from the phone ──────────────────────────────
+# index.html is cached by the service worker under the exact ?v= URLs, so a
+# change to it cannot reach a phone already on v21 without V moving too. This
+# is where that bites: every part of this feature is in the shell.
+H.check(int(v_sw) >= 22,
+        'the edit flow ships as v22 — the shell changed, so the cache version '
+        'had to move with it (is v{})'.format(v_sw))
+for ident in ('detail-edit', 'f-edit-note', 'f-loc-group', 'f-photo-group',
+              'f-repeat-btn', 'f-status-group'):
+    H.check('id="{}"'.format(ident) in html,
+            'the correction flow needs {}'.format(ident))
+H.check('App.editEntry()' in html,
+        'the record itself carries the way to correct it')
+for fn in ('editEntry', '_saveEdit', '_canEdit', '_editMode', '_onServer',
+           '_lockedMonths', '_lockedMonthWarning', '_clashPanel', 'resolveClash',
+           '_pushEntries', '_rebaseEntry'):
+    H.check(fn in app, 'app.js implements {}'.format(fn))
+# The hazard this feature is built around: a phone edit must never wipe what
+# the office wrote. The phone sends only the fields it changed...
+H.check('edit_fields' in app and '_pick(full, edited)' in app,
+        'a correction pushes only the fields it changed, never the whole row')
+# ...and the server treats an absent key as "no opinion" for deleted_at too,
+# which was the one field it still read as "blank it".
+srv_sync = open(os.path.join(H.MVP, 'backend', 'routers', 'sync.py'),
+                encoding='utf-8').read()
+H.check('if "deleted_at" in payload:' in srv_sync,
+        'the server no longer reads a missing deleted_at as "un-delete this"')
+H.check('EDIT_FIELDS' in app and "'status'" not in app.split('EDIT_FIELDS:')[1].split(']')[0],
+        'the status is not corrected from the phone — it decides whether the '
+        'work is reported to the customer yet')
+H.check('.clash' in css and '.edit-note' in css and '.edit-locked' in css,
+        'the clash panel, the correction note and the sent-month warning are styled')
+
+# ── the correction flow, actually executed ───────────────────────────────
+try:
+    p = subprocess.run(['node', os.path.join(H.MVP, 'tests', 'edit_check.js')],
+                       capture_output=True, text=True, shell=True, timeout=180)
+    print((p.stdout or p.stderr).rstrip())
+    H.check('RESULT PASS' in (p.stdout or ''), 'the record-correction check passes')
+except Exception as e:                                   # noqa: BLE001
+    print('   note   node not available or failed:', e)
+
 # ── the phone's recording, actually executed ─────────────────────────────
 try:
     p = subprocess.run(['node', os.path.join(H.MVP, 'tests', 'video_check.js')],
@@ -314,5 +356,44 @@ proj = [p for p in sent.get('projects', []) if p['id'] == PID]
 zones = json.loads(proj[0]['zones']) if proj and proj[0].get('zones') else []
 H.check(zones == [[1, 1, 8], [2, 9, 16]],
         'the desktop publishes the real zone → block map for the picker: {}'.format(zones))
+
+# ── the months that are CLOSED ───────────────────────────────────────────
+# report_months.locked_at lives only here, so the phone cannot warn before a
+# correction lands in a closed month unless the desktop publishes it with the
+# project. Three answers that must stay apart: "[]" is "I looked, none", a list
+# is the months themselves, and the server's own "" is "nobody has told me" —
+# which the phone reads as unknown and stays quiet about (tests/edit_check.js).
+#
+# Closed is NOT "a report was generated or sent". The office sends the month's
+# report and leaves the month open until the customer confirms it needs no
+# changes; the list follows the lock, so corrections flow without a word
+# through that whole stretch — which is when they are expected.
+H.check(proj and proj[0].get('locked_months') == '[]',
+        'with no month closed, the desktop publishes an explicit empty list, '
+        'not an empty string: {!r}'.format(proj and proj[0].get('locked_months')))
+import services.report_versions_service as rv
+# a month whose report exists, and even whose version is recorded, is NOT on
+# the list until the month itself is locked
+rw.ensure_report_month(PID, 2026, 8)
+H.check(sc.locked_months(PID) == [],
+        'a month that merely has a report row is not closed: {}'.format(
+            sc.locked_months(PID)))
+rw.set_month_lock(PID, 2026, 8, True)
+H.check(sc.locked_months(PID) == ['2026-08'],
+        'closing it is what puts it on the list: {}'.format(sc.locked_months(PID)))
+rw.set_month_lock(PID, 2026, 9, True)
+sent.clear()
+sc.push_projects()
+proj = [p for p in sent.get('projects', []) if p['id'] == PID]
+H.check(json.loads(proj[0]['locked_months']) == ['2026-08', '2026-09'],
+        'and both go to the server with the project: {}'.format(
+            proj[0]['locked_months']))
+H.check(rw.month_locked_at(PID, 2026, 8) and not rw.month_locked_at(PID, 2026, 7),
+        'the list is exactly what report_months says is locked — one source of '
+        'truth, not a second opinion')
+rv.unlock_month(PID, 2026, 9, 'test: the customer asked for a change')
+H.check(sc.locked_months(PID) == ['2026-08'],
+        'reopening a month takes it off the list again, so the phone stops '
+        'warning about it: {}'.format(sc.locked_months(PID)))
 
 H.finish()

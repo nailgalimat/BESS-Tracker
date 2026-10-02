@@ -28,6 +28,34 @@ const App = {
   _nodeFor:        'create',
   _swReg:          null,
   _geo:            null,   // last known position, for the photo stamp
+  // The record being corrected on the create form, and what it said when the
+  // correction started — the base an office edit is told apart from ours by.
+  // null while a NEW record is being written.
+  _editId:         null,
+  _editBase:       null,
+
+  // ── What a technician may correct from the phone ───────────────────────────
+  // Their own record, while it is still open, and only the fields they filled
+  // in themselves — plus the node, because putting work on the wrong block is
+  // the mistake that actually happens.
+  //
+  // Hours and times are deliberately NOT here. A PM record's hours are already
+  // in the month's availability figure on the desktop, and only
+  // report_workflow_service.update_pm_record may move them (it owns
+  // pm_activities, and it is the one writer of them). A phone that changed
+  // them here would put the record and the availability number out of step
+  // with nothing to notice it.
+  EDIT_FIELDS: ['fault_name', 'description', 'spare_parts', 'site_location',
+                'sap_ticket', 'category', 'plant_block', 'node_lc',
+                'node_device'],
+
+  /** What each field is called when the phone has to talk about it. */
+  FIELD_LABELS: {
+    fault_name: 'Fault', description: 'What was done',
+    spare_parts: 'Spare parts', site_location: 'Location text',
+    sap_ticket: 'SAP ticket', category: 'Type', plant_block: 'Block',
+    node_lc: 'Level', node_device: 'Device',
+  },
 
   // ── Boot ───────────────────────────────────────────────────────────────────
   async init() {
@@ -91,8 +119,11 @@ const App = {
     } catch (_) { alert('Could not check — no network.'); }
   },
 
-  // The half-typed record survives a reload.
+  // The half-typed record survives a reload. A half-typed CORRECTION does not:
+  // the draft is what pre-fills the next NEW record, and someone else's
+  // corrected text arriving there would be written to the plant twice.
   async _saveDraft() {
+    if (this._editId) return;
     if (!document.getElementById('screen-create').classList.contains('active')) return;
     const d = {
       block: this._node.block, lc: this._node.lc, device: this._node.device,
@@ -370,6 +401,9 @@ const App = {
   },
 
   async goCreate(kind, keep) {
+    // Writing a new record is never the continuation of a correction: an
+    // _editId left behind would save the new text over the old record.
+    if (!this._editKeep) { this._editId = null; this._editBase = null; }
     this._cancelVideo();               // a recorder left running holds the camera
     this._stagedPhotos = [];
     document.getElementById('photo-preview').innerHTML = '';
@@ -400,14 +434,19 @@ const App = {
       kind === 'maintenance' ? 'PM record' : 'Work record';
     this._refreshFaultList();
     await this._fillProjectSelect();
+    this._editMode(!!this._editId, null);
     this._show('screen-create');
   },
 
   onCategory() {
     const cat = document.getElementById('f-cat').value;
     const pm = (cat === 'maintenance');
-    document.getElementById('f-pm-group').style.display = pm ? 'block' : 'none';
+    // A correction never touches the hours — see EDIT_FIELDS — so the PM block
+    // stays out of the way rather than showing numbers that will not be saved.
+    document.getElementById('f-pm-group').style.display =
+      (pm && !this._editId) ? 'block' : 'none';
     document.getElementById('f-fault-group').style.display = pm ? 'none' : 'block';
+    if (this._editId) return;
     if (pm && !document.getElementById('f-start').value) {
       const now = new Date();
       document.getElementById('f-start').value =
@@ -628,12 +667,18 @@ const App = {
       ? ' · ' + (this._node.device || this._node.lc) : '';
     const sum = document.getElementById('np-picked');
     if (sum) {
-      sum.textContent = list.length > 1
-        ? (list.length + ' blocks · ' + this._formatBlocks(list)
-           + ' — one record each, same text')
-        : 'Tap more blocks for the same work — one record is written per block.';
-      sum.classList.toggle('on', list.length > 1);
+      sum.textContent = this._editId
+        ? 'Correcting one record — choose the block it should be on.'
+        : list.length > 1
+          ? (list.length + ' blocks · ' + this._formatBlocks(list)
+             + ' — one record each, same text')
+          : 'Tap more blocks for the same work — one record is written per block.';
+      sum.classList.toggle('on', !this._editId && list.length > 1);
     }
+    // "All blocks" writes one record per block: that is new work, not a
+    // correction of the one record in front of you.
+    const all = document.getElementById('np-all');
+    if (all) all.style.display = this._editId ? 'none' : '';
     const none = document.getElementById('np-none');
     if (none) none.disabled = !list.length;
 
@@ -649,7 +694,17 @@ const App = {
   pickZone(z) { this._node.zoneIdx = z; this._renderNode(); },
   // A tap adds a block, a second tap on it takes it back: the same tap that
   // used to choose the one block still chooses exactly that one.
+  //
+  // Correcting a record is different: it moves ONE record to one node. Several
+  // blocks there would mean several records, which is a new piece of work and
+  // not a correction — so a tap replaces the choice instead of adding to it.
   pickBlock(b) {
+    if (this._editId) {
+      this._nodePick = new Set([b]);
+      this._nodeNum = '';
+      this._renderNode();
+      return;
+    }
     const picked = this._nodePick || (this._nodePick = new Set());
     if (picked.has(b)) picked.delete(b);
     else picked.add(b);
@@ -938,6 +993,10 @@ const App = {
   },
 
   async _saveEntry() {
+    // Correcting an existing record is a different write: only the fields that
+    // changed go to the server, so that nothing the office added is sent back
+    // as a blank. See _saveEdit.
+    if (this._editId) return await this._saveEdit();
     const date   = document.getElementById('f-date').value;
     const cat    = document.getElementById('f-cat').value;
     const desc   = document.getElementById('f-desc').value.trim();
@@ -1508,6 +1567,44 @@ const App = {
     return out;
   },
 
+  /** Both sides wrote the same field while this phone was out of reach. The
+      office's words and the technician's are shown next to each other, and
+      each one is decided by a tap. Nothing is overwritten before it is read:
+      that is the whole point of keeping both. */
+  _clashPanel(entry) {
+    const clashes = (entry && Array.isArray(entry.edit_clash)) ? entry.edit_clash : [];
+    if (!clashes.length) return '';
+    const rows = clashes.map(c => {
+      const label = this.FIELD_LABELS[c.field] || c.field;
+      const show = v => (v === null || v === undefined || v === '')
+        ? '<em>(empty)</em>' : _esc(String(v));
+      return `
+        <div class="clash-row">
+          <div class="clash-field">${_esc(label)}</div>
+          <div class="clash-side">
+            <span class="clash-who">The office now has</span>
+            <p>${show(c.theirs)}</p>
+            <button class="btn btn-outline"
+                    onclick="App.resolveClash('${c.field}','theirs')">Use this</button>
+          </div>
+          <div class="clash-side mine">
+            <span class="clash-who">You wrote</span>
+            <p>${show(c.mine)}</p>
+            <button class="btn btn-outline"
+                    onclick="App.resolveClash('${c.field}','mine')">Keep mine</button>
+          </div>
+        </div>`;
+    }).join('');
+    return `
+      <div class="clash">
+        <b>The office changed this record while you were offline.</b>
+        <p>Nothing has been lost. You both wrote the same
+           ${clashes.length > 1 ? 'fields' : 'field'} — choose which is right,
+           and the rest of your correction goes with it.</p>
+        ${rows}
+      </div>`;
+  },
+
   // ── Detail view ────────────────────────────────────────────────────────────
   async _showDetail(entryId) {
     this._currentEntryId = entryId;
@@ -1537,10 +1634,22 @@ const App = {
     const byId = {};
     images.forEach(i => { byId[i.id] = i; });
 
+    // Can this be corrected here, and is its month closed? Both decided before
+    // the screen is drawn, so the Edit button and the warning agree with each
+    // other. A month whose report has gone out but is not closed yet shows no
+    // warning at all — that is the stretch corrections are expected in.
+    const canEdit = this._canEdit(entry);
+    const lockWarn = await this._lockedMonthWarning(entry);
+    const editBtn = document.getElementById('detail-edit');
+    if (editBtn) editBtn.style.display = canEdit ? '' : 'none';
+
     document.getElementById('detail-body').innerHTML = `
+      ${this._clashPanel(entry)}
+      ${lockWarn ? `<div class="edit-note"><span class="edit-locked">⚠ ${_esc(lockWarn)}</span></div>` : ''}
       <div class="detail-card">
         <div><span class="cat-badge cat-${entry.category}">${_catLabel(entry.category)}</span></div>
         ${entry.project_id != null ? `<div class="detail-row"><label>Project</label><span>${_esc(_projName(entry.project_id))}</span></div>` : ''}
+        <div class="detail-row"><label>Node</label><span>${_esc(_nodeText(entry))}</span></div>
         ${entry.fault_name       ? `<div class="detail-row"><label>Fault</label><span>${_esc(entry.fault_name)}</span></div>`            : ''}
         ${entry.status           ? `<div class="detail-row"><label>Status</label><span>${entry.status === 'done' ? '✅ Done' : '🔵 Open'}</span></div>` : ''}
         ${entry.sap_ticket       ? `<div class="detail-row"><label>SAP Ticket</label><span>${_esc(entry.sap_ticket)}</span></div>`        : ''}
@@ -1554,6 +1663,16 @@ const App = {
           Created ${entry.created_at.slice(0,16).replace('T',' ')}
           ${entry.sync_status !== 'synced' ? ' · <em>Not synced</em>' : ''}
         </div>
+        ${canEdit
+          ? `<button class="btn btn-outline btn-block" style="margin-top:12px"
+                     onclick="App.editEntry()">Correct this record</button>`
+          : (entry.assigned_to
+              ? `<p class="hint-line">This is a job from
+                   ${_esc(entry.assigned_by || 'the office')} — fill it in from
+                   the Tasks tab.</p>`
+              : `<p class="hint-line">This record is marked Done. The office
+                   reopens it before it can be changed — figures the customer
+                   has may already be made from it.</p>`)}
       </div>`;
 
     // Lightbox on image tap
@@ -1601,12 +1720,340 @@ const App = {
       entry.updated_at  = entry.deleted_at;
       entry.sync_status = 'local';
       entry.version    += 1;
+      // A delete is the whole record, not a field of it: an unsent correction
+      // must not make this push a partial one.
+      delete entry.edit_fields;
+      delete entry.edit_base;
+      delete entry.edit_clash;
       await DB.saveEntry(entry);
     } else {
       // Never synced — hard-delete locally
       await DB.deleteEntry(id);
       await DB.deleteImagesForEntry(id);
     }
+  },
+
+  // ── Correcting a record from the phone ─────────────────────────────────────
+  // A technician could write a record but never fix one: a typo or a missing
+  // detail meant telephoning the office. What may be corrected here is their
+  // OWN record, while it is still open, in the fields they filled in
+  // themselves (EDIT_FIELDS). It works with no signal and goes with the next
+  // sync, exactly as writing one does.
+
+  /** May this phone correct this record?
+      — a job the office handed out is the office's record, and is filled in on
+        the Task screen instead (one editor per kind of record);
+      — a done record is reopened in the office first: the customer may already
+        hold numbers made from it, and a silent change behind a settled report
+        is how two sides stop agreeing. */
+  _canEdit(entry) {
+    if (!entry || entry.deleted_at) return false;
+    if (entry.assigned_to) return false;
+    return (entry.status || 'open') !== 'done';
+  },
+
+  /** Does the server hold this record? Only then is a partial push safe: the
+      server merges what it is given into the row it has, and there is no row
+      to merge into until it has been applied once. A record written offline
+      and never sent goes up whole, exactly as it always did. */
+  _onServer(entry) {
+    if (!entry) return false;
+    if (entry.on_server) return true;
+    // Every record this phone has had confirmed is 'synced' (pulled from the
+    // server, or applied by it); 'conflict' means the server answered about
+    // it, so it has it. 'local' with nothing recorded has never been sent.
+    return entry.sync_status === 'synced' || entry.sync_status === 'conflict';
+  },
+
+  /** The months of this project that are CLOSED, or null when nobody has told
+      this phone.
+
+      Closed is not the same as "a report went out". The office sends the
+      month's report and then leaves the month open until the customer confirms
+      it needs no changes; only then is it closed (report_months.locked_at).
+      That open stretch is exactly when corrections are expected and wanted, so
+      nothing warns during it. The warning is tied to the lock, never to
+      whether a report has been generated or posted.
+
+      locked_at lives only in the office database, so the desktop publishes the
+      list with the project (sync_client.push_projects) and this reads the
+      mirror. The three answers are kept apart on purpose:
+
+        null  — never published (an older server, or a desktop that has not
+                synced since this feature shipped). The phone says NOTHING.
+        []    — published, and no month is closed.
+        [...] — published, these months are closed.
+
+      Unknown warns about nothing, rather than about everything: the warning
+      is advisory — the edit is allowed either way — and a sentence that
+      appeared on every record the first time the phone met an un-taught
+      desktop would mean nothing by the time it was true. The real guard is
+      still on the desktop, where assert_month_open refuses every writer of a
+      closed month's inputs. */
+  async _lockedMonths(projectId) {
+    if (projectId === null || projectId === undefined) return null;
+    const projects = await DB.getMeta('projects', []);
+    const p = (projects || []).find(x => String(x.id) === String(projectId));
+    if (!p) return null;
+    const raw = p.locked_months;
+    if (raw === undefined || raw === null || raw === '') return null;
+    try {
+      const list = JSON.parse(raw);
+      return Array.isArray(list) ? list.map(String) : null;
+    } catch (_) { return null; }     // something we cannot read is not a fact
+  },
+
+  /** The sentence to show when this record's month is closed, or '' when it is
+      not — or when we were never told.
+
+      A month stays OPEN after its report goes to the customer, until the
+      customer confirms it needs nothing changed. So a record in a month that
+      has been sent but not yet settled gets no warning at all: that is the
+      window corrections are meant for. The sentence appears only once the
+      office has closed the month, because then the customer has agreed the
+      figures this record helped make. */
+  async _lockedMonthWarning(entry) {
+    if (!entry) return '';
+    const months = await this._lockedMonths(entry.project_id);
+    if (!months || !months.length) return '';
+    const m = (entry.log_date || '').slice(0, 7);
+    if (!m || months.indexOf(m) < 0) return '';
+    return _fmtMonth(m) + ' is closed — the office has settled that month\'s '
+         + 'report with the customer. You can still correct this record; tell '
+         + 'them, so the corrected line does not arrive as a surprise.';
+  },
+
+  /** Open the correction form on one record. The create form IS the edit form:
+      same node picker, same fields, same validation — a second set would drift
+      away from the first one. */
+  async editEntry(entryId) {
+    const id = entryId || this._currentEntryId;
+    if (!id) return;
+    const entry = await DB.getEntry(id);
+    if (!entry || !this._canEdit(entry)) return;
+    this._editId = id;
+    // The base this correction is measured against. A correction still waiting
+    // to be sent keeps the base it already had — that is the last state the
+    // server agreed with, and it is what tells an office edit from ours.
+    if (entry.edit_base) {
+      this._editBase = entry.edit_base;
+    } else {
+      this._editBase = {};
+      for (const f of this.EDIT_FIELDS) {
+        this._editBase[f] = entry[f] === null || entry[f] === undefined ? '' : entry[f];
+      }
+    }
+
+    this._editKeep = true;           // goCreate must not clear what we just set
+    try {
+      await this.goCreate(entry.category, true);
+    } finally {
+      this._editKeep = false;
+    }
+
+    document.getElementById('f-date').value   = entry.log_date || '';
+    document.getElementById('f-cat').value    = entry.category || 'fault';
+    document.getElementById('f-fault').value  = entry.fault_name || '';
+    document.getElementById('f-desc').value   = entry.description || '';
+    document.getElementById('f-note').value   = entry.internal_note || '';
+    document.getElementById('f-ptw').value    = entry.ptw_no || '';
+    document.getElementById('f-sap').value    = entry.sap_ticket || '';
+    document.getElementById('f-parts').value  = entry.spare_parts || '';
+    document.getElementById('f-serial').value = entry.equipment_serial || '';
+    document.getElementById('f-loc').value    = entry.site_location || '';
+    document.getElementById('f-proj').value   = entry.project_id == null
+      ? '' : String(entry.project_id);
+    this.pickStatus(entry.status || 'open');
+    // One record, one block: a correction edits the record in front of it and
+    // never fans out into one per block the way writing a new one does.
+    this._node = {
+      block: entry.plant_block || null, blocks: entry.plant_block ? [entry.plant_block] : [],
+      lc: entry.node_lc || '', device: entry.node_device || '', zone: '',
+    };
+    this._nodePick = new Set(this._node.blocks);
+    document.getElementById('f-block').value  = entry.plant_block ? String(entry.plant_block) : '';
+    document.getElementById('f-blocks').value = entry.plant_block ? String(entry.plant_block) : '';
+    document.getElementById('f-lc').value     = this._node.lc;
+    document.getElementById('f-device').value = this._node.device;
+    this._showNode();
+    this.onCategory();
+    document.getElementById('create-title').textContent = 'Correct record';
+    this._editMode(true, entry);
+    const lockWarn = await this._lockedMonthWarning(entry);
+    const note = document.getElementById('f-edit-note');
+    if (note) {
+      note.innerHTML =
+        '<b>Correcting a record you wrote.</b> The date, the status, the hours, '
+        + 'the permit, the internal note and the photos stay as they are — ask '
+        + 'the office for those.'
+        + (lockWarn ? '<span class="edit-locked">⚠ ' + _esc(lockWarn) + '</span>' : '');
+    }
+    this._show('screen-create');
+  },
+
+  /** The create screen, dressed for a correction (or back for a new record).
+      The form writes EDIT_FIELDS and nothing else, so every control that is
+      not one of them is either hidden or visibly locked. A box a thumb can
+      type into whose text is then quietly dropped is worse than no box: the
+      technician would believe the office had been told. */
+  // Visible, and obviously not changeable here. They are left on the screen
+  // because the record reads as one thing — but they are the office's.
+  EDIT_LOCKED: ['f-date', 'f-note', 'f-ptw', 'f-serial', 'f-proj'],
+  // Not on the correction form at all: the status decides whether the work is
+  // reported to the customer yet, and the hours are already in the month's
+  // availability figure.
+  EDIT_HIDDEN: ['f-status-group', 'f-pm-group', 'f-photo-group', 'f-repeat-btn'],
+
+  _editMode(on, entry) {
+    const show = (id, vis) => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = vis ? '' : 'none';
+    };
+    show('f-edit-note', on);
+    for (const id of this.EDIT_HIDDEN) show(id, !on);
+    for (const id of this.EDIT_LOCKED) {
+      const el = document.getElementById(id);
+      if (el) el.disabled = on;
+    }
+    // The free-text location of a record written before the node picker: there
+    // to be fixed when it is already there, never offered on a new record.
+    show('f-loc-group', on && !!(entry && entry.site_location));
+    // Whether a record is PM is not a phone decision — see _saveEdit.
+    const cat = document.getElementById('f-cat');
+    if (cat) cat.disabled = !!(on && entry && entry.category === 'maintenance');
+    if (!on) {
+      const note = document.getElementById('f-edit-note');
+      if (note) note.innerHTML = '';
+    }
+  },
+
+  /** Write the correction. Only the fields that actually changed are recorded
+      as edited, and only those are sent — the server merges them into the row
+      it holds. A line the office added while this phone was in a container is
+      not in the payload, so this cannot blank it. That is the same rule the
+      desktop follows in _ENTRY_OPT_COLS and work_journal_service.save():
+      an absent key means "no opinion", never "make it empty". */
+  async _saveEdit() {
+    const errEl = document.getElementById('create-error');
+    const entry = await DB.getEntry(this._editId);
+    if (!entry) { this._editId = null; this._editBase = null; this.goRecords(); return; }
+    // It may have been closed, deleted or handed out while the form was open.
+    if (!this._canEdit(entry)) {
+      _showErr(errEl, 'This record can no longer be corrected here — it is '
+                    + 'closed, or it is now a job from the office.');
+      return;
+    }
+
+    const next = {
+      fault_name:    document.getElementById('f-fault').value.trim(),
+      description:   document.getElementById('f-desc').value.trim(),
+      spare_parts:   document.getElementById('f-parts').value.trim(),
+      site_location: document.getElementById('f-loc').value.trim(),
+      sap_ticket:    document.getElementById('f-sap').value.trim(),
+      category:      document.getElementById('f-cat').value,
+      plant_block:   parseInt(document.getElementById('f-block').value, 10) || null,
+      node_lc:       document.getElementById('f-lc').value || '',
+      node_device:   document.getElementById('f-device').value || '',
+    };
+
+    if (!next.description) {
+      _showErr(errEl, 'Enter what was done — the customer reads this line.');
+      return;
+    }
+    if (!next.plant_block) {
+      _showErr(errEl, 'Choose the node — the plant block is what the report needs.');
+      return;
+    }
+    // Whether a record is PM is not a phone decision. Its hours are already in
+    // the month's availability figure, and pm_activities has exactly one
+    // writer (report_workflow_service.record_pm / update_pm_record) which no
+    // phone can reach. Changing it here would leave the record and the
+    // availability number disagreeing with nothing to notice.
+    const wasPm = entry.category === 'maintenance';
+    if ((next.category === 'maintenance') !== wasPm) {
+      _showErr(errEl, wasPm
+        ? 'A PM record stays a PM record here. Its hours are already in the '
+        + 'month\'s availability — the office changes that.'
+        : 'Making this a PM record needs its PM hours as well. Write a PM '
+        + 'record instead, or ask the office to change this one.');
+      document.getElementById('f-cat').value = entry.category || 'fault';
+      this.onCategory();
+      return;
+    }
+    // A PM keeps saying PM in the customer's own line — that is what reports it
+    // once, as PM hours, instead of twice (section 3.2 takes the ones that do
+    // not). Same rule as the create form and the desktop's save().
+    if (wasPm && next.description && !/PM|preventive/i.test(next.description)) {
+      next.description = 'PM: ' + next.description;
+    }
+
+    const base = this._editBase || {};
+    const changed = [];
+    for (const f of this.EDIT_FIELDS) {
+      if (!_sameVal(base[f], next[f])) changed.push(f);
+    }
+    if (!changed.length) {
+      this._editId = null; this._editBase = null;
+      this._editMode(false, null);
+      await this._showDetail(entry.id);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const saved = Object.assign({}, entry, next, {
+      sync_status: 'local',
+      updated_at:  now,
+      // The version is left alone on purpose: this is an edit of the record
+      // the server holds, not a new generation of it. The server fast-forwards
+      // a push whose version matches its own, and answers "conflict" when
+      // somebody got there first — which is what makes the collision visible
+      // instead of silent.
+    });
+    if (this._onServer(entry)) {
+      saved.edit_fields = changed;
+      saved.edit_base   = base;
+    }
+    delete saved.edit_clash;      // a fresh correction supersedes an old clash
+    delete saved.last_error;
+    delete saved.server_changed;
+    await DB.saveEntry(saved);
+    this._rememberFault(next.fault_name);
+
+    this._editId = null;
+    this._editBase = null;
+    this._editMode(false, null);
+    document.getElementById('create-title').textContent = 'Work record';
+    if (navigator.onLine) this._syncQuiet();
+    await this._showDetail(entry.id);
+  },
+
+  /** The technician's answer to one field both sides wrote. Nothing is sent
+      until every clash has one, and the office's text is on the screen before
+      either value wins. */
+  async resolveClash(field, which) {
+    const id = this._currentEntryId;
+    const entry = id ? await DB.getEntry(id) : null;
+    if (!entry || !Array.isArray(entry.edit_clash)) return;
+    const clash = entry.edit_clash.find(c => c.field === field);
+    if (!clash) return;
+    if (which === 'theirs') {
+      // The office's line wins for this one field; the rest of the correction
+      // stands. Dropping it from edit_fields is what stops it being sent.
+      entry[field] = clash.theirs;
+      entry.edit_fields = (entry.edit_fields || []).filter(f => f !== field);
+    }
+    // 'mine' keeps the value already on the record — it stays in edit_fields
+    // and goes to the server on the next sync.
+    entry.edit_clash = entry.edit_clash.filter(c => c.field !== field);
+    if (!entry.edit_clash.length) {
+      delete entry.edit_clash;
+      delete entry.server_changed;
+      entry.sync_status = (entry.edit_fields || []).length ? 'local' : 'synced';
+    }
+    entry.updated_at = new Date().toISOString();
+    await DB.saveEntry(entry);
+    await this._showDetail(entry.id);
+    if (navigator.onLine && entry.sync_status === 'local') this._syncQuiet();
   },
 
   // ── Stock (spare parts + write-off) ─────────────────────────────────────────
@@ -2481,14 +2928,18 @@ const App = {
       const r = await this._doSync();
       if (r.conflicts > 0) {
         bar.className   = 'sync-bar-conflict';
-        bar.textContent = `⚠️ ${r.conflicts} conflict${r.conflicts > 1 ? 's' : ''} — server version kept. ↑${r.pushed} ↓${r.pulled}`;
+        // Not "server version kept" any more: a correction keeps BOTH and the
+        // record asks which line is right. Saying the server had won was the
+        // opposite of what happens, and of what the work deserves.
+        bar.textContent = `⚠️ ${r.conflicts} record${r.conflicts > 1 ? 's' : ''} the office changed too — open ${r.conflicts > 1 ? 'them' : 'it'} to choose. ↑${r.pushed} ↓${r.pulled}`;
         setTimeout(() => { bar.style.display = 'none'; bar.className = ''; }, 8000);
       } else if (r.evError) {
         bar.className   = 'sync-bar-conflict';
         bar.textContent = `⚠️ ${r.evError}`;
         setTimeout(() => { bar.style.display = 'none'; bar.className = ''; }, 9000);
       } else {
-        bar.textContent = `✅ Done — ↑${r.pushed} uploaded · ↓${r.pulled} received`;
+        bar.textContent = `✅ Done — ↑${r.pushed} uploaded · ↓${r.pulled} received`
+          + (r.rebased ? ` · ${r.rebased} merged with the office's change` : '');
         setTimeout(() => { bar.style.display = 'none'; }, 3500);
       }
       await this._loadTimeline();
@@ -2554,6 +3005,146 @@ const App = {
     await this._refreshPendingBadge();
   },
 
+  /** One push of everything waiting, and what the server said about each row.
+      Returns { pushed, conflicts, rebased, again } — `again` when a row was
+      re-based onto the server's copy and is worth sending straight away. */
+  async _pushEntries(deviceId) {
+    let pushed = 0, conflicts = 0, rebased = 0, again = false;
+    const pending = await DB.getPendingEntries();
+    if (!pending.length) return { pushed, conflicts, rebased, again };
+
+    // Build SyncChange array matching backend schema:
+    // { entity, id, action, version, payload: { ...entry fields } }
+    const changes = pending.map(e => {
+      const full = {
+        project_id:       e.project_id       || null,
+        category:         e.category,
+        log_date:         e.log_date,
+        description:      e.description      || '',
+        fault_name:       e.fault_name        || '',
+        status:           e.status            || '',
+        sap_ticket:       e.sap_ticket        || '',
+        spare_parts:      e.spare_parts       || '',
+        site_location:    e.site_location     || '',
+        equipment_serial: e.equipment_serial  || '',
+        plant_block:         e.plant_block         || null,
+        node_lc:             e.node_lc             || '',
+        node_device:         e.node_device         || '',
+        ptw_no:              e.ptw_no              || '',
+        time_from:           e.time_from           || '',
+        time_to:             e.time_to             || '',
+        hours:               (e.hours === undefined ? null : e.hours),
+        internal_note:       e.internal_note       || '',
+        availability_impact: e.availability_impact || 'none',
+        tags:             e.tags              || [],
+        deleted_at:       e.deleted_at        || null,
+        updated_at:       e.updated_at,
+        created_at:       e.created_at,
+      };
+      // A CORRECTION sends only the fields it changed. The server merges a
+      // payload into the row it holds — an absent key means "no opinion" —
+      // so a line the office added while this phone was in a container is
+      // not in the payload and cannot be blanked by it. Everything else
+      // (a new record, a delete, a job filled in on the Task screen) sends
+      // the whole payload, exactly as before.
+      const edited = (!e.deleted_at && Array.isArray(e.edit_fields)
+                      && e.edit_fields.length) ? e.edit_fields : null;
+      return {
+        entity:  'work_log',
+        id:      e.id,
+        action:  e.deleted_at ? 'delete' : 'upsert',
+        version: e.version || 1,
+        payload: edited
+          ? Object.assign({ updated_at: e.updated_at }, _pick(full, edited))
+          : full,
+      };
+    });
+
+    // Idempotency key: one UUID per batch — safe to retry without false conflicts
+    const idempotencyKey = _uuid();
+    const pushResult = await API.pushChanges(changes, deviceId, idempotencyKey);
+
+    for (const r of (pushResult.results || [])) {
+      if (r.outcome === 'applied') {
+        await DB.markSynced(r.id, r.server_version);
+        // The server has it: there is no correction waiting any more, and
+        // nothing left to tell an office edit from ours.
+        const done = await DB.getEntry(r.id);
+        if (done) {
+          done.on_server = true;
+          delete done.edit_fields;
+          delete done.edit_base;
+          delete done.edit_clash;
+          delete done.server_changed;
+          await DB.saveEntry(done);
+        }
+        pushed++;
+        // Upload any local images for this entry
+        const imgs = await DB.getImagesForEntry(r.id);
+        for (const img of imgs.filter(i => i.upload_status === 'local')) {
+          try {
+            const blob = await _imageBlob(img);
+            await API.uploadImage(r.id, blob, img.filename, img.id, img);
+            img.upload_status = 'uploaded';
+            await DB.saveImage(img);
+          } catch (_) { /* image upload optional — retry next sync */ }
+        }
+      } else if (r.outcome === 'conflict') {
+        const local = await DB.getEntry(r.id);
+        if (!local) continue;
+        const srv = r.server_row;
+        // A correction knows exactly which fields it changed, so a refusal can
+        // be settled rather than only reported: see _rebaseEntry. Without that
+        // knowledge — a job from the Task screen, or a server too old to send
+        // its copy back — it stays the plain conflict it has always been.
+        if (srv && Array.isArray(local.edit_fields) && local.edit_fields.length) {
+          const out = _rebaseEntry(local, srv, local.edit_base, local.edit_fields);
+          if (out.clashes.length) {
+            out.next.sync_status    = 'conflict';
+            out.next.server_changed = true;
+            out.next.edit_clash     = out.clashes;
+            conflicts++;
+          } else if (out.next.edit_fields.length) {
+            out.next.sync_status = 'local';     // goes out on the next pass
+            delete out.next.edit_clash;
+            rebased++;
+            again = true;
+          } else {
+            // The office had already written what this phone was sending.
+            out.next.sync_status = 'synced';
+            delete out.next.edit_clash;
+            rebased++;
+          }
+          await DB.saveEntry(out.next);
+        } else {
+          conflicts++;
+          // Mark local entry as conflicted so the UI can flag it
+          local.sync_status = 'conflict';
+          await DB.saveEntry(local);
+        }
+      } else if (r.outcome === 'error') {
+        // The server refused this change. Until now nothing was done with
+        // that answer at all: a job deleted on an older build vanished from
+        // Tasks and stayed on the server, and nobody was told. Say why, and
+        // put a refused delete back — the record is still real work.
+        const local = await DB.getEntry(r.id);
+        if (local) {
+          const change = changes.find(c => c.id === r.id);
+          if (change && change.action === 'delete' && local.deleted_at) {
+            local.deleted_at = null;
+            // _deleteById bumped the version for the delete; undo that too,
+            // so this phone is back on the version the server holds.
+            local.version = Math.max(1, (local.version || 1) - 1);
+          }
+          local.sync_status = 'error';
+          local.last_error  = r.message || 'The server refused this change.';
+          await DB.saveEntry(local);
+        }
+      }
+    }
+    return { pushed, conflicts, rebased, again };
+  },
+
   async _doSync() {
     const deviceId = localStorage.getItem('device_id') || '';
     let pushed = 0, pulled = 0, conflicts = 0;
@@ -2585,88 +3176,18 @@ const App = {
     } catch (e) { evError = evError || ('Action list: ' + (e.message || e)); }
 
     // ── Push pending entries ──────────────────────────────────────────────────
-    const pending = await DB.getPendingEntries();
-    if (pending.length) {
-      // Build SyncChange array matching backend schema:
-      // { entity, id, action, version, payload: { ...entry fields } }
-      const changes = pending.map(e => ({
-        entity:  'work_log',
-        id:      e.id,
-        action:  e.deleted_at ? 'delete' : 'upsert',
-        version: e.version || 1,
-        payload: {
-          project_id:       e.project_id       || null,
-          category:         e.category,
-          log_date:         e.log_date,
-          description:      e.description      || '',
-          fault_name:       e.fault_name        || '',
-          status:           e.status            || '',
-          sap_ticket:       e.sap_ticket        || '',
-          spare_parts:      e.spare_parts       || '',
-          site_location:    e.site_location     || '',
-          equipment_serial: e.equipment_serial  || '',
-          plant_block:         e.plant_block         || null,
-          node_lc:             e.node_lc             || '',
-          node_device:         e.node_device         || '',
-          ptw_no:              e.ptw_no              || '',
-          time_from:           e.time_from           || '',
-          time_to:             e.time_to             || '',
-          hours:               (e.hours === undefined ? null : e.hours),
-          internal_note:       e.internal_note       || '',
-          availability_impact: e.availability_impact || 'none',
-          tags:             e.tags              || [],
-          deleted_at:       e.deleted_at        || null,
-          updated_at:       e.updated_at,
-          created_at:       e.created_at,
-        },
-      }));
-
-      // Idempotency key: one UUID per batch — safe to retry without false conflicts
-      const idempotencyKey = _uuid();
-      const pushResult = await API.pushChanges(changes, deviceId, idempotencyKey);
-
-      for (const r of (pushResult.results || [])) {
-        if (r.outcome === 'applied') {
-          await DB.markSynced(r.id, r.server_version);
-          pushed++;
-          // Upload any local images for this entry
-          const imgs = await DB.getImagesForEntry(r.id);
-          for (const img of imgs.filter(i => i.upload_status === 'local')) {
-            try {
-              const blob = await _imageBlob(img);
-              await API.uploadImage(r.id, blob, img.filename, img.id, img);
-              img.upload_status = 'uploaded';
-              await DB.saveImage(img);
-            } catch (_) { /* image upload optional — retry next sync */ }
-          }
-        } else if (r.outcome === 'conflict') {
-          conflicts++;
-          // Mark local entry as conflicted so the UI can flag it
-          const local = await DB.getEntry(r.id);
-          if (local) {
-            local.sync_status = 'conflict';
-            await DB.saveEntry(local);
-          }
-        } else if (r.outcome === 'error') {
-          // The server refused this change. Until now nothing was done with
-          // that answer at all: a job deleted on an older build vanished from
-          // Tasks and stayed on the server, and nobody was told. Say why, and
-          // put a refused delete back — the record is still real work.
-          const local = await DB.getEntry(r.id);
-          if (local) {
-            const change = changes.find(c => c.id === r.id);
-            if (change && change.action === 'delete' && local.deleted_at) {
-              local.deleted_at = null;
-              // _deleteById bumped the version for the delete; undo that too,
-              // so this phone is back on the version the server holds.
-              local.version = Math.max(1, (local.version || 1) - 1);
-            }
-            local.sync_status = 'error';
-            local.last_error  = r.message || 'The server refused this change.';
-            await DB.saveEntry(local);
-          }
-        }
-      }
+    // Twice at most: a correction the server refused because the office had
+    // written first is re-based onto the server's copy and goes straight back
+    // out, so a collision in two different fields settles itself inside one
+    // sync instead of waiting for the next one. A second refusal is left
+    // pending — nothing is lost, it simply goes again later.
+    let rebased = 0;
+    for (let pass = 0; pass < 2; pass++) {
+      const r = await this._pushEntries(deviceId);
+      pushed    += r.pushed;
+      conflicts += r.conflicts;
+      rebased   += r.rebased;
+      if (!r.again) break;
     }
 
     // ── Photos and clips that failed to upload earlier ───────────────────────
@@ -2712,7 +3233,10 @@ const App = {
           || local.sync_status === 'synced'
           || (d.version || 0) > (local.version || 0);
         if (remoteNewer && !conflicted) {
-          await DB.saveEntry({ ...d, tags: d.tags || [], sync_status: 'synced' });
+          // on_server: the server demonstrably holds this row, which is what
+          // makes a later correction of it safe to send as single fields.
+          await DB.saveEntry({ ...d, tags: d.tags || [], sync_status: 'synced',
+                               on_server: true });
           pulled++;
         } else if (conflicted && (d.version || 0) > (local.version || 0)
                    && !local.server_changed) {
@@ -2728,7 +3252,7 @@ const App = {
     if (cursor) await DB.setMeta('last_cursor', cursor);
     await DB.setMeta('last_sync_at', new Date().toISOString());
 
-    return { pushed, pulled, conflicts, evError };
+    return { pushed, pulled, conflicts, rebased, evError };
   },
 };
 
@@ -2828,6 +3352,75 @@ function _clCount(run, tpl) {
 function _statusLabel(st) {
   return { open: 'Open', in_progress: 'In progress', needs_visit: 'Needs visit',
            done: 'Done' }[st] || (st || 'Open');
+}
+
+/** 'August 2026' — a month a person reads, from '2026-08'. */
+const _MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
+                      'July', 'August', 'September', 'October', 'November',
+                      'December'];
+function _fmtMonth(ym) {
+  const m = /^(\d{4})-(\d{2})$/.exec(String(ym || ''));
+  if (!m) return String(ym || '');
+  const i = parseInt(m[2], 10) - 1;
+  return (_MONTH_NAMES[i] || m[2]) + ' ' + m[1];
+}
+
+/** Two field values that mean the same thing. null, undefined and '' are one
+    answer — "nothing here" — so a field the server returns as '' and the form
+    returns as '' is not reported as an edit, and a number that came back as a
+    string is not either. */
+function _sameVal(a, b) {
+  const s = v => (v === null || v === undefined) ? '' : String(v);
+  return s(a) === s(b);
+}
+
+/** Just these keys of an object, and only the ones it has. */
+function _pick(obj, keys) {
+  const out = {};
+  for (const k of (keys || [])) if (k in obj) out[k] = obj[k];
+  return out;
+}
+
+/**
+ * Settle a push the server refused because somebody else had written first.
+ *
+ *   local   what this phone holds
+ *   server  the server's own copy, as the refusal returned it
+ *   base    what the record said when this correction started
+ *   fields  the fields this phone changed
+ *
+ * Returns { next, clashes }: the record to keep, and the fields where both
+ * sides wrote the same thing.
+ *
+ * The server's copy becomes the new base in every case — it is what both
+ * sides now know — and this phone's fields go back on top of it. Where the two
+ * edits touched DIFFERENT fields there is nothing to decide and nothing is
+ * lost: the correction simply goes again, on the server's version. Where they
+ * touched the SAME field, both values are kept on the record and listed in
+ * `clashes` so a person chooses; the work done on site is the only copy of
+ * itself, and is never dropped to make the merge tidy.
+ */
+function _rebaseEntry(local, server, base, fields) {
+  const mine = {};
+  const clashes = [];
+  const nextBase = {};
+  for (const f of (fields || [])) {
+    nextBase[f] = server[f] === null || server[f] === undefined ? '' : server[f];
+    if (_sameVal(local[f], server[f])) continue;     // already agreed
+    mine[f] = local[f];
+    if (!_sameVal(server[f], base ? base[f] : '')) {
+      clashes.push({ field: f, mine: local[f], theirs: server[f] });
+    }
+  }
+  const next = Object.assign({}, server, mine, {
+    tags:        server.tags || local.tags || [],
+    image_ids:   local.image_ids || server.image_ids || [],
+    version:     server.version,
+    on_server:   true,
+    edit_base:   nextBase,
+    edit_fields: Object.keys(mine),
+  });
+  return { next, clashes };
 }
 
 function _nodeText(entry) {

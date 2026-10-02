@@ -315,6 +315,96 @@ try:
             'an older client that does not know the fields cannot blank them: {}'
             .format(back))
 
+    print('\n=== E1: a phone CORRECTION keeps every line the office wrote ===')
+    # The phone can now correct its own open record (PWA v22). It sends only
+    # the fields it changed, because the record on the server also carries
+    # lines only the office knows — and a phone that sent the whole row would
+    # post its own blanks over them. The same rule as _ENTRY_OPT_COLS.
+
+    def phone_patch(eid, version, payload, action='upsert'):
+        """One push from the phone carrying ONLY the keys given."""
+        r = requests.post(URL + '/sync/push', headers=PH, json={
+            'device_id': 'phone-P', 'idempotency_key': str(uuid.uuid4()),
+            'changes': [{'entity': 'work_log', 'id': eid, 'action': action,
+                         'version': version, 'payload': payload}]})
+        return r.json()['results'][0]
+
+    def row_of(eid, *cols):
+        c = dbm.get_connection()
+        try:
+            r = c.execute('SELECT {} FROM work_log_entries WHERE id=?'
+                          .format(', '.join(cols)), (eid,)).fetchone()
+            return dict(r) if r else None
+        finally:
+            c.close()
+
+    p1 = wj.save(77, None, date='2026-09-15', kind=wj.KIND_FAULT, block=9,
+                 lc='LC2', device='BESS 1', title='Fuse blown',
+                 work_done='Fuse replaced on BESS 1',
+                 internal_note='office: spare set ordered 15.09',
+                 parts='office: FU-400A x2', ptw='PTW-2609-150', status='Open')
+    sc.push_pending()
+    e1 = p1[2:]
+    base = server(e1)['version']
+    res = phone_patch(e1, base, {'fault_name': 'Fuse blown — 400 A DC'})
+    H.check(res['outcome'] == 'applied',
+            'a one-field correction is applied: {}'.format(res['outcome']))
+    srow = server(e1)
+    H.check(srow['fault_name'] == 'Fuse blown — 400 A DC',
+            'the server has the correction: {}'.format(srow['fault_name']))
+    H.check(srow['internal_note'] == 'office: spare set ordered 15.09'
+            and srow['spare_parts'] == 'office: FU-400A x2'
+            and srow['description'] == 'Fuse replaced on BESS 1'
+            and srow['ptw_no'] == 'PTW-2609-150' and srow['plant_block'] == 9,
+            'and still every line the office wrote: {}'.format(
+                [srow['internal_note'], srow['spare_parts'], srow['ptw_no']]))
+    pull()
+    back = row_of(e1, 'fault_name', 'internal_note', 'spare_parts',
+                  'description', 'ptw_no', 'plant_block', 'sync_status')
+    H.check(back['fault_name'] == 'Fuse blown — 400 A DC'
+            and back['sync_status'] == 'synced',
+            'the correction reaches the desktop: {}'.format(back['fault_name']))
+    H.check(back['internal_note'] == 'office: spare set ordered 15.09'
+            and back['spare_parts'] == 'office: FU-400A x2'
+            and back['ptw_no'] == 'PTW-2609-150' and back['plant_block'] == 9,
+            'with the office\'s own fields intact on the desktop too: {}'.format(back))
+    rec = wj.get(p1, 77)
+    H.check(rec and rec['title'] == 'Fuse blown — 400 A DC'
+            and rec['internal_note'] == 'office: spare set ordered 15.09',
+            'and the Work journal shows the corrected record, not a damaged one')
+
+    print('\n=== E2: the office and the phone correct the SAME record ===')
+    # Different fields: the server refuses the stale push and hands its own
+    # copy back, which is exactly what app.js _rebaseEntry needs. Re-sent on
+    # that copy, both sides' work ends up on the desktop.
+    p2 = wj.save(77, None, date='2026-09-16', kind=wj.KIND_FAULT, block=10,
+                 title='Cell imbalance', work_done='original line',
+                 internal_note='office note', status='Open')
+    sc.push_pending()
+    e2 = p2[2:]
+    base = server(e2)['version']
+    wes.update_worklog_entry(e2, description='rewritten in the office')
+    sc.push_pending()                      # the office gets there first
+    res = phone_patch(e2, base, {'fault_name': 'Cell imbalance — string 3'})
+    H.check(res['outcome'] == 'conflict' and res.get('server_row'),
+            'the phone\'s stale correction is refused, with the server row: {}'
+            .format(res['outcome']))
+    H.check(res['server_row']['description'] == 'rewritten in the office',
+            'the refusal carries what the office wrote — the phone cannot '
+            'decide anything without it')
+    res = phone_patch(e2, res['server_row']['version'],
+                      {'fault_name': 'Cell imbalance — string 3'})
+    H.check(res['outcome'] == 'applied',
+            're-based on that copy, the correction goes through: {}'.format(
+                res['outcome']))
+    pull()
+    both = row_of(e2, 'description', 'fault_name', 'internal_note')
+    H.check(both['description'] == 'rewritten in the office'
+            and both['fault_name'] == 'Cell imbalance — string 3'
+            and both['internal_note'] == 'office note',
+            'and BOTH edits are on the desktop — nothing was silently lost: {}'
+            .format(both))
+
     print('\n=== a full re-pull does not invent conflicts ===')
     m = str(uuid.uuid4())
     phone_push(m, 1, 'm original')

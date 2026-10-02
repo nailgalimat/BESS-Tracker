@@ -35,7 +35,12 @@ def list_projects(
         ProjectOut(id=p.id, name=p.name,
                    project_type=p.project_type or "BESS",
                    num_blocks=p.num_blocks or 0,
-                   zones=p.zones or "")
+                   zones=p.zones or "",
+                   # The closed months: sent to the customer and settled.
+                   # "" when no desktop has published them — the phone reads
+                   # that as "unknown" and stays quiet rather than warning
+                   # about every month.
+                   locked_months=getattr(p, "locked_months", "") or "")
         for p in rows
     ]
 
@@ -50,13 +55,23 @@ def replace_projects(
     now = _now()
     incoming_ids = {p.id for p in body.projects}
 
+    # Which keys each pushed project actually carried. An older desktop sends
+    # no locked_months at all, and pydantic would hand us its default "" —
+    # writing that would erase a list a newer desktop had published. Absent key
+    # means "no opinion", never "blank it": the same rule as _ENTRY_OPT_COLS.
+    sent = {p["id"]: p for p in
+            body.model_dump(exclude_unset=True).get("projects", [])}
+
     for p in body.projects:
+        given = sent.get(p.id, {})
         existing = db.query(Project).filter(Project.id == p.id).first()
         if existing:
             existing.name         = p.name
             existing.project_type = p.project_type
             existing.num_blocks   = p.num_blocks or 0
             existing.zones        = p.zones or ""
+            if "locked_months" in given:
+                existing.locked_months = p.locked_months or ""
             existing.updated_at   = now
         else:
             db.add(Project(
@@ -65,6 +80,8 @@ def replace_projects(
                 project_type = p.project_type,
                 num_blocks   = p.num_blocks or 0,
                 zones        = p.zones or "",
+                locked_months = (p.locked_months or ""
+                                 if "locked_months" in given else ""),
                 updated_at   = now,
             ))
 

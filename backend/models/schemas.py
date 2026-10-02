@@ -174,6 +174,16 @@ class ProjectOut(BaseModel):
     # guess where a zone starts, and a guessed "Z4/B8" is worse than none.
     # Empty for an older desktop.
     zones:        str = ""
+    # The project's closed months — sent to the customer and settled with them
+    # — as JSON ["YYYY-MM", ...]. The desktop is the only holder of
+    # report_months.locked_at, so it publishes them here. Default "" so an
+    # older desktop's PUT /projects still validates and an older phone simply
+    # ignores the extra key.
+    #
+    # "" is "nobody has published this yet", "[]" is "published: none closed".
+    # A client that cannot tell them apart would warn about every month the
+    # first time it met an un-taught desktop.
+    locked_months: str = ""
 
 
 class ProjectsSyncRequest(BaseModel):

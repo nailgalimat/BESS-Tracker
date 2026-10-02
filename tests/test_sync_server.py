@@ -126,6 +126,93 @@ with TestClient(main.app) as client:
           and got[old[2]['id']]['blocks'] == 'abc',
           'GET /events returns them as sent (fields unchanged)')
 
+    print('\n=== a partial payload MERGES: an absent key is "no opinion" ===')
+    # This is what lets a phone correct one field of its own record without
+    # wiping the lines the office wrote on it while the phone was offline.
+    # A QA pass once found exactly that loss on a version conflict.
+    m = str(uuid.uuid4())
+    push('desktop-A', {
+        'entity': 'work_log', 'id': m, 'action': 'upsert', 'version': 1,
+        'payload': {'project_id': None, 'category': 'fault',
+                    'description': 'written by the office',
+                    'fault_name': 'Fuse blown', 'status': 'open',
+                    'sap_ticket': 'SAP-1', 'spare_parts': 'office: FU-400A x2',
+                    'site_location': 'Z2', 'equipment_serial': 'SER-9',
+                    'log_date': '2026-09-11', 'plant_block': 5,
+                    'node_lc': 'LC1', 'node_device': 'BESS 2',
+                    'ptw_no': 'PTW-1', 'internal_note': 'office: spare ordered',
+                    'hours': 2.5, 'availability_impact': 'none',
+                    'tags': ['cooling'], 'deleted_at': None}})
+    before = server_row(m)
+    # the phone corrects one field and sends that field alone
+    code, res = push('phone-P', {
+        'entity': 'work_log', 'id': m, 'action': 'upsert',
+        'version': before['version'],
+        'payload': {'fault_name': 'Fuse blown — 400 A DC'}})
+    check(res[m]['outcome'] == 'applied',
+          'a one-field payload is applied: {}'.format(res[m]['outcome']))
+    after = server_row(m)
+    check(after['fault_name'] == 'Fuse blown — 400 A DC',
+          'the corrected field is stored: {}'.format(after['fault_name']))
+    kept = {k: (before[k], after[k]) for k in before
+            if k not in ('fault_name', 'updated_at', 'version', 'origin_device')
+            and before[k] != after[k]}
+    check(not kept, 'and NOTHING else moved: {}'.format(kept))
+    check(after['internal_note'] == 'office: spare ordered'
+          and after['spare_parts'] == 'office: FU-400A x2'
+          and after['description'] == 'written by the office'
+          and after['hours'] == 2.5 and after['tags'] == ['cooling'],
+          "every line the office wrote is still there")
+    check(after['deleted_at'] is None,
+          'a payload with no deleted_at key does not un-delete or delete')
+
+    # and a soft delete with no other key still deletes
+    code, res = push('phone-P', {'entity': 'work_log', 'id': m,
+                                 'action': 'delete',
+                                 'version': after['version'], 'payload': {}})
+    check(res[m]['outcome'] == 'applied' and bool(server_row(m).get('deleted_at')),
+          'a delete is still a delete')
+
+    print('\n=== the closed months: sent AND settled with the customer ===')
+    # report_months.locked_at exists only on the desktop, so the desktop
+    # publishes the list with the project and the phone reads the mirror.
+    # "" is "nobody has told me", "[]" is "told: none closed". A month whose
+    # report has been SENT but not yet settled with the customer is not on the
+    # list — corrections are expected during that gap and nothing warns.
+    def put_projects(projects):
+        return client.put('/projects', headers=H, json={'projects': projects})
+
+    r = put_projects([{'id': 41, 'name': 'TK', 'project_type': 'BESS',
+                       'num_blocks': 16, 'zones': '[[1,1,8],[2,9,16]]',
+                       'locked_months': '["2026-08"]'}])
+    check(r.status_code == 200, 'PUT /projects with locked_months: {}'.format(r.status_code))
+    got = {p['id']: p for p in client.get('/projects', headers=H).json()}
+    check(got[41]['locked_months'] == '["2026-08"]',
+          'the phone is told which months are closed: {}'.format(got[41]['locked_months']))
+
+    # an OLDER desktop that knows nothing about the field must still work, and
+    # must not blank what a newer one published: absent key = no opinion
+    r = put_projects([{'id': 41, 'name': 'TK', 'project_type': 'BESS',
+                       'num_blocks': 16, 'zones': '[[1,1,8],[2,9,16]]'}])
+    got = {p['id']: p for p in client.get('/projects', headers=H).json()}
+    check(r.status_code == 200 and got[41]['name'] == 'TK',
+          'an older desktop can still publish the project list')
+    check(got[41]['locked_months'] == '["2026-08"]',
+          'and does not erase the months it does not know about: {}'
+          .format(got[41]['locked_months']))
+
+    # a project nobody has published months for reads as "" — unknown, which
+    # the phone stays quiet about rather than warning on everything
+    put_projects([{'id': 41, 'name': 'TK'}, {'id': 42, 'name': 'Bukhara'}])
+    got = {p['id']: p for p in client.get('/projects', headers=H).json()}
+    check(got[42]['locked_months'] == '',
+          'a project never told about them reads "" — not "[]", and not a '
+          'month list: {!r}'.format(got[42]['locked_months']))
+    put_projects([{'id': 41, 'name': 'TK', 'locked_months': '[]'}])
+    got = {p['id']: p for p in client.get('/projects', headers=H).json()}
+    check(got[41]['locked_months'] == '[]',
+          'and "[]" survives as itself — the two answers stay apart')
+
 print()
 print('RESULT FAIL ({} check(s))'.format(len(failures)) if failures else 'RESULT PASS')
 sys.stdout.flush()

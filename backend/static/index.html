@@ -10,7 +10,7 @@
   <title>BESS Field Log</title>
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="apple-touch-icon" href="/app/icons/icon-192.png" />
-  <link rel="stylesheet" href="/app/css/app.css?v=21" />
+  <link rel="stylesheet" href="/app/css/app.css?v=22" />
 </head>
 <body>
 
@@ -112,6 +112,11 @@
   </header>
 
   <div class="screen-body">
+    <!-- Correcting an existing record, not writing a new one: what can be
+         changed here and what the office owns. Carries the warning when the
+         record's month has already gone to the customer. -->
+    <div id="f-edit-note" class="edit-note" style="display:none"></div>
+
     <!-- Node: chosen, never typed. "9zona 7block 2bsc" could not become a
          plant block, so those records never reached the customer report. -->
     <div class="form-group">
@@ -177,7 +182,7 @@
       </datalist>
     </div>
 
-    <div class="form-group">
+    <div class="form-group" id="f-status-group">
       <label>Status</label>
       <div class="ph-seg small" id="f-status-seg">
         <button type="button" data-st="open" onclick="App.pickStatus('open')">Open</button>
@@ -245,8 +250,16 @@
         <option value="">— No project —</option>
       </select>
     </div>
-    <div class="form-group" style="display:none">
+    <!-- The free text an old record was written with, before the node picker.
+         Shown ONLY when correcting a record that already has one, so that it
+         can be fixed — never on a new record, where the node replaced it. -->
+    <div class="form-group" id="f-loc-group" style="display:none">
+      <label>Location text (old record)</label>
       <input id="f-loc" type="text" />
+      <p class="hint-line">Kept from before the node picker. The block above is
+         what the report reads.</p>
+    </div>
+    <div class="form-group" style="display:none">
       <input id="f-tags" type="text" />
     </div>
 
@@ -255,7 +268,7 @@
          film is about 5 MB a second, and capping it at capture is the only
          thing that keeps the server's 1 GB disk affordable. 30 s hard stop,
          sound on, ~0.7 Mbit/s — about 2 MB, the size of three photos. -->
-    <div class="form-group">
+    <div class="form-group" id="f-photo-group">
       <label>Photos and video</label>
       <div class="photo-area">
         <div class="photo-btn-row">
@@ -295,7 +308,8 @@
     </div>
 
     <div id="create-error" class="error-msg" style="display:none"></div>
-    <button type="button" class="btn btn-outline btn-block" style="margin-top:6px"
+    <button type="button" id="f-repeat-btn" class="btn btn-outline btn-block"
+            style="margin-top:6px"
             onclick="App.repeatOnAnotherNode()">Repeat on another node</button>
   </div>
 </div>
@@ -335,7 +349,8 @@
 
     <!-- the whole plant in one tap, the same explicit "All" the PM form uses -->
     <div class="np-actions">
-      <button type="button" class="btn btn-outline" onclick="App.nodeAll()">All blocks</button>
+      <button type="button" id="np-all" class="btn btn-outline"
+              onclick="App.nodeAll()">All blocks</button>
       <button type="button" id="np-none" class="btn btn-outline" onclick="App.nodeNone()">Clear</button>
     </div>
 
@@ -350,10 +365,16 @@
 </div>
 
 <!-- DETAIL -->
+<!-- A record the technician wrote themselves can be CORRECTED from here while
+     it is still open: a typo or a missing detail used to mean telephoning the
+     office. A done record offers no Edit — it is reopened there first, because
+     the customer may already hold numbers made from it. -->
 <div id="screen-detail" class="screen">
   <header class="topbar">
     <button class="icon-btn" onclick="App.goRecords()">‹</button>
     <span class="topbar-title" id="detail-title">Record</span>
+    <button id="detail-edit" class="topbar-save" style="display:none"
+            onclick="App.editEntry()">Edit</button>
     <button class="icon-btn danger" onclick="App.deleteEntry()" title="Delete">🗑</button>
   </header>
   <div id="detail-body" class="screen-body"></div>
@@ -732,10 +753,10 @@
   <button class="tab" data-tab="more" onclick="App.goSettings()"><span>More</span></button>
 </nav>
 
-<script>window.APP_VERSION = 'v21';</script>
-<script src="/app/js/db.js?v=21"></script>
-<script src="/app/js/api.js?v=21"></script>
-<script src="/app/js/app.js?v=21"></script>
+<script>window.APP_VERSION = 'v22';</script>
+<script src="/app/js/db.js?v=22"></script>
+<script src="/app/js/api.js?v=22"></script>
+<script src="/app/js/app.js?v=22"></script>
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/app/sw.js').then(reg => {

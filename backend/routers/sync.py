@@ -466,7 +466,12 @@ def _apply_entry_change(change, device_id: str, user: User, db: Session) -> Sync
                            "due_date"):
                     if _f in payload:
                         setattr(entry, _f, payload[_f])
-            entry.deleted_at       = payload.get("deleted_at")
+            # Guarded like every other field. A phone correcting one field of
+            # its own record sends only that field, and payload.get() would
+            # have read the missing key as "un-delete this". Every client that
+            # sends the key behaves exactly as before.
+            if "deleted_at" in payload:
+                entry.deleted_at   = payload["deleted_at"]
             entry.updated_at       = now
             entry.version         += 1
             entry.origin_device    = device_id

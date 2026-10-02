@@ -77,6 +77,18 @@ class Project(Base):
     # JSON [[zone, first plant block, last plant block], ...] mirrored
     # from the desktop block map, for the phone node picker.
     zones        = Column(Text, default="")
+    # JSON ["YYYY-MM", ...] — the project's CLOSED months. Closed means the
+    # month's report was sent to the customer AND settled with them: the office
+    # leaves a month open after sending it until the customer confirms it needs
+    # no changes, and corrections are expected during that gap. Only the
+    # desktop knows this (report_months.locked_at lives there), so it publishes
+    # the list with the project and the phone reads the mirror.
+    #
+    # "" means NOT PUBLISHED — a desktop from before this field, or one that has
+    # not synced yet. "[]" means published and nothing is closed. The two are
+    # deliberately distinguishable: a client must never read "I was not told"
+    # as "every month is closed".
+    locked_months = Column(Text, default="")
     updated_at   = Column(String, default=_now)
 
 

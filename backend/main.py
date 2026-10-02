@@ -158,6 +158,17 @@ async def lifespan(app: FastAPI):
         if "zones" not in _pcols:
             _conn.exec_driver_sql(
                 "ALTER TABLE projects ADD COLUMN zones TEXT DEFAULT ''")
+        # The project's closed months — sent to the customer and settled with
+        # them — published by the desktop (report_months.locked_at lives only
+        # there). The phone warns before a correction lands in one of them; a
+        # month whose report has gone out but is not closed yet is exactly when
+        # corrections are expected, and says nothing. Default '' is "not
+        # published yet", which every client reads as "unknown" and nobody
+        # reads as "all closed" — so a server nobody has told anything stays
+        # quiet instead of warning about every month.
+        if "locked_months" not in _pcols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE projects ADD COLUMN locked_months TEXT DEFAULT ''")
         # PM checklists. create_all makes the two tables on a fresh server;
         # a server that already has them from an earlier deploy only gets the
         # missing columns, so an older desktop or phone keeps working.

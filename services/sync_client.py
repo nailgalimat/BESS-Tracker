@@ -14,6 +14,7 @@ Returns SyncResult (namedtuple) for every sync cycle.
 
 import json
 import os
+import sqlite3
 import uuid
 from collections import namedtuple
 from datetime import datetime, timezone
@@ -363,6 +364,36 @@ def push_pending() -> dict:
     return stats
 
 
+def locked_months(project_id: int) -> list:
+    """['YYYY-MM', ...] — the project's CLOSED months.
+
+    Closed is report_months.locked_at, which is not the same as "the report was
+    sent". The month's report goes to the customer first and the month stays
+    open until the customer confirms it needs no changes; closing it is the
+    second, deliberate step. Corrections are expected during that gap, so only
+    a closed month is listed here and only a closed month makes the phone warn.
+
+    Published with the project list (push_projects) because the phone has no
+    report_months table of its own and otherwise could not tell a technician
+    that the month being corrected is already settled. Always a list, so "none
+    closed" and "never asked" stay different answers on the far side. A
+    database too old to have the table answers [] rather than failing the whole
+    project push.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT year, month FROM report_months "
+            "WHERE project_id=? AND locked_at IS NOT NULL "
+            "ORDER BY year, month", (project_id,)).fetchall()
+        return ["%04d-%02d" % (int(r[0]), int(r[1])) for r in rows
+                if r[0] and r[1]]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
 def push_projects():
     """
     Publish the local project list to the server so mobile clients
@@ -392,6 +423,13 @@ def push_projects():
                                        in sorted(zones.items())])
         except Exception:                            # noqa: BLE001
             _p["zones"] = ""
+        # The months that are closed — sent AND settled with the customer.
+        # report_months lives only here, so the phone cannot know without being
+        # told, and a phone correcting a record in a closed month has to be
+        # able to say so. Always a JSON list, "[]" included: "[]" is "I
+        # checked, none", while the server's default "" is "nobody has told
+        # me". A phone must never read the second as the first, or as "all".
+        _p["locked_months"] = _json.dumps(locked_months(_p["id"]))
     try:
         _request("put", "/projects", json={"projects": projects})
     except RequestException:

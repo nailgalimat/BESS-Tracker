@@ -884,3 +884,39 @@ body.has-tabs .fab      { bottom: calc(78px + var(--safe-bot)); }
 .cl-item.out{ background:#F6F8FB; border-style:dashed; }
 .cl-item.out .cl-text{ color:#9AA6B4; }
 .cl-out{ font-size:12px; color:#8A6D1F; margin-top:6px; }
+
+/* ── v22: correcting a record from the phone ──────────────────────────────
+   The note at the top of the correction form, the warning when the month has
+   already gone to the customer, and the panel where both sides wrote the same
+   field. The clash panel is the one screen in the app that must not look
+   dismissible: nothing is sent until each line has been chosen. */
+.edit-note{
+  background:#EAF3FF; border:1px solid #BFD9F6; border-radius:10px;
+  padding:10px 12px; margin:0 2px 12px; font-size:13px; color:#1A2B45;
+  line-height:1.5;
+}
+.edit-note b{ display:block; margin-bottom:2px; }
+.edit-locked{
+  display:block; margin-top:8px; padding-top:8px;
+  border-top:1px solid #BFD9F6; color:#8A6D1F; font-weight:700;
+}
+.clash{
+  background:#FFF8E8; border:1px solid #E6CE8F; border-radius:12px;
+  padding:12px; margin:0 2px 14px; font-size:13px; color:#1A2B45;
+  line-height:1.5;
+}
+.clash > b{ display:block; color:#8A6D1F; margin-bottom:4px; }
+.clash > p{ margin:0 0 10px; color:#5C6B7D; }
+.clash-row{
+  background:#FFFFFF; border:1px solid #E6CE8F; border-radius:10px;
+  padding:10px; margin-top:8px;
+}
+.clash-field{ font-size:12px; font-weight:700; color:#8A6D1F;
+              text-transform:uppercase; letter-spacing:.3px; margin-bottom:6px; }
+.clash-side{ border-top:1px solid #F0E3C2; padding-top:8px; margin-top:8px; }
+.clash-side:first-of-type{ border-top:0; padding-top:0; margin-top:0; }
+.clash-who{ font-size:12px; color:#6B7A8D; }
+.clash-side p{ margin:2px 0 8px; font-size:14px; color:#1A2B45;
+               word-break:break-word; }
+.clash-side.mine p{ font-weight:700; }
+.clash-side .btn{ padding:8px 14px; font-size:13px; }
