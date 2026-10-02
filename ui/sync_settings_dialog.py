@@ -309,12 +309,19 @@ class SyncSettingsDialog(QDialog):
 
         bad = st.get('unverified') or []
         if bad:
+            # Point at the button, not at syncing. The pass that runs at the end
+            # of a sync is deliberately repair-free (sync_client passes
+            # repair_mismatches=False) so a copy that will never verify cannot
+            # re-download itself every minute for ever. Only this button fetches
+            # it again — telling the user to sync would send them round a loop
+            # that cannot fix anything.
             self._ph_warn_lbl.setText(
                 "⚠  {} photo(s) could not be verified against the stored hash, so "
-                "the server still keeps them: {}. Sync again — the copy here is "
-                "downloaded afresh; if it keeps failing, say so before anything is "
-                "deleted.".format(len(bad),
-                                  ", ".join(w['item_id'][:8] for w in bad[:6])))
+                "the server still keeps them: {}. Press “Free space on the server” "
+                "— it downloads a fresh copy and checks it again. A sync on its own "
+                "will not repair them. If it still fails, say so before anything is "
+                "deleted: the server's copy is then the only good one."
+                .format(len(bad), ", ".join(w['item_id'][:8] for w in bad[:6])))
         else:
             self._ph_warn_lbl.setText("")
 

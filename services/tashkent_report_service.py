@@ -1717,6 +1717,1033 @@ def _xml(s) -> str:
                   .replace('<', '&lt;').replace('>', '&gt;'))
 
 
+# ── CUSTOMER-REVIEW SECTIONS (one model, two renderers) ───────────────────────
+#
+# The customer's review matrix asks every month for the same structural
+# sections (executive summary, how each KPI is calculated, the cycle
+# definition, the worst blocks, the action tracker, a data-quality statement,
+# an RTE variance sentence). The PDF and the DOCX are parallel code and used
+# to drift, so each of these sections is built ONCE as a list of blocks and
+# rendered by both. A block is a tuple:
+#
+#     ('h3',      text)                      subsection heading
+#     ('p',       text)                      body paragraph ('<b>' allowed)
+#     ('small',   text)                      small italic note
+#     ('bullets', [text, ...])               bulleted list
+#     ('table',   headers, rows, widths_mm)  widths are a PDF hint, may be None
+#
+# Nothing here computes a KPI — every figure is read from what the generator
+# already worked out, so adding a section cannot move a number. A section with
+# nothing to show returns a single ('p', …) line saying so; it never prints an
+# empty table.
+
+SLA_AVAIL_TARGET_PCT = 95.0
+RTE_TARGET_PCT = 85.0
+
+# The three availability figures, named. Printing any of them as a bare
+# "availability" is the defect the customer raised (review item 16): page 7
+# said 98.05 % and clause 7 said 95.38 %, both labelled just "availability".
+AVAIL_CONTRACTUAL_NAME = 'Contractual BESS availability'
+AVAIL_PLANT_NAME       = 'Plant-level availability'
+AVAIL_OPERATIONAL_NAME = 'Operational availability (container-level)'
+
+# SCADA tag shapes the loaders actually match on, for the KPI source column.
+TAG_WORKING_STATUS = 'LC200 BB.CC - LC - … WORKING STATUS (5-min)'
+TAG_SOC            = 'LC200 BB.CC - LC - … SOC (%) (5-min)'
+TAG_SOH            = 'LC200 BB.CC - LC - … SOH (%) (last day of the month)'
+TAG_DAILY_ENERGY   = 'LC200 BB.CC - LC - DAILY CHARGE / DISCHARGE ENERGY (kWh)'
+TAG_TOTAL_ENERGY   = 'LC200 BB.CC - LC - TOTAL CHARGE / DISCHARGE ENERGY (kWh)'
+TAG_CYCLES         = 'CMU NN.MM.PP.QQ - BSC - CMU - CHARGE AND DISCHARGE CYCLES'
+TAG_PCS_STATUS     = 'PCS BB.CC.UU - PCS - CONVERTER UNIT u CHARGE AND DISCHARGE STATUS'
+TAG_PCS_FAULT      = 'PCS BB.CC.UU - PCS - CONVERTER UNIT u FAULT STATUS 1'
+TAG_ALARMS         = 'Alarm report, sheets Production / Warning (Activated, Trigger name, Element)'
+
+LC_USABLE_KWH = 5504.0 * 0.90          # 4,953.6 — one LC over the 5-95 % window
+
+
+def _fmt_pct(v, nd=2):
+    try:
+        if v is None or pd.isna(v):
+            return '—'
+        return f'{float(v):.{nd}f}%'
+    except (TypeError, ValueError):
+        return '—'
+
+
+def _fmt_num(v, nd=1):
+    try:
+        if v is None or pd.isna(v):
+            return '—'
+        return f'{float(v):,.{nd}f}'
+    except (TypeError, ValueError):
+        return '—'
+
+
+def _none_block(text):
+    """A section with nothing to show: one line, never an empty table."""
+    return [('p', text)]
+
+
+def availability_figures(g):
+    """The named availability figures this run produced, in report order.
+    Each is a dict with name / value / basis. Reads only what the generator
+    already computed."""
+    ca = g.get('contractual_avail') or {}
+    pa = g.get('plant_avail') or {}
+    out = []
+    if ca.get('availability_pct') is not None:
+        out.append({
+            'key': 'contractual',
+            'name': AVAIL_CONTRACTUAL_NAME,
+            'value': ca['availability_pct'],
+            'basis': ('capacity-weighted, genuine fault-shutdown time only, '
+                      'planned work and PM-covered stops removed'),
+        })
+    if pa.get('plant_availability_pct') is not None:
+        out.append({
+            'key': 'plant',
+            'name': AVAIL_PLANT_NAME,
+            'value': pa['plant_availability_pct'],
+            'basis': ('plant wall-clock, credited for spare capacity above the '
+                      'agreed threshold, planned-maintenance hours removed'),
+        })
+    fac = g.get('fleet_availability_container')
+    if fac is not None and not pd.isna(fac):
+        out.append({
+            'key': 'operational',
+            'name': AVAIL_OPERATIONAL_NAME,
+            'value': float(fac),
+            'basis': ('unweighted mean of each block-day\'s available time, '
+                      'no capacity weighting and no exclusions applied'),
+        })
+    return out
+
+
+def build_availability_definitions(g):
+    """Review item 16: the report printed two different numbers, both called
+    'availability'. Name each one and say why they differ, before the figures
+    themselves are given."""
+    figs = availability_figures(g)
+    if not figs:
+        return _none_block('No availability figure could be calculated for this '
+                           'period — the working-status export held no usable data.')
+    blocks = [('h3', 'Availability: three measures, three names')]
+    rows = [[f['name'], _fmt_pct(f['value']), f['basis']] for f in figs]
+    blocks.append(('table', ['Measure', 'This period', 'What it measures'], rows,
+                   [46, 22, 102]))
+    contractual = next((f for f in figs if f['key'] == 'contractual'), None)
+    operational = next((f for f in figs if f['key'] == 'operational'), None)
+    lead = (
+        'This report quotes more than one availability figure, and they are '
+        'not interchangeable. ')
+    if contractual:
+        lead += (f'<b>{AVAIL_CONTRACTUAL_NAME}</b> '
+                 f'({_fmt_pct(contractual["value"])}) is the contractual, '
+                 f'SLA figure: every outage is weighted by the nameplate '
+                 f'capacity it took out of service, only genuine fault '
+                 f'shutdown counts, and agreed planned work is excluded. ')
+    if operational:
+        lead += (f'<b>{AVAIL_OPERATIONAL_NAME}</b> '
+                 f'({_fmt_pct(operational["value"])}) is the stricter '
+                 f'engineering view: it is the plain average of each block\'s '
+                 f'daily available time, with no capacity weighting and no '
+                 f'exclusions, so standby, planned work and single-container '
+                 f'stops all pull it down. ')
+    if contractual and operational:
+        lead += (f'That is why the two differ by '
+                 f'{abs(contractual["value"] - operational["value"]):.2f} '
+                 f'percentage points this period. ')
+    lead += ('The formula, data source and exclusions behind each figure are '
+             'set out in 4.2.1.')
+    blocks.insert(1, ('p', lead))
+    return blocks
+
+
+def build_kpi_methodology(g):
+    """Review item 3: one table that answers 'where does this number come
+    from' for every KPI — formula, data source and SCADA tag, what is left
+    out — plus the figure itself, which answers item 16's 'formula and final
+    value for each'."""
+    ca = g.get('contractual_avail') or {}
+    pa = g.get('plant_avail') or {}
+    rows = []
+    if ca.get('availability_pct') is not None:
+        unit = ca.get('unit_label', 'unit')
+        src = TAG_WORKING_STATUS
+        if ca.get('method') == 'pcs_unit':
+            src += '; ' + TAG_PCS_STATUS
+        if ca.get('used_unit_fault'):
+            src += '; ' + TAG_PCS_FAULT
+        src += ('; operator-entered downtime (4.4.1); BESS-container fault '
+                'episodes from ' + TAG_ALARMS)
+        rows.append([
+            AVAIL_CONTRACTUAL_NAME,
+            _fmt_pct(ca['availability_pct']),
+            (f'1 − Σ(fault-shutdown {unit}-hours × capacity out of service) ÷ '
+             f'(hours in period × installed nameplate)'),
+            src,
+            ('standby, startup, manual / key stops, data gaps, alarms while '
+             'running; planned-maintenance and restoration windows; a stop '
+             'covered by a PM record (its PM hours are counted instead)'),
+        ])
+    if pa.get('plant_availability_pct') is not None:
+        thr = pa.get('threshold_mw')
+        rows.append([
+            AVAIL_PLANT_NAME,
+            _fmt_pct(pa['plant_availability_pct']),
+            ('(scheduled hours − plant outage hours) ÷ (scheduled hours − '
+             'excluded hours); the plant counts as down only while the '
+             'capacity that is up falls below the agreed threshold'
+             + (f' ({thr:.1f} MW)' if thr else '')),
+            TAG_WORKING_STATUS + ', aggregated to plant capacity',
+            ('planned-maintenance hours (taken off the clock); outage time '
+             'while the capacity that stayed up was above the threshold'),
+        ])
+    fac = g.get('fleet_availability_container')
+    if fac is not None and not pd.isna(fac):
+        rows.append([
+            AVAIL_OPERATIONAL_NAME,
+            _fmt_pct(fac),
+            ('mean over (block, day) of the share of 5-minute samples in '
+             'which the block\'s containers reported an available working '
+             'state — unweighted, every block-day counting equally'),
+            TAG_WORKING_STATUS,
+            ('nothing is excluded: no capacity weighting, no exclusion '
+             'windows, no PM credit. Block-days with no usable charge / '
+             'discharge data are not in the mean'),
+        ])
+    cal = g.get('calibration_applied')
+    rows.append([
+        'Round-trip efficiency (RTE)',
+        _fmt_pct(g.get('fleet_rte')),
+        ('total energy discharged ÷ total energy charged over the whole '
+         'month = '
+         f'{_fmt_num(g.get("total_discharge_mwh"))} MWh ÷ '
+         f'{_fmt_num(g.get("total_charge_mwh"))} MWh'),
+        (TAG_DAILY_ENERGY + ' (per-day maximum of the daily totalizer)'
+         + (', calibrated to ' + TAG_TOTAL_ENERGY if cal else '')),
+        ('no day is left out of the monthly ratio — day-to-day SOC carry-over '
+         'nets out over a month. Graph 5 (daily RTE) shows full-cycle days '
+         'only, so that the chart stays readable'),
+    ])
+    rows.append([
+        'Average state of charge (SOC)',
+        _fmt_pct(g.get('avg_soc_pct')),
+        'mean of every valid 5-minute SOC sample across all containers',
+        TAG_SOC,
+        'samples reading 0 % (container idle or disconnected)',
+    ])
+    rows.append([
+        'State of health (SOH), month end',
+        _fmt_pct(g.get('avg_soh_pct')),
+        ('mean across containers of that container\'s mean SOH over the last '
+         'day of the month'),
+        TAG_SOH,
+        'readings of 0 % / missing (no communication on the snapshot day)',
+    ])
+    snap_used = not getattr(g.get('cycles_snap'), 'empty', True)
+    rows.append([
+        'Cycles in the reported month',
+        _fmt_num(g.get('avg_efc_per_block')),
+        ('BMS cycle register at the end of the period − register at the '
+         'start, averaged over the block\'s CMUs, then over the blocks'
+         if snap_used else
+         'equivalent full cycles from energy throughput — see "Cycle '
+         'definition" in 4.1'),
+        (TAG_CYCLES if snap_used else TAG_DAILY_ENERGY),
+        ('CMUs whose register could not be read at either boundary (a 0 is '
+         'read as "no communication", not as zero cycles)'
+         if snap_used else
+         'days with no charge or no discharge contribute no cycle'),
+    ])
+    blocks = [('h3', '4.2.1  KPI Calculation Summary')]
+    blocks.append(('p',
+        'Every figure in this report is calculated from the site\'s own SCADA '
+        'exports. This table states, for each indicator, the formula used, the '
+        'value it produced for this period, the export and tag it was read '
+        'from, and what is deliberately left out of it.'))
+    blocks.append(('table',
+        ['KPI', 'This period', 'Formula', 'Data source (SCADA tag)',
+         'Not included'], rows, [30, 18, 44, 40, 38]))
+    return blocks
+
+
+def build_cycle_definition(g):
+    """Review item 10: state the cycle formula in the report and whether the
+    count is BMS-reported, equivalent full cycles, or energy throughput.
+
+    Describes what the code does, not an idealised definition: with a CMU
+    snapshot the figure is the BMS register delta (load_cmu_cycle_snapshot),
+    without one it is an energy-throughput EFC estimate
+    (calc_daily_block_kpis_tashkent)."""
+    snap = g.get('cycles_snap')
+    snap_used = not getattr(snap, 'empty', True)
+    blocks = [('h3', 'Cycle definition')]
+    if snap_used:
+        blocks.append(('p',
+            'The cycle figures are <b>BMS-reported</b>, not an estimate from '
+            'energy. Every CMU (battery module controller) keeps a cumulative '
+            '"charge and discharge cycles" register. For one block the reading '
+            'is the mean across that block\'s CMUs, and <b>cycles in the month '
+            '= register at the end of the period − register at the start</b>. '
+            'A register reading of 0 means the module was not communicating — '
+            'a cumulative counter cannot go down — so the nearest non-zero '
+            'reading is used instead: walking forward from the start of the '
+            'period, and backward from its end.'))
+        blocks.append(('p',
+            '"Number of Cycles in Reported Month" is the mean of those '
+            'per-block deltas. The fleet total is that mean × the number of '
+            'blocks, so that total = average × blocks reconciles on the page '
+            'even when a few registers were unreadable. "Accumulative Number '
+            'of Cycles" is the register itself at the end of the month, and '
+            '"Accumulative Number of Cycles in one Year" is the register now '
+            'minus its reading at the start of the calendar year — so a month '
+            'with no report of its own is still carried by the counter.'))
+        blocks.append(('small',
+            'Source tag: ' + TAG_CYCLES + '. Blocks whose register could not '
+            'be read at a period boundary are left out of the average and are '
+            'named in the note under the per-block table.'))
+    else:
+        blocks.append(('p',
+            'No BMS cycle register was exported for this period, so the '
+            'figures are <b>equivalent full cycles (EFC) derived from energy '
+            'throughput</b> — not the count the BMS reports. For each block '
+            f'and day, <b>EFC = min(charge kWh, discharge kWh) ÷ '
+            f'({LC_USABLE_KWH:,.1f} kWh × number of containers in the '
+            f'block)</b>, where {LC_USABLE_KWH:,.1f} kWh is one container\'s '
+            'usable energy (5,504 kWh nameplate over the 5–95 % SOC window). '
+            'The daily values are summed per block over the month and then '
+            'averaged across blocks.'))
+        blocks.append(('small',
+            'Source tag: ' + TAG_DAILY_ENERGY + '. A day on which the block '
+            'only charged or only discharged contributes no cycle. Supply the '
+            'first-day and last-day CMU cycle exports to report the BMS count '
+            'instead.'))
+    return blocks
+
+
+def per_block_availability(g):
+    """Per-block operational availability and unavailable hours, worst first.
+
+    Both come from the same `daily_kpi` frame the heatmap and the
+    container-level figure use, so the table cannot disagree with them."""
+    dk = g.get('daily_kpi')
+    if dk is None or getattr(dk, 'empty', True) or 'availability_pct' not in dk.columns:
+        return []
+    d = dk[['block', 'date', 'availability_pct']].copy()
+    d['availability_pct'] = pd.to_numeric(d['availability_pct'], errors='coerce')
+    d = d.dropna(subset=['availability_pct'])
+    if d.empty:
+        return []
+    d['unavail_h'] = (100.0 - d['availability_pct']) / 100.0 * 24.0
+    agg = (d.groupby('block')
+            .agg(availability_pct=('availability_pct', 'mean'),
+                 unavailable_h=('unavail_h', 'sum'),
+                 days=('date', 'nunique'))
+            .reset_index()
+            .sort_values(['availability_pct', 'unavailable_h'],
+                         ascending=[True, False]))
+    return agg.to_dict('records')
+
+
+def _block_fault_reasons(g):
+    """Dominant fault cause per block, from the 4.4.1 incident frame."""
+    ur = g.get('unavail_reasons')
+    out = {}
+    if ur is None or getattr(ur, 'empty', True):
+        return out
+    try:
+        u = ur.sort_values('downtime_h', ascending=False)
+        for _, r in u.iterrows():
+            b = r.get('block_id')
+            if pd.isna(b) or int(b) in out:
+                continue
+            cause = str(r.get('cause') or '').strip() or 'Unclassified'
+            if r.get('subsystem'):
+                cause = f"{cause} ({r['subsystem']})"
+            out[int(b)] = cause
+    except Exception:                                           # noqa: BLE001
+        return out
+    return out
+
+
+def _actions_by_block(action_items):
+    """Open action items indexed by the block number their text names."""
+    out = {}
+    for it in action_items or []:
+        text = ' '.join(str(it.get(k) or '')
+                        for k in ('topic', 'description', 'todo'))
+        for m in re.finditer(r'\b(?:block|blk|bl)\s*#?\s*(\d{1,3})\b', text,
+                             flags=re.IGNORECASE):
+            out.setdefault(int(m.group(1)), []).append(it)
+    return out
+
+
+def build_lowest_availability_blocks(g, top_n=10):
+    """Review item 20: a table beside the heatmap — block, total unavailable
+    hours, reason, corrective-action status."""
+    rank = per_block_availability(g)
+    if not rank:
+        return _none_block('No per-block availability data is available for '
+                           'this period, so no block ranking can be given.')
+    reasons = _block_fault_reasons(g)
+    rested = {int(b) for b in (g.get('rested_blocks') or set())}
+    by_block = _actions_by_block(g.get('open_action_items'))
+    rows = []
+    for r in rank[:top_n]:
+        b = int(r['block'])
+        if b in rested:
+            reason = ('Intentionally kept out of operation to balance cycles '
+                      '(not a fault)')
+        elif b in reasons:
+            reason = reasons[b]
+        else:
+            reason = ('No fault shutdown recorded — block on standby or out '
+                      'of operation')
+        acts = by_block.get(b) or []
+        if acts:
+            a = acts[0]
+            status = str(a.get('status') or 'open')
+            if a.get('overdue'):
+                status += ' (overdue)'
+            topic = str(a.get('topic') or '').strip()
+            action = f"{status} — {topic}" if topic else status
+        elif b in rested:
+            action = 'None required'
+        elif b in reasons:
+            action = 'No open action recorded'
+        else:
+            action = 'None required'
+        rows.append([
+            f"Block {b}",
+            _fmt_pct(r['availability_pct']),
+            _fmt_num(r['unavailable_h']),
+            reason,
+            action,
+        ])
+    blocks = [('h3', f'Lowest-availability blocks (worst {len(rows)})')]
+    blocks.append(('p',
+        f'The {len(rows)} block(s) with the lowest '
+        f'{AVAIL_OPERATIONAL_NAME.lower()} this period, read from the same '
+        f'daily working-status record as the heatmap above. Unavailable hours '
+        f'are the block\'s own clock — the share of the day its containers '
+        f'were not in an available state — so they are not capacity-weighted '
+        f'and are not the hours used for the contractual figure (see 4.2.1).'))
+    blocks.append(('table',
+        ['Block', AVAIL_OPERATIONAL_NAME.split(' (')[0], 'Unavailable hours',
+         'Reason', 'Corrective action status'], rows, [16, 24, 22, 56, 52]))
+    return blocks
+
+
+def read_open_actions(project_id):
+    """The project's open action items, from the one action list the app
+    already has (services/action_list_service, table `action_items`). Returns
+    (items, note): `note` is set when the list could not be read, so the
+    section can say so instead of printing nothing."""
+    if not project_id:
+        return [], ('The project action list was not available when this '
+                    'report was generated.')
+    try:
+        from services import action_list_service as als
+        return list(als.items(int(project_id), include_done=False)), ''
+    except Exception as e:                                      # noqa: BLE001
+        return [], f'The project action list could not be read ({e}).'
+
+
+def build_action_tracker(g):
+    """Review item 43: render the project's open action items as a report
+    section. The app already owns this feature — this reads it, it does not
+    keep a second tracker."""
+    items = g.get('open_action_items') or []
+    note = g.get('open_action_note') or ''
+    blocks = [('h3', 'Open issues and action tracker')]
+    if not items:
+        blocks.append(('p', note or 'No open action items are recorded for '
+                                    'this project.'))
+        return blocks
+    n_overdue = sum(1 for it in items if it.get('overdue'))
+    blocks.append(('p',
+        f'<b>{len(items)}</b> open item(s) are on the project action list'
+        + (f', of which <b>{n_overdue}</b> are past their due date' if n_overdue else '')
+        + '. The list is maintained in the project\'s action register; this '
+          'section is a read-out of it, not a separate tracker.'))
+    rows = []
+    for i, it in enumerate(items, start=1):
+        status = str(it.get('status') or 'open')
+        if it.get('overdue'):
+            status += ' (overdue)'
+        rows.append([
+            str(it.get('seq') or i),
+            str(it.get('topic') or ''),
+            str(it.get('description') or ''),
+            str(it.get('todo') or ''),
+            str(it.get('assigned_name') or '—'),
+            str(it.get('due_date') or '—'),
+            status,
+        ])
+    blocks.append(('table',
+        ['No.', 'Issue', 'Description / root cause', 'Action required',
+         'Owner', 'Due date', 'Status'], rows, [12, 32, 38, 38, 20, 18, 12]))
+    return blocks
+
+
+def build_data_coverage(g):
+    """What the report's data set actually contains, per stream: rows, first
+    and last sample, days covered, gaps. Reuses
+    month_dataset_service.series_coverage so the report and the Data tab
+    judge coverage the same way.
+
+    This is what has to be able to say "the alarm export stopped after 9
+    days": the statement is built from the loaded frames, not from a promise
+    that the files were complete."""
+    try:
+        from services.month_dataset_service import series_coverage
+    except Exception:                                           # noqa: BLE001
+        return []
+    streams = []
+
+    def add(label, ts, note=''):
+        try:
+            s = pd.Series(pd.to_datetime(pd.Series(ts), errors='coerce')).dropna()
+        except Exception:                                       # noqa: BLE001
+            return
+        if s.empty:
+            streams.append({'label': label, 'rows': 0, 'days': [], 'gaps': 0,
+                            'first': None, 'last': None, 'note': note})
+            return
+        cov = series_coverage(s)
+        streams.append({
+            'label': label,
+            'rows': cov.get('rows', 0),
+            'days': sorted((cov.get('days') or {}).keys()),
+            'gaps': int(cov.get('n_gaps', 0) or 0),
+            'first': cov.get('first'),
+            'last': cov.get('last'),
+            'note': note,
+        })
+
+    ws = g.get('ws_long')
+    if ws is not None and not getattr(ws, 'empty', True):
+        add('LC working status (5-min)', ws['Datetime'],
+            'availability, fault shutdown')
+    soc = g.get('soc_long')
+    if soc is not None and not getattr(soc, 'empty', True):
+        add('LC state of charge (5-min)', soc['Datetime'], 'SOC, full-cycle gate')
+    pcs = g.get('pcs_unit_status')
+    if pcs is not None and not getattr(pcs, 'empty', True):
+        add('PCS charge / discharge status (5-min)', pcs['Datetime'],
+            'unit-level availability')
+    pcsf = g.get('pcs_unit_fault')
+    if pcsf is not None and not getattr(pcsf, 'empty', True):
+        add('PCS fault status (5-min)', pcsf['Datetime'], 'unit-level faults')
+    lcd = g.get('lc_daily')
+    if lcd is not None and not getattr(lcd, 'empty', True):
+        add('LC daily charge / discharge totalizer', pd.Series(list(lcd.index)),
+            'energy, RTE, cycles fallback')
+    alarms = g.get('alarms') or {}
+    ev = []
+    for key in ('production', 'warning'):
+        df = alarms.get(key)
+        if df is not None and not getattr(df, 'empty', True) and 'Activated' in df.columns:
+            ev.append(pd.to_datetime(df['Activated'], errors='coerce'))
+    if ev:
+        add('Alarm / event log', pd.concat(ev, ignore_index=True),
+            'faults, warnings, breakdowns')
+    return streams
+
+
+def build_data_quality(g):
+    """Review item 44: coverage, gaps, and how missing data was treated."""
+    streams = g.get('data_streams')
+    if streams is None:
+        streams = build_data_coverage(g)
+    dates = g.get('dates') or []
+    if not streams or not dates:
+        return _none_block('No coverage information could be derived for this '
+                           'period\'s data set.')
+    p_start, p_end = pd.Timestamp(dates[0]), pd.Timestamp(dates[-1])
+    period_days = [(p_start + pd.Timedelta(days=i)).date().isoformat()
+                   for i in range((p_end - p_start).days + 1)]
+    n_period = len(period_days)
+    import calendar as _cal
+    n_month = _cal.monthrange(p_start.year, p_start.month)[1]
+
+    rows, short = [], []
+    for s in streams:
+        in_period = [d for d in s['days'] if d in set(period_days)]
+        missing = n_period - len(in_period)
+        cov = (f'{len(in_period)} of {n_period} day(s)'
+               + (f' — {missing} missing' if missing > 0 else ' — complete'))
+        rows.append([
+            s['label'],
+            f"{s['rows']:,}" if s['rows'] else '0',
+            (s['first'] or '—'),
+            (s['last'] or '—'),
+            cov,
+            str(s['gaps']),
+        ])
+        if missing > 0:
+            short.append((s, missing))
+
+    blocks = [('h3', '4.5  SCADA Data Quality and Coverage')]
+    blocks.append(('p',
+        f'The figures in this report are calculated from the SCADA exports '
+        f'listed below. The reporting period runs from '
+        f'{p_start:%d %B %Y} to {p_end:%d %B %Y} — '
+        f'<b>{n_period} of the {n_month} day(s)</b> in '
+        f'{p_start:%B %Y}. Each row states what the export actually '
+        f'contained, not what was expected of it.'))
+    blocks.append(('table',
+        ['Data set', 'Rows', 'First sample', 'Last sample',
+         'Days covered (reporting period)', 'Gaps > 1 h'], rows,
+        [44, 18, 26, 26, 38, 18]))
+
+    notes = []
+    if n_period < n_month:
+        notes.append(
+            f'The reporting period covers {n_period} of the {n_month} day(s) '
+            f'in {p_start:%B %Y}; the remaining day(s) are not represented in '
+            f'any figure in this report.')
+    for s, missing in short:
+        line = (f'<b>{s["label"]}</b>: {len(s["days"])} day(s) of data'
+                + (f', {s["first"]} to {s["last"]}' if s['first'] else '')
+                + f' — {missing} day(s) of the reporting period are not '
+                  f'covered.')
+        if s['rows'] >= 1000 and s['last'] and \
+                pd.Timestamp(s['last']) < p_end - pd.Timedelta(hours=24):
+            line += (f' The export ends well before the end of the period '
+                     f'after {s["rows"]:,} rows, which is the signature of an '
+                     f'export that hit a row limit; it should be re-taken '
+                     f'before the affected days are relied on.')
+        notes.append(line)
+    for s in streams:
+        if s['gaps']:
+            notes.append(f'<b>{s["label"]}</b>: {s["gaps"]} gap(s) longer than '
+                         f'one hour inside the days it covers.')
+    if not notes:
+        notes.append('Every data set covers the whole reporting period with no '
+                     'gap longer than one hour.')
+    blocks.append(('h3', 'Coverage findings'))
+    blocks.append(('bullets', notes))
+
+    treat = [
+        ('A block-day with no charge and no discharge reading is flagged and '
+         'left out of the efficiency and availability averages — '
+         f'{_fmt_num(g.get("days_excluded"))} day(s) per block this period.'),
+        ('Missing 5-minute samples are never filled in. The contractual '
+         'availability denominator counts only the samples that exist (hours '
+         'in period = distinct timestamps × 5 min), so a communication gap '
+         'counts neither as available time nor as a fault.'),
+        ('A cycle register reading of 0 is read as "no communication", not as '
+         'zero cycles; the nearest non-zero reading is used instead.'),
+        ('SOC and SOH samples reading 0 % are treated as idle or '
+         'disconnected and are left out of those averages.'),
+        ('Alarm events are de-duplicated across echo channels, and warnings '
+         'that cleared in under a minute are set aside as transient.'),
+    ]
+    blocks.append(('h3', 'How missing data was treated'))
+    blocks.append(('bullets', treat))
+    return blocks
+
+
+def build_rte_variance(g):
+    """Review item 19: a sentence on the movement in round-trip efficiency
+    against previous months, from the figures the 4.3 comparison already
+    holds."""
+    rte = g.get('fleet_rte')
+    mc = g.get('monthly_compare')
+    blocks = [('h3', 'Round-trip efficiency: movement against previous months')]
+    if rte is None or mc is None or getattr(mc, 'empty', True) or len(mc) < 2:
+        blocks.append(('p',
+            f'Round-trip efficiency was {_fmt_pct(rte)} this period. No '
+            f'previous month is on record yet, so no variance can be stated; '
+            f'the comparison above fills in from the next report onwards.'))
+        return blocks
+    prev = mc.iloc[:-1]
+    prev_rte = pd.to_numeric(prev['rte_pct'], errors='coerce').dropna()
+    if prev_rte.empty:
+        blocks.append(('p',
+            f'Round-trip efficiency was {_fmt_pct(rte)} this period. The '
+            f'months on record carry no efficiency figure, so no variance can '
+            f'be stated.'))
+        return blocks
+    last_row = prev.iloc[-1]
+    last_val = pd.to_numeric(pd.Series([last_row['rte_pct']]),
+                             errors='coerce').iloc[0]
+    txt = f'Round-trip efficiency was <b>{_fmt_pct(rte)}</b> this period'
+    if pd.notna(last_val):
+        d = float(rte) - float(last_val)
+        word = 'unchanged from' if abs(d) < 0.05 else (
+            'up' if d > 0 else 'down')
+        if word == 'unchanged from':
+            txt += (f', essentially unchanged from {last_row["month"]} '
+                    f'({_fmt_pct(last_val)})')
+        else:
+            txt += (f', {word} {abs(d):.2f} percentage points on '
+                    f'{last_row["month"]} ({_fmt_pct(last_val)})')
+    mean_prev = float(prev_rte.mean())
+    dm = float(rte) - mean_prev
+    txt += (f', and {abs(dm):.2f} pp '
+            f'{"above" if dm >= 0 else "below"} the mean of the '
+            f'{len(prev_rte)} month(s) on record ({_fmt_pct(mean_prev)}). ')
+    txt += (f'It is {"above" if float(rte) >= RTE_TARGET_PCT else "below"} the '
+            f'{RTE_TARGET_PCT:.0f}% target.')
+    blocks.append(('p', txt))
+
+    # Why it moved, from figures already computed — never invented.
+    why = []
+    dis, chg = g.get('total_discharge_mwh'), g.get('total_charge_mwh')
+    p_dis = pd.to_numeric(pd.Series([last_row.get('discharge_mwh')]),
+                          errors='coerce').iloc[0]
+    p_chg = pd.to_numeric(pd.Series([last_row.get('charge_mwh')]),
+                          errors='coerce').iloc[0]
+    if pd.notna(p_chg) and p_chg and chg:
+        why.append(f'Energy throughput: {_fmt_num(chg)} MWh charged and '
+                   f'{_fmt_num(dis)} MWh discharged, against '
+                   f'{_fmt_num(p_chg)} / {_fmt_num(p_dis)} MWh in '
+                   f'{last_row["month"]}.')
+    rested = g.get('rested_blocks') or set()
+    if rested:
+        why.append(f'{len(rested)} block(s) were intentionally kept out of '
+                   f'operation to balance cycles; their low throughput is '
+                   f'deliberate and carries no efficiency penalty for the site.')
+    n_below = g.get('n_blocks_below_target') or 0
+    if n_below:
+        why.append(f'{n_below} block(s) finished the month below the '
+                   f'{RTE_TARGET_PCT:.0f}% target and are listed in 4.4.')
+    de = g.get('days_excluded') or 0
+    if de and float(de) > 0:
+        why.append(f'{_fmt_num(de)} day(s) per block had no usable charge / '
+                   f'discharge data and are outside the ratio.')
+    if why:
+        blocks.append(('bullets', why))
+    return blocks
+
+
+_SUPPORT_PARTIES = ('epc', 'oem', 'ndc', 'national dispatch', 'grid operator',
+                    'contractor', 'supplier', 'vendor')
+
+
+def _support_requests(g):
+    """Lines that name an external party, taken from what the owner actually
+    entered — the month's recommendations and the open action items. Nothing
+    is composed here."""
+    out = []
+    for line in (g.get('recommendations') or []):
+        s = str(line).strip()
+        if s and any(p in s.lower() for p in _SUPPORT_PARTIES):
+            out.append(s)
+    for it in (g.get('open_action_items') or []):
+        owner = str(it.get('assigned_name') or '')
+        text = ' '.join(str(it.get(k) or '')
+                        for k in ('topic', 'description', 'todo'))
+        if any(p in (owner + ' ' + text).lower() for p in _SUPPORT_PARTIES):
+            topic = str(it.get('topic') or '').strip()
+            if topic:
+                out.append(f"{topic}"
+                           + (f" — owner {owner}" if owner else '')
+                           + (f", due {it['due_date']}" if it.get('due_date') else ''))
+    seen, uniq = set(), []
+    for s in out:
+        if s not in seen:
+            seen.add(s)
+            uniq.append(s)
+    return uniq
+
+
+def _conclusion_lines(g):
+    """The numbered conclusions of section 7, built once for both renderers.
+
+    Review item 16: this used to open with "an average availability of X%",
+    which was the unweighted container-level figure while page 7 quoted the
+    contractual one — the same word for two different numbers. It now leads
+    with the contractual figure, because that is the measure the month is
+    settled against, and names the operational one beside it."""
+    figs = availability_figures(g)
+    contractual = next((f for f in figs if f['key'] == 'contractual'), None)
+    operational = next((f for f in figs if f['key'] == 'operational'), None)
+    rte = g.get('fleet_rte')
+    rte_status = g.get('rte_status') or (
+        'above' if (rte is not None and float(rte) >= RTE_TARGET_PCT) else 'below')
+    first = (f"The site averaged a round-trip efficiency of "
+             f"<b>{_fmt_pct(rte)}</b> ({rte_status} the "
+             f"{RTE_TARGET_PCT:.0f}% target)")
+    if contractual:
+        first += (f", and {AVAIL_CONTRACTUAL_NAME.lower()} — the contractual "
+                  f"SLA figure — of <b>{_fmt_pct(contractual['value'])}</b>")
+        if operational:
+            first += (f". {AVAIL_OPERATIONAL_NAME}, the unweighted per-block "
+                      f"mean with no exclusions applied, was "
+                      f"<b>{_fmt_pct(operational['value'])}</b>; 4.2.1 sets "
+                      f"out the formula and the data source behind each")
+        first += '.'
+    elif operational:
+        first += (f", and {AVAIL_OPERATIONAL_NAME.lower()} of "
+                  f"<b>{_fmt_pct(operational['value'])}</b> (no contractual "
+                  f"figure could be calculated for this period).")
+    else:
+        first += '.'
+    auto = [
+        first,
+        (f"Across {g.get('n_blocks', 0)} blocks the site discharged "
+         f"<b>{_fmt_num(g.get('total_discharge_mwh'))} MWh</b> from "
+         f"<b>{_fmt_num(g.get('total_charge_mwh'))} MWh</b> of charging — about "
+         f"<b>{float(g.get('total_efc_fleet') or 0):.0f} full cycles</b> in total "
+         f"(roughly {_fmt_num(g.get('avg_efc_per_block'))} per block)."),
+        (f"<b>{g.get('n_prod_alarms_genuine', 0):,}</b> faults that affected "
+         f"production were recorded, alongside "
+         f"{g.get('n_warn_persistent_genuine', 0):,} standing warnings "
+         f"(brief, self-clearing alarms are not counted; faults and alarms on "
+         f"blocks under a planned or manual stop are also excluded)."),
+    ]
+    n_anomalies = g.get('n_anomalies') or 0
+    if n_anomalies:
+        auto.append(f"<b>{n_anomalies}</b> block(s) performed below the rest of "
+                    f"the site and are worth keeping an eye on.")
+    days_excluded = g.get('days_excluded') or 0
+    if days_excluded and float(days_excluded) > 0:
+        auto.append(f"On average <b>{_fmt_num(days_excluded)}</b> day(s) per "
+                    f"block had no usable charge/discharge data and were left "
+                    f"out of the figures.")
+    items = g.get('open_action_items') or []
+    if items:
+        n_overdue = sum(1 for it in items if it.get('overdue'))
+        auto.append(f"<b>{len(items)}</b> action item(s) remain open"
+                    + (f", {n_overdue} of them past the due date" if n_overdue else '')
+                    + "; they are listed with owner and due date in section 6.")
+    return auto
+
+
+def build_executive_summary(g):
+    """Review item 45: one page at the front — KPI status, top risks, major
+    incidents, repeated faults, open actions and the support needed from the
+    EPC / OEM / NDC. Every line comes from the data or from a field the owner
+    filled; where a field is empty the section says so."""
+    figs = availability_figures(g)
+    contractual = next((f for f in figs if f['key'] == 'contractual'), None)
+    operational = next((f for f in figs if f['key'] == 'operational'), None)
+    blocks = []
+
+    lead = (f"During <b>{g.get('period_str', '')}</b> the "
+            f"{g.get('site_name', '')} site ({g.get('n_blocks', 0)} blocks) "
+            f"discharged <b>{_fmt_num(g.get('total_discharge_mwh'))} MWh</b> "
+            f"from <b>{_fmt_num(g.get('total_charge_mwh'))} MWh</b> of "
+            f"charging at a round-trip efficiency of "
+            f"<b>{_fmt_pct(g.get('fleet_rte'))}</b>. ")
+    if contractual:
+        lead += (f"{AVAIL_CONTRACTUAL_NAME} — the contractual SLA figure — was "
+                 f"<b>{_fmt_pct(contractual['value'])}</b>")
+        if operational:
+            lead += (f"; {AVAIL_OPERATIONAL_NAME.lower()}, the stricter "
+                     f"unweighted view, was "
+                     f"<b>{_fmt_pct(operational['value'])}</b>")
+        lead += '. '
+    elif operational:
+        lead += (f"{AVAIL_OPERATIONAL_NAME} was "
+                 f"<b>{_fmt_pct(operational['value'])}</b>. ")
+    lead += ('Each availability figure is named for what it measures '
+             'throughout this report; 4.2.1 gives the formula, the data '
+             'source and the value of every indicator.')
+    blocks.append(('p', lead))
+
+    # ── KPI status ────────────────────────────────────────────────────────
+    kpi_rows = []
+    if contractual:
+        kpi_rows.append([
+            AVAIL_CONTRACTUAL_NAME, _fmt_pct(contractual['value']),
+            f'≥ {SLA_AVAIL_TARGET_PCT:.0f}%',
+            'Met' if contractual['value'] >= SLA_AVAIL_TARGET_PCT else 'Not met'])
+    plant = next((f for f in figs if f['key'] == 'plant'), None)
+    if plant:
+        kpi_rows.append([AVAIL_PLANT_NAME, _fmt_pct(plant['value']),
+                         'reference', '—'])
+    if operational:
+        kpi_rows.append([AVAIL_OPERATIONAL_NAME, _fmt_pct(operational['value']),
+                         'reference', '—'])
+    rte = g.get('fleet_rte')
+    if rte is not None:
+        kpi_rows.append(['Round-trip efficiency', _fmt_pct(rte),
+                         f'≥ {RTE_TARGET_PCT:.0f}%',
+                         'Met' if float(rte) >= RTE_TARGET_PCT else 'Not met'])
+    kpi_rows.append(['Average state of charge', _fmt_pct(g.get('avg_soc_pct')),
+                     'reference', '—'])
+    kpi_rows.append(['State of health (month end)',
+                     _fmt_pct(g.get('avg_soh_pct')), 'reference', '—'])
+    yt = float(g.get('yearly_cycle_target') or 365.0) or 365.0
+    cyc = g.get('avg_efc_per_block')
+    kpi_rows.append([
+        'Cycles in the month (per block)', _fmt_num(cyc),
+        f'{yt:.0f} per year (budget)',
+        (f'{float(cyc) / yt * 100:.1f}% of the annual budget'
+         if cyc is not None and not pd.isna(cyc) else '—')])
+    blocks.append(('h3', 'KPI status'))
+    blocks.append(('table', ['Indicator', 'This period', 'Target', 'Status'],
+                   kpi_rows, [58, 26, 40, 46]))
+
+    # ── Top risks ─────────────────────────────────────────────────────────
+    risks = []
+    rank = per_block_availability(g)
+    rested = {int(b) for b in (g.get('rested_blocks') or set())}
+    worst = [r for r in rank if int(r['block']) not in rested]
+    if worst and worst[0]['availability_pct'] < 99.0:
+        risks.append(
+            f"Block {int(worst[0]['block'])} had the lowest "
+            f"{AVAIL_OPERATIONAL_NAME.lower()} of the fleet at "
+            f"{_fmt_pct(worst[0]['availability_pct'])} "
+            f"({_fmt_num(worst[0]['unavailable_h'])} h unavailable).")
+    n_below = g.get('n_blocks_below_target') or 0
+    if n_below:
+        risks.append(f"{n_below} block(s) finished the month with a round-trip "
+                     f"efficiency below the {RTE_TARGET_PCT:.0f}% target.")
+    n_anom = g.get('n_anomalies') or 0
+    if n_anom:
+        risks.append(f"{n_anom} block(s) performed below the rest of the site "
+                     f"and are listed in section 4.")
+    overdue = [it for it in (g.get('open_action_items') or []) if it.get('overdue')]
+    if overdue:
+        risks.append(f"{len(overdue)} action item(s) are past their due date.")
+    streams = g.get('data_streams') or []
+    dates = g.get('dates') or []
+    if streams and dates:
+        n_period = (pd.Timestamp(dates[-1]) - pd.Timestamp(dates[0])).days + 1
+        thin = [s['label'] for s in streams if len(s['days']) < n_period]
+        if thin:
+            risks.append(
+                'Incomplete data set: ' + ', '.join(thin[:3])
+                + (f' and {len(thin) - 3} other(s)' if len(thin) > 3 else '')
+                + ' do not cover the whole reporting period (see 4.5).')
+    if not risks:
+        risks.append('No material risk was identified from this period\'s data.')
+    blocks.append(('h3', 'Top risks'))
+    blocks.append(('bullets', risks))
+
+    # ── Major incidents ───────────────────────────────────────────────────
+    blocks.append(('h3', 'Major incidents'))
+    brk = g.get('breakdown_rows') or []
+    if brk:
+        inc = sorted(brk, key=lambda r: -(r.get('downtime_h') or 0))[:3]
+        blocks.append(('bullets', [
+            (f"{r.get('incident', '')} — block(s) {r.get('blocks', '—')}, "
+             f"{str(r.get('date_time', ''))[:16]}"
+             + (f", {r['downtime_h']:.1f} h downtime"
+                if r.get('downtime_h') is not None else ''))
+            for r in inc]))
+    else:
+        blocks.append(('p', 'No breakdown incident was recorded in the '
+                            'reporting period.'))
+
+    # ── Repeated faults ───────────────────────────────────────────────────
+    blocks.append(('h3', 'Repeated faults'))
+    fs = g.get('faults_summary')
+    if fs is not None and not getattr(fs, 'empty', True):
+        top = fs.sort_values('occurrences', ascending=False).head(3)
+        blocks.append(('bullets', [
+            (f"{r['reason']} ({r['subsystem']}): "
+             f"{int(r['occurrences'])} occurrence(s), "
+             f"{r['total_hours']:.1f} h, blocks {r['blocks_affected']}")
+            for _, r in top.iterrows()]))
+    else:
+        blocks.append(('p', 'No recurring production fault was recorded in '
+                            'the reporting period.'))
+
+    # ── Open actions ──────────────────────────────────────────────────────
+    blocks.append(('h3', 'Open actions'))
+    items = g.get('open_action_items') or []
+    if items:
+        blocks.append(('p',
+            f'<b>{len(items)}</b> open item(s) on the project action list'
+            + (f', <b>{len(overdue)}</b> past the due date' if overdue else '')
+            + '. The full list, with owner and due date, is in section 6.'))
+    else:
+        blocks.append(('p', g.get('open_action_note')
+                       or 'No open action items are recorded for this project.'))
+
+    # ── Support required ──────────────────────────────────────────────────
+    blocks.append(('h3', 'Support required from EPC / OEM / NDC'))
+    sup = _support_requests(g)
+    if sup:
+        blocks.append(('bullets', sup))
+    else:
+        blocks.append(('p', 'No request for external support was recorded for '
+                            'this period.'))
+
+    # ── Data quality, one line ────────────────────────────────────────────
+    blocks.append(('h3', 'Data quality'))
+    if streams and dates:
+        n_period = (pd.Timestamp(dates[-1]) - pd.Timestamp(dates[0])).days + 1
+        full = sum(1 for s in streams if len(s['days']) >= n_period)
+        gaps = sum(s['gaps'] for s in streams)
+        blocks.append(('p',
+            f'{full} of {len(streams)} SCADA data set(s) cover all '
+            f'{n_period} day(s) of the reporting period; {gaps} gap(s) longer '
+            f'than one hour were found. Section 4.5 states the coverage of '
+            f'each export and how missing data was treated.'))
+    else:
+        blocks.append(('p', 'No coverage information could be derived for this '
+                            'period\'s data set (see 4.5).'))
+    return blocks
+
+
+# ── Renderers: one model, two outputs ────────────────────────────────────────
+
+def _markup(s) -> str:
+    """Escape a section-model string for reportlab while keeping the <b>/<i>
+    tags the model is allowed to carry. The text interpolates data — a project
+    name or an action item holding an '&' would otherwise abort the PDF
+    build, which is exactly how _xml came to exist."""
+    return (_xml(s)
+            .replace('&lt;b&gt;', '<b>').replace('&lt;/b&gt;', '</b>')
+            .replace('&lt;i&gt;', '<i>').replace('&lt;/i&gt;', '</i>'))
+
+
+def _render_blocks_pdf(story, blocks):
+    """Render a section model into a reportlab story."""
+    for b in blocks or []:
+        kind = b[0]
+        if kind == 'h3':
+            story.append(Paragraph('<b>' + _xml(b[1]) + '</b>', STYLE_H3))
+            story.append(Spacer(1, 1 * mm))
+        elif kind == 'p':
+            story.append(Paragraph(_markup(b[1]), STYLE_BODY))
+            story.append(Spacer(1, 2 * mm))
+        elif kind == 'small':
+            story.append(Paragraph('<i>' + _markup(b[1]) + '</i>', STYLE_SMALL))
+            story.append(Spacer(1, 2 * mm))
+        elif kind == 'bullets':
+            for line in b[1]:
+                story.append(Paragraph('•  ' + _markup(line), STYLE_BODY))
+            story.append(Spacer(1, 2 * mm))
+        elif kind == 'table':
+            headers, rows = b[1], b[2]
+            widths = b[3] if len(b) > 3 else None
+            story.append(_styled_table(
+                [_xml(h) for h in headers],
+                [[_markup(c) for c in r] for r in rows],
+                col_widths=[w * mm for w in widths] if widths else None))
+            story.append(Spacer(1, 3 * mm))
+    return story
+
+
+def _render_blocks_docx(doc, blocks):
+    """Render the same section model into a python-docx document."""
+    from services.docx_renderer import (add_heading, add_paragraph,
+                                        add_styled_table, add_caption)
+    for b in blocks or []:
+        kind = b[0]
+        if kind == 'h3':
+            add_heading(doc, b[1], level=3)
+        elif kind == 'p':
+            add_paragraph(doc, b[1])
+        elif kind == 'small':
+            add_caption(doc, re.sub(r'</?[bi]>', '', b[1]))
+        elif kind == 'bullets':
+            for line in b[1]:
+                add_paragraph(doc, '•  ' + line)
+        elif kind == 'table':
+            add_styled_table(doc, b[1], b[2])
+    return doc
+
+
 def generate_tashkent_report(
     working_status_path,
     pcs_cd_path,
@@ -2369,6 +3396,27 @@ def generate_tashkent_report(
     report_month = dates[0].strftime('%B %Y')
     n_blocks = daily_kpi['block'].nunique()
 
+    # Inputs for the customer-review sections (see the section-model block
+    # above). Gathered once here so the PDF and the DOCX render the same
+    # thing, and defensively — a section that cannot be built says so, it
+    # never stops the report. None of this touches a KPI.
+    open_action_items, open_action_note = read_open_actions(project_id)
+    if open_action_items:
+        log(f"Action list: {len(open_action_items)} open item(s) for the report")
+    elif open_action_note:
+        log(f"Action list: {open_action_note}")
+    try:
+        data_streams = build_data_coverage(locals())
+    except Exception as e:                                      # noqa: BLE001
+        log(f"Note: could not summarise data coverage: {e}")
+        data_streams = []
+    for _s in data_streams:
+        _n_period = (pd.Timestamp(dates[-1]) - pd.Timestamp(dates[0])).days + 1
+        if len(_s['days']) < _n_period:
+            log(f"  ⚠  data coverage: {_s['label']} covers {len(_s['days'])} "
+                f"of {_n_period} day(s) of the reporting period "
+                f"({_s['rows']:,} rows, ends {_s['last']}) — reported in 4.5")
+
     # Equipment history: keep this month's alarms instead of discarding them
     # once the report is written. Idempotent, so re-running the report for the
     # same month changes nothing. Never let it break report generation.
@@ -2537,6 +3585,14 @@ def generate_tashkent_report(
                   report_number=report_number, prepared_by=prepared_by,
                   reviewed_by=reviewed_by)
 
+    # ── EXECUTIVE SUMMARY (review item 45) ───────────────────────────────
+    # Unnumbered and first, so the numbered sections the customer already
+    # refers to by number keep their numbers.
+    story.append(_section('Executive Summary', ''))
+    story.append(Spacer(1, 3*mm))
+    _render_blocks_pdf(story, build_executive_summary(locals()))
+    story.append(_hr())
+
     # ── 1. PROJECT DETAILS ───────────────────────────────────────────────
     story.append(_section('1.  Project Details', ''))
     story.append(Spacer(1, 3*mm))
@@ -2568,23 +3624,28 @@ def generate_tashkent_report(
     )
     if contractual_avail and contractual_avail.get('availability_pct') is not None:
         summary += (
-            f"BESS availability for the period was "
+            f"Contractual BESS availability for the period was "
             f"<b>{contractual_avail['availability_pct']:.2f}%</b> "
-            f"(contractual method — capacity-weighted, counting only genuine "
-            f"fault-shutdown time). "
+            f"(the SLA figure — capacity-weighted, counting only genuine "
+            f"fault-shutdown time, with agreed planned work excluded). "
         )
     if plant_avail and plant_avail.get('plant_availability_pct') is not None:
         summary += (
-            f"Allowing for spare capacity the site met its contracted output "
-            f"<b>{plant_avail['plant_availability_pct']:.2f}%</b> of the time, "
-            f"and the simple average across individual blocks was "
-            f"<b>{fleet_availability_container:.2f}%</b>. "
+            f"{AVAIL_PLANT_NAME}, which credits the plant's spare capacity, "
+            f"was <b>{plant_avail['plant_availability_pct']:.2f}%</b>, and "
+            f"{AVAIL_OPERATIONAL_NAME.lower()} — the unweighted mean of each "
+            f"block's daily available time, with no exclusions applied — was "
+            f"<b>{fleet_availability_container:.2f}%</b>. These are three "
+            f"different measures of the same month, not three attempts at one "
+            f"number; 4.2.1 gives the formula, the data source and the value "
+            f"of each. "
         )
     elif not contractual_avail:
         summary += (
-            f"Average availability across blocks was "
+            f"{AVAIL_OPERATIONAL_NAME} was "
             f"<b>{fleet_availability_container:.2f}%</b> ({avail_status} the 95% "
-            f"target). "
+            f"target). No contractual figure could be calculated for this "
+            f"period. "
         )
     summary += (
         f"Average state of charge was <b>{avg_soc_pct:.2f}%</b> and average "
@@ -2682,6 +3743,9 @@ def generate_tashkent_report(
     ))
     story.append(Spacer(1, 3*mm))
 
+    # Cycle definition (review item 10) — says what the code above actually did
+    _render_blocks_pdf(story, build_cycle_definition(locals()))
+
     # Cycles block-wise (from CMU snapshot if supplied)
     if not cycles_snap.empty:
         month_name_only = dates[0].strftime('%B')   # e.g. "March"
@@ -2737,11 +3801,14 @@ def generate_tashkent_report(
                 STYLE_SMALL))
             story.append(Spacer(1, 2*mm))
 
+    # Availability: name each measure before the figures (review item 16)
+    _render_blocks_pdf(story, build_availability_definitions(locals()))
+
     # Contractual availability (primary SLA metric)
     if contractual_avail and contractual_avail.get('availability_pct') is not None:
         ca = contractual_avail
         _refined = (ca.get('method') == 'pcs_unit')
-        story.append(Paragraph('<b>Contractual Availability</b>', STYLE_H3))
+        story.append(Paragraph(f'<b>{AVAIL_CONTRACTUAL_NAME}</b>', STYLE_H3))
         story.append(Paragraph(
             'This is the contractual measure of BESS availability. A unit '
             'counts as unavailable only for the time it spent in a genuine '
@@ -2761,7 +3828,7 @@ def generate_tashkent_report(
              if ca.get('used_unit_fault') else ''),
             STYLE_BODY))
         story.append(Paragraph(
-            f'Availability = 1 &#8722; (fault-shutdown time &#215; capacity out '
+            f'{AVAIL_CONTRACTUAL_NAME} = 1 &#8722; (fault-shutdown time &#215; capacity out '
             f'of service) &#247; (hours in period &#215; installed nameplate) '
             f'= 1 &#8722; ({ca["down_unit_hours"]:,.1f} {ca["unit_label"]}-h '
             f'&#215; {ca["unit_capacity_kwh"]/1000:.3f} MWh) &#247; '
@@ -2810,9 +3877,10 @@ def generate_tashkent_report(
         'below that threshold; planned-maintenance hours are removed from the '
         'clock so they do not count against the figure. The <b>plant-level '
         'availability</b> row applies this redundancy credit, while '
-        '<b>container-level availability</b> is the stricter view that adds up '
-        'every block-hour of downtime with no credit for spare capacity — so '
-        'it is always the lower of the two.',
+        '<b>operational availability (container-level)</b> is the stricter '
+        'view that adds up every block-hour of downtime with no credit for '
+        'spare capacity and no exclusions — so it is always the lowest of the '
+        'three. Neither replaces the contractual figure above.',
         STYLE_BODY))
     story.append(Spacer(1, 2*mm))
     if plant_avail:
@@ -2830,9 +3898,9 @@ def generate_tashkent_report(
                 'n/a (plant capacity not configured)'],
         ]
         if plant_avail.get('plant_availability_pct') is not None:
-            rows.append(['<b>Plant-level availability</b>',
+            rows.append([f'<b>{AVAIL_PLANT_NAME}</b>',
                 f"<b>{plant_avail['plant_availability_pct']:.2f}%</b>"])
-        rows.append(['Container-level availability (current engine)',
+        rows.append([AVAIL_OPERATIONAL_NAME,
                 f"{fleet_availability_container:.2f}%"])
         if plant_avail.get('excluded_effective', 0) > 0:
             rows.append([
@@ -2922,7 +3990,10 @@ def generate_tashkent_report(
         f'<b>{total_discharge_mwh:,.1f} MWh &#247; {total_charge_mwh:,.1f} MWh '
         f'= {fleet_rte:.2f}%</b>.',
         STYLE_SMALL))
-    story.append(Spacer(1, 4*mm))
+    story.append(Spacer(1, 3*mm))
+
+    # 4.2.1 KPI calculation summary (review items 3 and 16)
+    _render_blocks_pdf(story, build_kpi_methodology(locals()))
     story.append(_fig_to_image(_chart_soc_trend(socsoh), 170, 55))
     story.append(Paragraph('Graph 3: Site-wide average SOC trend (daily)', STYLE_CAP))
     story.append(Spacer(1, 4*mm))
@@ -2952,7 +4023,10 @@ def generate_tashkent_report(
             'Only current month available — subsequent runs will populate '
             'this trend automatically (history stored in '
             'data/monthly_history.json).', STYLE_SMALL))
-    story.append(Spacer(1, 4*mm))
+    story.append(Spacer(1, 3*mm))
+
+    # RTE variance commentary (review item 19)
+    _render_blocks_pdf(story, build_rte_variance(locals()))
 
     # 4.4 System availability
     story.append(Paragraph('<b>4.4  System Availability</b>', STYLE_H3))
@@ -2972,6 +4046,9 @@ def generate_tashkent_report(
          'reflected here.' if manual_unavailability else ''),
         STYLE_CAP))
     story.append(Spacer(1, 3*mm))
+
+    # Lowest-availability blocks, beside the heatmap (review item 20)
+    _render_blocks_pdf(story, build_lowest_availability_blocks(locals()))
 
     # 4.4.1 Unavailability reasons — only the red (did-not-operate) days, kept
     # compact so the table stays readable.
@@ -3085,6 +4162,9 @@ def generate_tashkent_report(
             f'read from the monthly figure, which balances all of the month\'s '
             f'charging and discharging.', STYLE_BODY))
     story.append(Spacer(1, 3*mm))
+
+    # 4.5 SCADA data quality and coverage (review item 44)
+    _render_blocks_pdf(story, build_data_quality(locals()))
     story.append(_hr())
 
     # ── 5. SYSTEM OPERATION (Faults + Alarms) ────────────────────────────
@@ -3411,34 +4491,19 @@ def generate_tashkent_report(
         for v in site_visits: story.append(Paragraph(f'•  {v}', STYLE_BODY))
     else:
         story.append(Paragraph('No site visits recorded.', STYLE_BODY))
+    story.append(Spacer(1, 4*mm))
+
+    # Open issues and action tracker (review item 43) — a read-out of the
+    # project's own action list, not a second tracker.
+    _render_blocks_pdf(story, build_action_tracker(locals()))
     story.append(_hr())
 
     # ── 7. CONCLUSIONS ───────────────────────────────────────────────────
     story.append(_section('7.  Conclusions and Recommendations', ''))
     story.append(Spacer(1, 3*mm))
-    auto = [
-        (f"The site averaged a round-trip efficiency of <b>{fleet_rte:.2f}%</b> "
-         f"({rte_status} the 85% target), with an average availability of "
-         f"<b>{fleet_availability_container:.2f}%</b>."),
-        (f"Across {n_blocks} blocks the site discharged "
-         f"<b>{total_discharge_mwh:,.1f} MWh</b> from "
-         f"<b>{total_charge_mwh:,.1f} MWh</b> of charging — about "
-         f"<b>{total_efc_fleet:.0f} full cycles</b> in total "
-         f"(roughly {avg_efc_per_block:.1f} per block)."),
-        (f"<b>{n_prod_alarms_genuine:,}</b> faults that affected production were "
-         f"recorded, alongside {n_warn_persistent_genuine:,} standing warnings "
-         f"(brief, self-clearing alarms are not counted; faults and alarms on "
-         f"blocks under a planned or manual stop are also excluded)."),
-    ]
-    if n_anomalies:
-        auto.append(f"<b>{n_anomalies}</b> block(s) performed below the rest of "
-                     f"the site and are worth keeping an eye on.")
-    if days_excluded > 0:
-        auto.append(f"On average <b>{days_excluded:.1f}</b> day(s) per block had "
-                     f"no usable charge/discharge data and were left out of the "
-                     f"figures.")
+    auto = _conclusion_lines(locals())
     for i, t in enumerate(auto, 1):
-        story.append(Paragraph(f'{i}.  {t}', STYLE_BODY))
+        story.append(Paragraph(_markup(f'{i}.  {t}'), STYLE_BODY))
         story.append(Spacer(1, 2*mm))
     if recommendations:
         story.append(Spacer(1, 3*mm))
@@ -3577,6 +4642,12 @@ def _build_tashkent_docx(output_path, _ctx):
     doc = make_doc()
     add_cover(doc, report_month, site_name, n_blocks, period_str)
 
+    # Executive Summary (review item 45) — unnumbered and first, so the
+    # numbered sections keep the numbers the customer refers to.
+    add_section_banner(doc, 'Executive Summary')
+    _render_blocks_docx(doc, build_executive_summary(g))
+    add_hr(doc)
+
     # 1. Project Details
     add_section_banner(doc, '1.  Project Details')
     rows = [['Project name', site_name],
@@ -3596,22 +4667,28 @@ def _build_tashkent_docx(output_path, _ctx):
            f"round-trip efficiency was <b>{fleet_rte:.2f}%</b> "
            f"({rte_status} the 85% target). ")
     if contractual_avail and contractual_avail.get('availability_pct') is not None:
-        sm += (f"BESS availability for the period was "
+        sm += (f"Contractual BESS availability for the period was "
                 f"<b>{contractual_avail['availability_pct']:.2f}%</b> "
-                f"(contractual method — capacity-weighted, counting only "
-                f"genuine fault-shutdown time). ")
+                f"(the SLA figure — capacity-weighted, counting only genuine "
+                f"fault-shutdown time, with agreed planned work excluded). ")
     if plant_avail and plant_avail.get('plant_availability_pct') is not None:
-        sm += (f"Allowing for spare capacity the site met its contracted output "
-                f"<b>{plant_avail['plant_availability_pct']:.2f}%</b> of the time, "
-                f"and the simple average across blocks was "
-                f"<b>{fleet_availability_container:.2f}%</b>. ")
+        sm += (f"{AVAIL_PLANT_NAME}, which credits the plant's spare capacity, "
+                f"was <b>{plant_avail['plant_availability_pct']:.2f}%</b>, and "
+                f"{AVAIL_OPERATIONAL_NAME.lower()} — the unweighted mean of "
+                f"each block's daily available time, with no exclusions "
+                f"applied — was "
+                f"<b>{fleet_availability_container:.2f}%</b>. These are three "
+                f"different measures of the same month, not three attempts at "
+                f"one number; 4.2.1 gives the formula, the data source and the "
+                f"value of each. ")
         if plant_avail.get('contractual_plant_capacity_mw'):
             sm += (f"Contracted capacity: "
                     f"<b>{plant_avail['contractual_plant_capacity_mw']:.1f} MW</b>. ")
     elif not contractual_avail:
-        sm += (f"Average availability across blocks was "
+        sm += (f"{AVAIL_OPERATIONAL_NAME} was "
                 f"<b>{fleet_availability_container:.2f}%</b> "
-                f"({avail_status} the 95% target). ")
+                f"({avail_status} the 95% target). No contractual figure could "
+                f"be calculated for this period. ")
     sm += (f"Average state of charge was <b>{avg_soc_pct:.2f}%</b> and average "
             f"state of health (at month end) <b>{avg_soh_pct:.2f}%</b>. The "
             f"blocks completed about <b>{total_efc_fleet:.0f}</b> full charge / "
@@ -3677,6 +4754,9 @@ def _build_tashkent_docx(output_path, _ctx):
           f'{annual_accum:.1f}', f'{annual_accum/yt*100:.2f}%'],
          ['3', 'Accumulative Number of Cycles',
           f'{accum_lifetime:.1f}', f'{accum_lifetime/yt*100:.2f}%']])
+
+    # Cycle definition (review item 10)
+    _render_blocks_docx(doc, build_cycle_definition(g))
 
     # Cycles block-wise — picture-style chunked layout (10 blocks per table)
     cycles_snap_local = g.get('cycles_snap')
@@ -3756,10 +4836,13 @@ def _build_tashkent_docx(output_path, _ctx):
                 f'availability.',
                 italic=True)
 
+    # Availability: name each measure before the figures (review item 16)
+    _render_blocks_docx(doc, build_availability_definitions(g))
+
     if contractual_avail and contractual_avail.get('availability_pct') is not None:
         ca = contractual_avail
         _refined = (ca.get('method') == 'pcs_unit')
-        add_heading(doc, 'Contractual Availability', level=3)
+        add_heading(doc, AVAIL_CONTRACTUAL_NAME, level=3)
         add_paragraph(doc,
             'This is the contractual measure of BESS availability. A unit '
             'counts as unavailable only for the time it spent in a genuine '
@@ -3778,7 +4861,7 @@ def _build_tashkent_docx(output_path, _ctx):
              'captured even when its LC reads healthy.'
              if ca.get('used_unit_fault') else ''))
         add_paragraph(doc,
-            f"Availability = 1 − (fault-shutdown time × capacity out "
+            f"{AVAIL_CONTRACTUAL_NAME} = 1 − (fault-shutdown time × capacity out "
             f"of service) ÷ (hours in period × installed nameplate) "
             f"= 1 − ({ca['down_unit_hours']:,.1f} {ca['unit_label']}-h × "
             f"{ca['unit_capacity_kwh']/1000:.3f} MWh) ÷ "
@@ -3825,10 +4908,11 @@ def _build_tashkent_docx(output_path, _ctx):
             'its available capacity drops below that threshold; '
             'planned-maintenance hours are removed from the clock so they do '
             'not count against the figure. The "plant-level availability" row '
-            'applies this redundancy credit, while "container-level '
-            'availability" is the stricter view that adds up every block-hour '
-            'of downtime with no credit for spare capacity — so it is always '
-            'the lower of the two.')
+            'applies this redundancy credit, while "operational availability '
+            '(container-level)" is the stricter view that adds up every '
+            'block-hour of downtime with no credit for spare capacity and no '
+            'exclusions — so it is always the lowest of the three. Neither '
+            'replaces the contractual figure above.')
         sched = plant_avail['scheduled_hours']
         plant_out = plant_avail.get('plant_outage_hours')
         cont_out  = plant_avail['container_outage_hours']
@@ -3848,9 +4932,9 @@ def _build_tashkent_docx(output_path, _ctx):
             label = 'Contractual threshold' if plant_avail.get('contractual_plant_capacity_mw') else 'Redundancy threshold'
             a_rows.append([label, f"{plant_avail['threshold_mw']:.1f} MW"])
         if plant_avail.get('plant_availability_pct') is not None:
-            a_rows.append(['Plant-level availability',
+            a_rows.append([AVAIL_PLANT_NAME,
                 f"{plant_avail['plant_availability_pct']:.2f}%"])
-        a_rows.append(['Container-level availability',
+        a_rows.append([AVAIL_OPERATIONAL_NAME,
             f"{fleet_availability_container:.2f}%"])
         if plant_avail.get('excluded_effective', 0) > 0:
             a_rows.append([
@@ -3923,6 +5007,10 @@ def _build_tashkent_docx(output_path, _ctx):
         f'charged over the month = {total_discharge_mwh:,.1f} MWh ÷ '
         f'{total_charge_mwh:,.1f} MWh = {fleet_rte:.2f}%.',
         size=8, italic=True)
+
+    # 4.2.1 KPI calculation summary (review items 3 and 16)
+    _render_blocks_docx(doc, build_kpi_methodology(g))
+
     add_image_from_fig(doc, _chart_soc_trend(socsoh))
     add_caption(doc, 'Graph 3: Site-wide average SOC trend (daily)')
 
@@ -3943,6 +5031,9 @@ def _build_tashkent_docx(output_path, _ctx):
             ['Month', 'SOC', 'SOH', 'RTE', 'Cycles',
              'Discharge (MWh)', 'Charge (MWh)'], cmp_rows)
 
+    # RTE variance commentary (review item 19)
+    _render_blocks_docx(doc, build_rte_variance(g))
+
     add_heading(doc, '4.4  System Availability', level=3)
     add_image_from_fig(doc, _chart_availability_heatmap_categorical(
         g.get('container_day_status'),
@@ -3957,6 +5048,9 @@ def _build_tashkent_docx(output_path, _ctx):
         'faults were recorded. Hatched = planned exclusion window.' +
         (' Unavailability reported by the operator (see 4.4.1) is also '
          'reflected here.' if g.get('manual_unavailability') else ''))
+
+    # Lowest-availability blocks, beside the heatmap (review item 20)
+    _render_blocks_docx(doc, build_lowest_availability_blocks(g))
 
     # 4.4.1 Unavailability reasons — only red (did-not-operate) days, kept compact
     unavail_reasons = g.get('unavail_reasons')
@@ -4049,6 +5143,9 @@ def _build_tashkent_docx(output_path, _ctx):
             f'counters line up — not a real loss of efficiency. Efficiency is '
             f'read from the monthly figure, which balances all of the month\'s '
             f'charging and discharging.')
+
+    # 4.5 SCADA data quality and coverage (review item 44)
+    _render_blocks_docx(doc, build_data_quality(g))
     add_hr(doc)
 
     # 5. System Operation
@@ -4300,32 +5397,15 @@ def _build_tashkent_docx(output_path, _ctx):
         for v in site_visits: add_paragraph(doc, f'•  {v}')
     else:
         add_paragraph(doc, 'No site visits recorded.')
+
+    # Open issues and action tracker (review item 43) — a read-out of the
+    # project's own action list, not a second tracker.
+    _render_blocks_docx(doc, build_action_tracker(g))
     add_hr(doc)
 
     # 7. Conclusions
     add_section_banner(doc, '7.  Conclusions and Recommendations')
-    auto = [
-        (f"The site averaged a round-trip efficiency of <b>{fleet_rte:.2f}%</b> "
-         f"({rte_status} the 85% target), with an average availability of "
-         f"<b>{fleet_availability_container:.2f}%</b>."),
-        (f"Across {n_blocks} blocks the site discharged "
-         f"<b>{total_discharge_mwh:,.1f} MWh</b> from "
-         f"<b>{total_charge_mwh:,.1f} MWh</b> of charging — about "
-         f"<b>{total_efc_fleet:.0f} full cycles</b> in total "
-         f"(roughly {avg_efc_per_block:.1f} per block)."),
-        (f"<b>{n_prod_alarms_genuine:,}</b> faults that affected production were "
-         f"recorded, alongside {n_warn_persistent_genuine:,} standing warnings "
-         f"(brief, self-clearing alarms are not counted; faults and alarms on "
-         f"blocks under a planned or manual stop are also excluded)."),
-    ]
-    if n_anomalies:
-        auto.append(f"<b>{n_anomalies}</b> block(s) performed below the rest of "
-                     f"the site and are worth keeping an eye on.")
-    if days_excluded > 0:
-        auto.append(f"On average <b>{days_excluded:.1f}</b> day(s) per block had "
-                     f"no usable charge/discharge data and were left out of the "
-                     f"figures.")
-    for i, t in enumerate(auto, 1):
+    for i, t in enumerate(_conclusion_lines(g), 1):
         add_paragraph(doc, f'{i}.  {t}')
     if recommendations:
         add_heading(doc, 'Recommendations & Mitigation Strategies', level=3)

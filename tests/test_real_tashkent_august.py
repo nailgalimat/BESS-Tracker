@@ -158,6 +158,47 @@ avail = float(m.group(1)) if m else None
 H.check(avail is not None and abs(avail - GOLDEN['availability_pct']) < 0.005,
         'BESS availability {}% (accepted {}%)'.format(avail, GOLDEN['availability_pct']))
 
+print('\n=== each availability figure is named for what it is (review item 16) ===')
+# The customer read 98.05 % on page 7 and 95.38 % in clause 7, both labelled
+# only "availability". Each figure now carries its own name, and no figure may
+# be printed after a bare "availability of / was".
+import services.tashkent_report_service as _T                      # noqa: E402
+_plain = re.sub(r'</?b>', '', txt)
+H.check(_T.AVAIL_CONTRACTUAL_NAME in _plain,
+        'the contractual figure is named "{}"'.format(_T.AVAIL_CONTRACTUAL_NAME))
+H.check(_T.AVAIL_OPERATIONAL_NAME in _plain,
+        'the unweighted figure is named "{}"'.format(_T.AVAIL_OPERATIONAL_NAME))
+H.check('an average availability of' not in _plain,
+        'the old "an average availability of X%" conclusion is gone')
+_bare = [m.group(0) for m in re.finditer(
+    r'(?<![\w-])availability\s+(?:of|was|is|for the period was)\s*(\d{1,3}\.\d{1,2})\s*%',
+    _plain, re.IGNORECASE)
+    if not any(q in _plain[max(0, m.start() - 70):m.start()].lower()
+               for q in ('contractual', 'operational', 'plant-level', 'container-level'))]
+H.check(not _bare, 'no figure printed as a bare "availability": {}'.format(
+    _bare[:3] or 'none'))
+
+print('\n=== the sections the review matrix asks for every month ===')
+for _title, _what in (
+        ('Executive Summary', 'executive summary (item 45)'),
+        ('4.2.1  KPI Calculation Summary', 'KPI calculation summary (item 3)'),
+        ('Cycle definition', 'cycle definition (item 10)'),
+        ('Lowest-availability blocks', 'worst blocks beside the heatmap (item 20)'),
+        ('Open issues and action tracker', 'action tracker (item 43)'),
+        ('4.5  SCADA Data Quality and Coverage', 'data quality (item 44)'),
+        ('Round-trip efficiency: movement against previous months',
+         'RTE variance commentary (item 19)'),
+        ('Availability: three measures, three names', 'availability naming (item 16)')):
+    H.check(_title in txt, '{} — "{}"'.format(_what, _title))
+H.check('How missing data was treated' in txt and 'Coverage findings' in txt,
+        'the data-quality section states coverage and treatment')
+H.check('BMS-reported' in txt or 'equivalent full cycles' in txt,
+        'the cycle definition says which kind of cycle count this is')
+# project_id is not passed on this straight-from-the-folder run, so the
+# tracker must say so rather than print an empty table.
+H.check('The project action list was not available' in txt,
+        'no project -> the tracker says so, and prints no table')
+
 print('\n=== fault names are printed whole ===')
 # The tables used to slice names at 38-50 characters, so the customer read
 # "PCS - Converter Unit 1 Fault Status 1: AC" and never learned it was an AC
@@ -287,6 +328,18 @@ _txt2 = '\n'.join([p.text for p in Document(docx2).paragraphs]
 m2 = re.search(r'availability for the period was ([\d.]+)%', _txt2)
 H.check(m2 and abs(float(m2.group(1)) - GOLDEN['availability_pct']) < 0.005,
         'v1 availability {}% — the same as the export-folder run'.format(m2.group(1) if m2 else None))
+
+print('\n=== v1 knows the project, so the action tracker reads the real table ===')
+import services.action_list_service as _als                        # noqa: E402
+_open = _als.items(1, include_done=False)
+H.check('Open issues and action tracker' in _txt2,
+        'the tracker section is in the version generated from the data set')
+if _open:
+    H.check(all(str(it['topic'])[:40] in _txt2 for it in _open[:3]),
+            '{} open action item(s) of project 1 are printed'.format(len(_open)))
+else:
+    H.check('No open action items are recorded for this project.' in _txt2,
+            'project 1 has no open action item -> one line, no empty table')
 
 print('\n=== safety incidents reach section 6 ===')
 H.check('No safety incidents in the reporting period.' in txt,
