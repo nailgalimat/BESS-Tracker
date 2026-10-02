@@ -1737,7 +1737,16 @@ def _xml(s) -> str:
 # nothing to show returns a single ('p', …) line saying so; it never prints an
 # empty table.
 
-SLA_AVAIL_TARGET_PCT = 95.0
+# The LTSA availability target, confirmed by the owner 2026-10-02: 98 %, and it
+# is judged on the **average over the year**, not month by month. So a single
+# month below it is not a breach, and this report must not imply one: a monthly
+# Met / Not-met verdict against it would be read by the customer as a contract
+# score and would be wrong in both directions. The month's figure is reported
+# plainly, with the basis stated, until the year-to-date average can be shown —
+# which needs availability in `data/monthly_history.json`, where it is not
+# stored today (and January, February, May and July are missing outright).
+SLA_AVAIL_TARGET_PCT = 98.0
+SLA_AVAIL_IS_ANNUAL = True
 RTE_TARGET_PCT = 85.0
 
 # The three availability figures, named. Printing any of them as a bare
@@ -2549,10 +2558,13 @@ def build_executive_summary(g):
     # ── KPI status ────────────────────────────────────────────────────────
     kpi_rows = []
     if contractual:
+        # No monthly verdict while the target is an annual average — see
+        # SLA_AVAIL_TARGET_PCT. The month stands on its own figure.
         kpi_rows.append([
             AVAIL_CONTRACTUAL_NAME, _fmt_pct(contractual['value']),
-            f'≥ {SLA_AVAIL_TARGET_PCT:.0f}%',
-            'Met' if contractual['value'] >= SLA_AVAIL_TARGET_PCT else 'Not met'])
+            f'≥ {SLA_AVAIL_TARGET_PCT:.0f}% (annual average)',
+            'This month' if SLA_AVAIL_IS_ANNUAL else
+            ('Met' if contractual['value'] >= SLA_AVAIL_TARGET_PCT else 'Not met')])
     plant = next((f for f in figs if f['key'] == 'plant'), None)
     if plant:
         kpi_rows.append([AVAIL_PLANT_NAME, _fmt_pct(plant['value']),
