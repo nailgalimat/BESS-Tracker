@@ -1794,16 +1794,26 @@ def _none_block(text):
 
 
 def plant_measure_degenerate(pa) -> bool:
-    """Is the plant-level availability meaningless this period?
+    """Should the plant-level availability stay out of the customer's report?
 
-    It credits capacity above an agreed redundancy threshold. When the
-    threshold is the full plant rating, "available" means every block up at the
-    same moment, and the figure stops being an availability: September 2026
-    reads 14 % beside a contractual 99.78 %. The report withholds it rather
-    than publish a number that invites exactly the confusion the customer
-    complained about. Every place that prints the figure asks this.
+    It credits capacity above a redundancy threshold. The owner read the LTSA
+    through on 2026-10-03: **there is no such threshold in the contract** — the
+    only agreed measure is the contractual availability formula already used.
+    Without an agreed threshold the calculation falls back to the full plant
+    rating, where "available" means all 70 blocks up in the same five-minute
+    sample; September 2026 reads 14 % beside a contractual 99.78 %. Publishing
+    that would deepen exactly the confusion the customer raised in review item
+    16, where several different numbers were all called availability.
+
+    So it is published only when a contractual capacity has been set
+    deliberately, and otherwise withheld. The figure is still calculated and
+    still available internally; it just is not a contractual measure and does
+    not belong in the document that settles the month. Every place that prints
+    it asks this.
     """
     pa = pa or {}
+    if not pa.get('contractual_plant_capacity_mw'):
+        return True
     thr, cap = pa.get('threshold_mw'), pa.get('plant_capacity_mw')
     return bool(thr is not None and cap and thr >= float(cap) - 1e-6)
 
@@ -1875,13 +1885,10 @@ def build_availability_definitions(g):
     if (pa.get('plant_availability_pct') is not None
             and plant_measure_degenerate(pa)):
         blocks.append(('small',
-                       'A plant-level availability is not quoted this period. It '
-                       'credits spare capacity above an agreed redundancy '
-                       'threshold, and the threshold currently configured is the '
-                       'full plant rating, which turns the measure into "the '
-                       'share of the period when every block was available at the '
-                       'same time" rather than an availability. It will be '
-                       'reported once a redundancy threshold is agreed.'))
+                       'A plant-level availability, which would credit spare '
+                       'capacity above a redundancy threshold, is not reported: '
+                       'the LTSA defines no such threshold. The contractual '
+                       'formula above is the agreed measure for this plant.'))
     contractual = next((f for f in figs if f['key'] == 'contractual'), None)
     operational = next((f for f in figs if f['key'] == 'operational'), None)
     lead = (
