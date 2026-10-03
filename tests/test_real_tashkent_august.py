@@ -188,7 +188,10 @@ for _title, _what in (
         ('4.5  SCADA Data Quality and Coverage', 'data quality (item 44)'),
         ('Round-trip efficiency: movement against previous months',
          'RTE variance commentary (item 19)'),
-        ('Availability: three measures, three names', 'availability naming (item 16)')):
+        # The heading counts the measures actually shown — the plant-level one
+        # is withheld while no redundancy threshold is agreed — so match the
+        # stem, not a fixed number.
+        ('Availability: ', 'availability naming (item 16)')):
     H.check(_title in txt, '{} — "{}"'.format(_what, _title))
 H.check('How missing data was treated' in txt and 'Coverage findings' in txt,
         'the data-quality section states coverage and treatment')

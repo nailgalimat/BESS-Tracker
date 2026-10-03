@@ -51,6 +51,15 @@ print('   values: {} blocks, start {}, {}/day, {} h'.format(
 print('\n=== generate through the page ===')
 import ui.planner_page as pp
 pp._CampaignDialog.exec_ = lambda self: QDialog.Accepted
+# The dialog defaults to starting a few days out, and completing a job is
+# refused for a date more than a day ahead — so on the 1st of a month this test
+# scheduled work it could never mark done, and passed only later in the month.
+# Pin the campaign to today.
+import datetime as _dtm
+_orig_values = pp._CampaignDialog.values
+pp._CampaignDialog.values = (
+    lambda self: dict(_orig_values(self),
+                      start_date=_dtm.date.today().isoformat()))
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 pg._new_campaign()
@@ -63,6 +72,18 @@ print('   summary:', pg.summary.text())
 for r in range(min(4, pg.tbl.rowCount())):
     print('      ', ' | '.join(pg.tbl.item(r, c).text() for c in range(9)))
 assert pg.tbl.rowCount() > 0
+
+# The campaign starts a few days out, and completing a job is refused for a
+# date more than a day ahead — so early in the month this test used to schedule
+# work it could never mark done, and passed only later in the month. Bring the
+# jobs back to today in this disposable copy: what is under test is that
+# completing one writes pm_activities, not the date validation.
+import datetime as _dtm
+_c = dbm.get_connection()
+_c.execute("UPDATE plan_items SET planned_date=? WHERE project_id=? "
+           "AND COALESCE(actual_date,'')=''", (_dtm.date.today().isoformat(), PID))
+_c.commit(); _c.close()
+pg._reload()
 
 print('\n=== complete the first job through the page ===')
 pg.tbl.selectRow(0)

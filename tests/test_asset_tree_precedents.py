@@ -23,6 +23,14 @@ print('work_log_alarms table:', 'work_log_alarms' in tabs)
 pid = c.execute('SELECT id,name FROM projects ORDER BY id LIMIT 1').fetchone(); c.close()
 win._open_project(pid['id'], pid['name'])
 
+# This test imports August and reasons about August. The Equipment page picks
+# whichever month has the freshest data, so any later month in the snapshot
+# would silently take over and the fixture would stop matching what the page
+# shows. Drop them from this disposable copy — the test owns its own month.
+_c = dbm.get_connection()
+_c.execute("DELETE FROM alarm_events WHERE (year*100+month) > 202608")
+_c.commit(); _c.close()
+
 from ui.equipment_page import _ImportWorker
 A = r'C:\Users\user1\Desktop\ACWA BESS Tashkent\LTSA monthly report\2026\August\SCADA Raw data\Alarms report.XLSX'
 res, err = {}, []
@@ -32,7 +40,12 @@ eq = win.equipment_page; eq._rebuild(quiet=True)
 print('imported', res['inserted'], 'events')
 
 # ── grouping ──────────────────────────────────────────────────────────────
-alarms = ats.get_unreported_faults(pid['id'], 2026, 8, min_hours=1.0)
+# The page shows the newest month that has data (get_data_freshness), not a
+# fixed one, so ask for the same month or the two part company as soon as
+# another month is imported.
+_f = ats.get_data_freshness(pid['id']) or {'year': 2026, 'month': 8}
+alarms = ats.get_unreported_faults(pid['id'], int(_f['year']), int(_f['month']),
+                                   min_hours=1.0)
 inc = ats.group_faults_into_incidents(alarms)
 print('\n{} alarms -> {} incidents'.format(len(alarms), len(inc)))
 for g in inc[:6]:

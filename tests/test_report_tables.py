@@ -131,7 +131,8 @@ SECTIONS = {
     '4.5  SCADA Data Quality and Coverage': 'data quality statement (item 44)',
     'Round-trip efficiency: movement against previous months':
         'RTE variance commentary (item 19)',
-    'Availability: three measures, three names': 'availability naming (item 16)',
+    # Stem only: the heading counts the measures actually shown.
+    'Availability: ': 'availability naming (item 16)',
 }
 
 print('\n' + '=' * 60)

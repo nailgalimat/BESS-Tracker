@@ -1793,6 +1793,21 @@ def _none_block(text):
     return [('p', text)]
 
 
+def plant_measure_degenerate(pa) -> bool:
+    """Is the plant-level availability meaningless this period?
+
+    It credits capacity above an agreed redundancy threshold. When the
+    threshold is the full plant rating, "available" means every block up at the
+    same moment, and the figure stops being an availability: September 2026
+    reads 14 % beside a contractual 99.78 %. The report withholds it rather
+    than publish a number that invites exactly the confusion the customer
+    complained about. Every place that prints the figure asks this.
+    """
+    pa = pa or {}
+    thr, cap = pa.get('threshold_mw'), pa.get('plant_capacity_mw')
+    return bool(thr is not None and cap and thr >= float(cap) - 1e-6)
+
+
 def availability_figures(g):
     """The named availability figures this run produced, in report order.
     Each is a dict with name / value / basis. Reads only what the generator
@@ -1808,7 +1823,16 @@ def availability_figures(g):
             'basis': ('capacity-weighted, genuine fault-shutdown time only, '
                       'planned work and PM-covered stops removed'),
         })
-    if pa.get('plant_availability_pct') is not None:
+    # The plant-level measure only means anything when a redundancy threshold
+    # below full capacity is agreed. At 100 % it degenerates into "the fraction
+    # of the month when all 70 blocks happened to be up at once" — September
+    # 2026 reads 14 %, which beside a contractual 99.78 % looks like a
+    # catastrophe and is not an availability figure at all. The customer's whole
+    # complaint (review item 16) was that several numbers were called
+    # availability; publishing this one unqualified would make that worse. It is
+    # withheld until a threshold is configured, and 4.2.1 says so.
+    if (pa.get('plant_availability_pct') is not None
+            and not plant_measure_degenerate(pa)):
         out.append({
             'key': 'plant',
             'name': AVAIL_PLANT_NAME,
@@ -1836,10 +1860,28 @@ def build_availability_definitions(g):
     if not figs:
         return _none_block('No availability figure could be calculated for this '
                            'period — the working-status export held no usable data.')
-    blocks = [('h3', 'Availability: three measures, three names')]
+    # The heading counts what is actually shown: the plant-level measure is
+    # withheld while its redundancy threshold is the full plant rating, so a
+    # fixed "three" would promise a row that is not there.
+    _WORD = {1: 'one', 2: 'two', 3: 'three', 4: 'four'}
+    n = len(figs)
+    title = ('Availability: one measure, and what it means' if n == 1 else
+             'Availability: {0} measures, {0} names'.format(_WORD.get(n, n)))
+    blocks = [('h3', title)]
     rows = [[f['name'], _fmt_pct(f['value']), f['basis']] for f in figs]
     blocks.append(('table', ['Measure', 'This period', 'What it measures'], rows,
                    [46, 22, 102]))
+    pa = g.get('plant_avail') or {}
+    if (pa.get('plant_availability_pct') is not None
+            and plant_measure_degenerate(pa)):
+        blocks.append(('small',
+                       'A plant-level availability is not quoted this period. It '
+                       'credits spare capacity above an agreed redundancy '
+                       'threshold, and the threshold currently configured is the '
+                       'full plant rating, which turns the measure into "the '
+                       'share of the period when every block was available at the '
+                       'same time" rather than an availability. It will be '
+                       'reported once a redundancy threshold is agreed.'))
     contractual = next((f for f in figs if f['key'] == 'contractual'), None)
     operational = next((f for f in figs if f['key'] == 'operational'), None)
     lead = (
@@ -1895,7 +1937,12 @@ def build_kpi_methodology(g):
              'running; planned-maintenance and restoration windows; a stop '
              'covered by a PM record (its PM hours are counted instead)'),
         ])
-    if pa.get('plant_availability_pct') is not None:
+    # Withheld while the redundancy threshold is the full plant rating — see
+    # availability_figures(). The KPI table builds its own rows, so it has to
+    # make the same judgement or the number the summary deliberately leaves out
+    # reappears here.
+    if (pa.get('plant_availability_pct') is not None
+            and not plant_measure_degenerate(pa)):
         thr = pa.get('threshold_mw')
         rows.append([
             AVAIL_PLANT_NAME,
@@ -3641,7 +3688,8 @@ def generate_tashkent_report(
             f"(the SLA figure — capacity-weighted, counting only genuine "
             f"fault-shutdown time, with agreed planned work excluded). "
         )
-    if plant_avail and plant_avail.get('plant_availability_pct') is not None:
+    if (plant_avail and plant_avail.get('plant_availability_pct') is not None
+            and not plant_measure_degenerate(plant_avail)):
         summary += (
             f"{AVAIL_PLANT_NAME}, which credits the plant's spare capacity, "
             f"was <b>{plant_avail['plant_availability_pct']:.2f}%</b>, and "
@@ -3658,6 +3706,17 @@ def generate_tashkent_report(
             f"<b>{fleet_availability_container:.2f}%</b> ({avail_status} the 95% "
             f"target). No contractual figure could be calculated for this "
             f"period. "
+        )
+    else:
+        # The plant-level measure is withheld this period, but the operational
+        # one still has to be named here or the summary would quote a single
+        # figure and the reader would take it for the only one.
+        summary += (
+            f"{AVAIL_OPERATIONAL_NAME} — the unweighted mean of each block's "
+            f"daily available time, with no exclusions applied — was "
+            f"<b>{fleet_availability_container:.2f}%</b>. The two are different "
+            f"measures of the same month, not two attempts at one number; "
+            f"4.2.1 gives the formula, the data source and the value of each. "
         )
     summary += (
         f"Average state of charge was <b>{avg_soc_pct:.2f}%</b> and average "
@@ -3909,7 +3968,8 @@ def generate_tashkent_report(
                 if plant_out is not None else
                 'n/a (plant capacity not configured)'],
         ]
-        if plant_avail.get('plant_availability_pct') is not None:
+        if (plant_avail.get('plant_availability_pct') is not None
+                and not plant_measure_degenerate(plant_avail)):
             rows.append([f'<b>{AVAIL_PLANT_NAME}</b>',
                 f"<b>{plant_avail['plant_availability_pct']:.2f}%</b>"])
         rows.append([AVAIL_OPERATIONAL_NAME,
@@ -4683,7 +4743,8 @@ def _build_tashkent_docx(output_path, _ctx):
                 f"<b>{contractual_avail['availability_pct']:.2f}%</b> "
                 f"(the SLA figure — capacity-weighted, counting only genuine "
                 f"fault-shutdown time, with agreed planned work excluded). ")
-    if plant_avail and plant_avail.get('plant_availability_pct') is not None:
+    if (plant_avail and plant_avail.get('plant_availability_pct') is not None
+            and not plant_measure_degenerate(plant_avail)):
         sm += (f"{AVAIL_PLANT_NAME}, which credits the plant's spare capacity, "
                 f"was <b>{plant_avail['plant_availability_pct']:.2f}%</b>, and "
                 f"{AVAIL_OPERATIONAL_NAME.lower()} — the unweighted mean of "
@@ -4701,6 +4762,13 @@ def _build_tashkent_docx(output_path, _ctx):
                 f"<b>{fleet_availability_container:.2f}%</b> "
                 f"({avail_status} the 95% target). No contractual figure could "
                 f"be calculated for this period. ")
+    else:
+        sm += (f"{AVAIL_OPERATIONAL_NAME} — the unweighted mean of each "
+                f"block's daily available time, with no exclusions applied — "
+                f"was <b>{fleet_availability_container:.2f}%</b>. The two are "
+                f"different measures of the same month, not two attempts at "
+                f"one number; 4.2.1 gives the formula, the data source and the "
+                f"value of each. ")
     sm += (f"Average state of charge was <b>{avg_soc_pct:.2f}%</b> and average "
             f"state of health (at month end) <b>{avg_soh_pct:.2f}%</b>. The "
             f"blocks completed about <b>{total_efc_fleet:.0f}</b> full charge / "
@@ -4943,7 +5011,8 @@ def _build_tashkent_docx(output_path, _ctx):
         if plant_avail.get('threshold_mw'):
             label = 'Contractual threshold' if plant_avail.get('contractual_plant_capacity_mw') else 'Redundancy threshold'
             a_rows.append([label, f"{plant_avail['threshold_mw']:.1f} MW"])
-        if plant_avail.get('plant_availability_pct') is not None:
+        if (plant_avail.get('plant_availability_pct') is not None
+                and not plant_measure_degenerate(plant_avail)):
             a_rows.append([AVAIL_PLANT_NAME,
                 f"{plant_avail['plant_availability_pct']:.2f}%"])
         a_rows.append([AVAIL_OPERATIONAL_NAME,
