@@ -190,8 +190,8 @@ for ident in ('detail-edit', 'f-edit-note', 'f-loc-group', 'f-photo-group',
 H.check('App.editEntry()' in html,
         'the record itself carries the way to correct it')
 for fn in ('editEntry', '_saveEdit', '_canEdit', '_editMode', '_onServer',
-           '_lockedMonths', '_lockedMonthWarning', '_clashPanel', 'resolveClash',
-           '_pushEntries', '_rebaseEntry'):
+           '_lockedMonths', '_lockedMonthWarning', '_editWarning',
+           '_clashPanel', 'resolveClash', '_pushEntries', '_rebaseEntry'):
     H.check(fn in app, 'app.js implements {}'.format(fn))
 # The hazard this feature is built around: a phone edit must never wipe what
 # the office wrote. The phone sends only the fields it changed...

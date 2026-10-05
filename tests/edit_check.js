@@ -305,21 +305,40 @@ async function resolve(ctx, field, which) {
   check(srv._sent.filter(c => c.id === 'rec-1').length === 1,
         'one push, not a retry loop');
 
-  // ══ 3. a done record offers no edit ══════════════════════════════════════
-  ctx = sandbox(makeServer([DONE], PROJECTS_TAUGHT), [DONE], PROJECTS_TAUGHT);
+  // ══ 3. a done record IS corrected here, and warned about ═════════════════
+  // It used to be refused and reopened in the office. A technician who cannot
+  // fix their own typo telephones it in and the office types it for them —
+  // the same edit, one step further from the person who did the work. So the
+  // phone allows it and says what is at stake instead.
+  ctx = sandbox(makeServer([DONE], PROJECTS_NONE_LOCKED), [DONE],
+                PROJECTS_NONE_LOCKED);
   await ctx.App._showDetail('rec-done');
-  check(ctx._els['detail-edit'].style.display === 'none',
-        'a DONE record offers no Edit button');
-  check(!ctx._els['detail-body'].innerHTML.includes('Correct this record')
-        && ctx._els['detail-body'].innerHTML.includes('marked Done')
-        && ctx._els['detail-body'].innerHTML.includes('office'),
-        'and says it is Done and where it is reopened — "Done", not "closed", '
-        + 'because a CLOSED MONTH is a different thing on this same screen');
-  check(ctx.App._canEdit(DONE) === false, '_canEdit says no for a done record');
+  check(ctx.App._canEdit(DONE) === true, '_canEdit says yes for a done record');
+  check(ctx._els['detail-edit'].style.display !== 'none'
+        && ctx._els['detail-body'].innerHTML.includes('Correct this record'),
+        'a DONE record offers the Edit button');
+  check(ctx._els['detail-body'].innerHTML.includes('marked Done')
+        && ctx._els['detail-body'].innerHTML.includes('tell the office'),
+        'and warns that it may already be in a report — allowed, not silent');
   await ctx.App.editEntry('rec-done');
-  check((ctx._els['create-title'] || {}).textContent !== 'Correct record'
-        && ctx.App._editId === null,
-        'and asking for the form anyway does not open it');
+  check((ctx._els['create-title'] || {}).textContent === 'Correct record'
+        && ctx.App._editId === 'rec-done',
+        'and the correction form opens on it');
+  check(ctx._els['f-edit-note'].innerHTML.includes('marked Done'),
+        'the warning follows onto the form, where the typing happens');
+
+  // The two warnings never stack: a closed month says everything the done
+  // warning says and more, so only the stronger one is shown.
+  ctx = sandbox(makeServer([Object.assign({}, DONE, {id: 'rec-aug-done',
+                                                     log_date: '2026-08-11'})],
+                           PROJECTS_TAUGHT),
+                [Object.assign({}, DONE, {id: 'rec-aug-done',
+                                          log_date: '2026-08-11'})],
+                PROJECTS_TAUGHT);
+  await ctx.App._showDetail('rec-aug-done');
+  check(ctx._els['detail-body'].innerHTML.includes('is closed —')
+        && !ctx._els['detail-body'].innerHTML.includes('marked Done'),
+        'a done record in a CLOSED month shows the closed-month sentence only');
 
   // a job the office handed out belongs to the Tasks screen
   ctx = sandbox(makeServer([JOB], PROJECTS_TAUGHT), [JOB], PROJECTS_TAUGHT);

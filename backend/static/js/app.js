@@ -1639,7 +1639,7 @@ const App = {
     // other. A month whose report has gone out but is not closed yet shows no
     // warning at all — that is the stretch corrections are expected in.
     const canEdit = this._canEdit(entry);
-    const lockWarn = await this._lockedMonthWarning(entry);
+    const lockWarn = await this._editWarning(entry);
     const editBtn = document.getElementById('detail-edit');
     if (editBtn) editBtn.style.display = canEdit ? '' : 'none';
 
@@ -1670,9 +1670,7 @@ const App = {
               ? `<p class="hint-line">This is a job from
                    ${_esc(entry.assigned_by || 'the office')} — fill it in from
                    the Tasks tab.</p>`
-              : `<p class="hint-line">This record is marked Done. The office
-                   reopens it before it can be changed — figures the customer
-                   has may already be made from it.</p>`)}
+              : `<p class="hint-line">This record cannot be corrected here.</p>`)}
       </div>`;
 
     // Lightbox on image tap
@@ -1742,14 +1740,22 @@ const App = {
 
   /** May this phone correct this record?
       — a job the office handed out is the office's record, and is filled in on
-        the Task screen instead (one editor per kind of record);
-      — a done record is reopened in the office first: the customer may already
-        hold numbers made from it, and a silent change behind a settled report
-        is how two sides stop agreeing. */
+        the Task screen instead (one editor per kind of record).
+
+      A done record used to be refused here and had to be reopened in the
+      office. That cost more than it saved: the mistakes worth fixing — a wrong
+      block, a typo in what was done — are nearly all found right after the
+      record is marked done, and a technician who cannot fix their own typo
+      telephones the office, which then edits the line on their behalf from a
+      verbal description. The same correction, one step further from the person
+      who did the work. So it is allowed, and warned about instead: the record
+      may already be in a report, which _editWarning says in a sentence. The
+      hard guard stays where it belongs, on the desktop, where
+      assert_month_open refuses every writer of a settled month's inputs. */
   _canEdit(entry) {
     if (!entry || entry.deleted_at) return false;
     if (entry.assigned_to) return false;
-    return (entry.status || 'open') !== 'done';
+    return true;
   },
 
   /** Does the server hold this record? Only then is a partial push safe: the
@@ -1823,6 +1829,23 @@ const App = {
          + 'them, so the corrected line does not arrive as a surprise.';
   },
 
+  /** The one sentence to show above a correction, or ''.
+
+      Two things are worth saying and they overlap, so only the stronger one is
+      shown. A closed month already says "the customer has agreed figures made
+      from this", which covers everything the done warning would say and more.
+      Stacking both would train people to read neither. */
+  async _editWarning(entry) {
+    const locked = await this._lockedMonthWarning(entry);
+    if (locked) return locked;
+    if (entry && (entry.status || 'open') === 'done') {
+      return 'This record is marked Done, so it may already be in a report. '
+           + 'Correct it if it is wrong — then tell the office, so they know '
+           + 'the line changed.';
+    }
+    return '';
+  },
+
   /** Open the correction form on one record. The create form IS the edit form:
       same node picker, same fields, same validation — a second set would drift
       away from the first one. */
@@ -1879,7 +1902,7 @@ const App = {
     this.onCategory();
     document.getElementById('create-title').textContent = 'Correct record';
     this._editMode(true, entry);
-    const lockWarn = await this._lockedMonthWarning(entry);
+    const lockWarn = await this._editWarning(entry);
     const note = document.getElementById('f-edit-note');
     if (note) {
       note.innerHTML =
@@ -1939,8 +1962,8 @@ const App = {
     if (!entry) { this._editId = null; this._editBase = null; this.goRecords(); return; }
     // It may have been closed, deleted or handed out while the form was open.
     if (!this._canEdit(entry)) {
-      _showErr(errEl, 'This record can no longer be corrected here — it is '
-                    + 'closed, or it is now a job from the office.');
+      _showErr(errEl, 'This record can no longer be corrected here — it was '
+                    + 'deleted, or it is now a job from the office.');
       return;
     }
 
