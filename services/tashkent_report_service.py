@@ -1003,6 +1003,12 @@ def _bess_fault_down(p, episodes, in_window):
 
 PM_WORKDAY = (7, 19)
 PM_RUN_GAP_MIN = 10
+# A brief extra stop inside the PM working day is part of the PM, not a second
+# incident: isolating and restoring a block takes a few tries, and the LC drops
+# out for a sample or two each time. The owner set the line on 2026-10-05 —
+# "5-10 minutes is not critical, count it as part of the PM". Longer than this
+# and it is a separate stop that still counts, and the log names it.
+PM_SHORT_STOP_MIN = 10
 PM_OPERATING_STATES = {'RUNNING', 'STANDBY', 'INITIAL STATUS', 'SELF-CHECKING',
                        'LOW ENERGY COMPENSATION'}
 
@@ -1082,15 +1088,19 @@ def pm_stop_windows(ws_long, pm_records, workday=PM_WORKDAY):
             cand = [r for r in runs if r[0] < w1 and r[1] > w0]
             row = {'pm_id': rec['pm_id'], 'block': b, 'date': day, 'start': None,
                    'end': None, 'clock_hours': 0.0, 'pm_hours': rec['hours'],
-                   'other_stops': [], 'exclusion': None}
+                   'other_stops': [], 'short_stops': [], 'exclusion': None}
             if cand:
                 start, end = max(cand, key=lambda r: (r[1] - r[0], -r[0].value))
                 # inclusive minutes up to just before the first sample back in
                 # operation (and before midnight when the stop runs past it)
                 last = end - pd.Timedelta(minutes=1)
+                rest = [r for r in cand if r != (start, end)]
+                brief = pd.Timedelta(minutes=PM_SHORT_STOP_MIN)
+                short = [r for r in rest if r[1] - r[0] <= brief]
                 row.update(start=start, end=end,
                            clock_hours=(end - start).total_seconds() / 3600.0,
-                           other_stops=[r for r in cand if r != (start, end)],
+                           short_stops=short,
+                           other_stops=[r for r in rest if r not in short],
                            exclusion={'exclusion_type': 'Preventive maintenance',
                                       'date_from': f'{start:%Y-%m-%d}',
                                       'time_from': f'{start:%H:%M}',
@@ -1102,12 +1112,16 @@ def pm_stop_windows(ws_long, pm_records, workday=PM_WORKDAY):
 
 
 def _pm_stop_mask(dt_s, blk_s, pm_stops):
-    """Rows (Datetime, block_id) inside a PM stop: [start, end) on its block."""
+    """Rows (Datetime, block_id) inside a PM stop: [start, end) on its block,
+    plus the brief extra stops of that working day (PM_SHORT_STOP_MIN), which
+    are part of the same PM rather than a second incident."""
     mask = pd.Series(False, index=dt_s.index)
     for w in (pm_stops or []):
         if w.get('start') is None:
             continue
-        mask |= ((blk_s == w['block']) & (dt_s >= w['start']) & (dt_s < w['end']))
+        on_block = blk_s == w['block']
+        for s, e in [(w['start'], w['end'])] + list(w.get('short_stops') or []):
+            mask |= on_block & (dt_s >= s) & (dt_s < e)
     return mask
 
 
@@ -1121,8 +1135,11 @@ def _pm_cover(dt_s, blk_s, down, pm_stops, unit_h=5 / 60.0):
         if w.get('start') is None:
             rows.append(dict(w, covered_unit_hours=0.0))
             continue
-        wm = covered & (blk_s == w['block']) & (dt_s >= w['start']) & (dt_s < w['end'])
-        rows.append(dict(w, covered_unit_hours=float(wm.sum()) * unit_h))
+        on_block = blk_s == w['block']
+        wm = pd.Series(False, index=dt_s.index)
+        for s, e in [(w['start'], w['end'])] + list(w.get('short_stops') or []):
+            wm |= on_block & (dt_s >= s) & (dt_s < e)
+        rows.append(dict(w, covered_unit_hours=float((covered & wm).sum()) * unit_h))
     return down & ~covered, covered, float(covered.sum()) * unit_h, rows
 
 
@@ -3314,6 +3331,9 @@ def generate_tashkent_report(
             f"({r['clock_hours']:.1f} h) covered by PM record #{r['pm_id']} "
             f"({r['pm_hours']:g} h entered) — {r['covered_unit_hours']:.1f} unit-h of "
             f"SCADA downtime not counted")
+        for s, e in (r.get('short_stops') or []):
+            log(f"     brief stop {s:%H:%M}–{e:%H:%M} counted as part of this PM "
+                f"(under {PM_SHORT_STOP_MIN} min)")
         for s, e in r['other_stops']:
             log(f"  ⚠  block {r['block']} {r['date']:%d-%b}: a second stop "
                 f"{s:%H:%M}–{e:%H:%M} in the working day still counts — if that was "
