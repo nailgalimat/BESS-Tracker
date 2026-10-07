@@ -9,4 +9,4 @@ whole release follows.
 Keep it a plain dotted string — Inno Setup's VersionInfoVersion parses it.
 """
 
-APP_VERSION = '1.1.2'
+APP_VERSION = '1.1.3'
