@@ -2940,6 +2940,36 @@ def generate_tashkent_report(
     cls = load_alarm_classifications(alarm_classifications_path)
     alarms = apply_alarm_classifications(alarms, cls)
 
+    # ── Keep only the report month's alarms ───────────────────────────────
+    # A SCADA alarm export carries whatever backlog was on the panel when it
+    # was taken, not the month that was asked for. The September file merged
+    # from the daily exports held 2,395 production alarms and 19,363 warnings
+    # dated August, because the export taken on 2 September reached back to
+    # 3 August — and the report's "Major incidents" then led with three
+    # August breakdowns (blocks 32, 3 and 28, 03–07 August). Every alarm
+    # table, the fault and warning summaries and 5.2 read the same frames.
+    #
+    # The month comes from the daily totalizer, which is what sets the
+    # reporting period everywhere else. Deactivation is left alone: an event
+    # that starts inside the month and clears after it is this month's event.
+    _ym = None
+    if lc_daily is not None and not lc_daily.empty:
+        _ld = pd.to_datetime(pd.Series(lc_daily.index), errors='coerce')
+        _mode = _ld.dt.to_period('M').mode()
+        _ym = _mode.iloc[0] if len(_mode) else None
+    if _ym is not None:
+        for _k, _df in list(alarms.items()):
+            if not isinstance(_df, pd.DataFrame) or _df.empty:
+                continue
+            if 'Activated' not in _df.columns:
+                continue
+            _a = pd.to_datetime(_df['Activated'], errors='coerce')
+            _keep = _a.dt.to_period('M') == _ym
+            _n = int((~_keep).sum())
+            if _n:
+                log(f"  Alarms: dropping {_n:,} '{_k}' row(s) outside {_ym}")
+                alarms[_k] = _df[_keep].reset_index(drop=True)
+
     # A PM record covers its own stop (see pm_stop_windows) — for availability
     # and, user decision 2026-09-15, for the alarm tables too: the isolation
     # alarms of a PM stop are tagged exactly like those inside a Scheduled
@@ -2966,6 +2996,36 @@ def generate_tashkent_report(
 
     log("Computing daily block KPIs...")
     daily_kpi = calc_daily_block_kpis_tashkent(lc_daily, ws_long, soc_long)
+
+    # ── Trim the daily totalizer to the report month ──────────────────────
+    # "LC Daily charge/discharge.xlsx" is exported one row past the month: the
+    # counter reading stamped 00:00 on the 1st of the NEXT month. September
+    # 2026 came out as 1 Sep – 1 Oct, August as 1 Aug – 1 Sep. Every date in
+    # the report is taken from this table, so one stray row made the reporting
+    # period 31 days long and the four 5-minute exports — which covered all 30
+    # days correctly — read "30 of 31 day(s), 1 missing" and were listed as an
+    # incomplete data set in the executive summary. Section 4.5 printed the
+    # giveaway: "31 of the 30 day(s) in September 2026".
+    #
+    # The month is the one that holds most of the rows, never the first date,
+    # so a export that starts a day early is trimmed the same way. The energy
+    # figures do not move: the daily values are calibrated to the canonical
+    # monthly totalizer below, which pins the monthly sums either way — this
+    # only spreads that total over the right number of days.
+    if not daily_kpi.empty:
+        _d = pd.to_datetime(daily_kpi['date'], errors='coerce')
+        _ym = _d.dt.to_period('M')
+        _main = _ym.mode()
+        if len(_main):
+            _keep = _ym == _main.iloc[0]
+            _drop = int((~_keep).sum())
+            if _drop:
+                _out = sorted({str(x.date()) for x in _d[~_keep] if pd.notna(x)})
+                log(f"  Daily totalizer: dropping {_drop} row(s) outside "
+                    f"{_main.iloc[0]} ({', '.join(_out[:4])}"
+                    f"{'…' if len(_out) > 4 else ''}) — the export runs one "
+                    f"reading past the month end")
+                daily_kpi = daily_kpi[_keep].reset_index(drop=True)
 
     # Inject alarm counts per (block, day)
     if not alarms['production_dedup'].empty:
