@@ -2332,6 +2332,292 @@ def build_data_coverage(g):
     return streams
 
 
+# ── Recurring faults: the month's own analysis ──────────────────────────────
+# Review items 5, 6, 7, 24 and 27. The customer's objection was never the
+# fault count — it was that the report named faults without saying whether a
+# restart is a workaround or the equipment's normal recovery, which blocks
+# repeat, and what the probable cause is. None of that is opinion: it is in
+# the data, and it is recomputed every month rather than written once.
+#
+# What each number answers:
+#   concentration  — a fault spread evenly over 40 blocks is a fleet
+#                    characteristic; one sitting on five blocks is those five.
+#   self-clearing  — an event that ends without anyone attending is the
+#                    equipment protecting itself, not an outage someone fixed.
+#   duration       — a 5-minute self-clearing trip and an 11-hour one are not
+#                    the same failure, however alike their names.
+#   state context  — what the block was doing when it tripped. A fault that
+#                    follows the transition out of operation, or the moment a
+#                    container is energised, has a cause that is visible here
+#                    and nowhere in the fault name.
+RECURRING_MIN_EVENTS = 5
+
+
+def recurring_fault_stats(p_real, ws_long, top_n=5):
+    """Per-reason facts for the month's recurring faults, worst first."""
+    if p_real is None or getattr(p_real, 'empty', True):
+        return []
+    if 'cls_reason' not in p_real.columns:
+        return []
+    df = p_real.copy()
+    df['_act'] = pd.to_datetime(df.get('Activated'), errors='coerce')
+    df['_end'] = pd.to_datetime(df.get('Deactivation'), errors='coerce')
+    df['_dur'] = pd.to_numeric(df.get('duration_min'), errors='coerce')
+    df['_blk'] = pd.to_numeric(
+        df['Element'].astype(str).str.extract(r'(\d+)\.')[0], errors='coerce')
+    df = df.dropna(subset=['_act'])
+    if df.empty:
+        return []
+
+    by_blk = {}
+    if ws_long is not None and not getattr(ws_long, 'empty', True):
+        w = ws_long[['Datetime', 'block_id', 'working_status']].copy()
+        w['ts'] = pd.to_datetime(w['Datetime'], errors='coerce')
+        w['st'] = w['working_status'].astype(str).str.upper().str.strip()
+        for b, grp in w.dropna(subset=['ts']).groupby('block_id'):
+            by_blk[b] = grp.sort_values('ts')
+
+    out = []
+    for reason, grp in df.groupby('cls_reason'):
+        n = len(grp)
+        if n < RECURRING_MIN_EVENTS:
+            continue
+        blocks = grp['_blk'].dropna()
+        counts = blocks.value_counts()
+        dur = grp['_dur'].dropna()
+        hours = grp['_act'].dt.hour
+        night = hours.isin(list(range(20, 24)) + list(range(0, 6)))
+        # what the block was doing: the state just before, and whether it had
+        # changed within the half hour around the event
+        before, changed, matched = [], 0, 0
+        for _, r in grp.iterrows():
+            g2 = by_blk.get(r['_blk'])
+            if g2 is None or pd.isna(r['_blk']):
+                continue
+            win = g2[(g2['ts'] >= r['_act'] - pd.Timedelta(minutes=30)) &
+                     (g2['ts'] <= r['_act'] + pd.Timedelta(minutes=10))]
+            if win.empty:
+                continue
+            matched += 1
+            pre = win[win['ts'] < r['_act']]['st'].tolist()
+            at = win[win['ts'] >= r['_act']]['st'].tolist()
+            if pre:
+                before.append(pre[-1])
+            if len(dict.fromkeys(pre + at[:1])) > 1:
+                changed += 1
+        pre_top = (pd.Series(before).value_counts() if before
+                   else pd.Series(dtype=int))
+        out.append({
+            'reason': str(reason),
+            'events': n,
+            'blocks': int(blocks.nunique()),
+            'top_blocks': [(int(b), int(c)) for b, c in counts.head(5).items()],
+            'top_share': (float(counts.head(5).sum()) / n * 100) if n else 0.0,
+            'repeat_blocks': int((counts >= RECURRING_MIN_EVENTS).sum()),
+            'cleared_pct': float(grp['_end'].notna().mean() * 100),
+            'median_min': float(dur.median()) if len(dur) else None,
+            'p90_min': float(dur.quantile(0.90)) if len(dur) else None,
+            'max_min': float(dur.max()) if len(dur) else None,
+            'total_h': float(dur.sum() / 60.0) if len(dur) else 0.0,
+            'night_pct': float(night.mean() * 100),
+            'peak_hour': int(hours.value_counts().idxmax()) if n else None,
+            'state_matched': matched,
+            'changed_pct': (changed / matched * 100) if matched else None,
+            'state_before': (str(pre_top.index[0]) if len(pre_top) else ''),
+            'state_before_pct': (float(pre_top.iloc[0]) / len(before) * 100
+                                 if before else None),
+        })
+    out.sort(key=lambda r: -r['events'])
+    return out[:top_n]
+
+
+# Above this, an event that "clears itself" has still cost real availability,
+# and calling the restart a normal recovery would be the very claim the
+# customer rejected. The two cases are written differently on purpose.
+RECURRING_BRIEF_MIN = 20
+
+
+def _recurring_sentence(s):
+    """The finding for one fault, written from its own numbers."""
+    bits = []
+    med, p90 = s['median_min'], s['p90_min']
+    if med is not None and s['cleared_pct'] >= 90 and med <= RECURRING_BRIEF_MIN:
+        bits.append(
+            'It clears without intervention in {:.0f}% of cases, with a '
+            'median of {:.0f} minutes and 90% within {:.0f}. At that length '
+            'the restart is the equipment\'s own recovery rather than a '
+            'workaround standing in for a repair.'.format(
+                s['cleared_pct'], med, p90 or med))
+    elif med is not None and s['cleared_pct'] >= 90:
+        bits.append(
+            'It does end without intervention in {:.0f}% of cases, but not '
+            'quickly: the median outage is {:.0f} minutes and 90% run to '
+            '{:.0f} (worst {:.0f}). That is lost availability, so recovery '
+            'by restart is not an answer to it.'.format(
+                s['cleared_pct'], med, p90 or med, s['max_min'] or 0))
+    elif med is not None:
+        bits.append(
+            'It clears on its own in only {:.0f}% of cases and the median '
+            'outage is {:.0f} minutes (worst {:.0f}), so it is attended, not '
+            'self-recovering.'.format(
+                s['cleared_pct'], med, s['max_min'] or 0))
+    if s['top_share'] >= 50 and s['top_blocks']:
+        bits.append(
+            'It is concentrated rather than fleet-wide: the five most '
+            'affected blocks hold {:.0f}% of the events ({}).'.format(
+                s['top_share'],
+                ', '.join('block {} — {}'.format(b, c)
+                          for b, c in s['top_blocks'])))
+    elif s['blocks'] >= 20:
+        bits.append(
+            'It is spread across {} blocks with no concentration, which '
+            'points to a fleet characteristic rather than a defect on '
+            'particular equipment.'.format(s['blocks']))
+    if s['night_pct'] >= 70:
+        bits.append('{:.0f}% of events fall between 20:00 and 06:00, peaking '
+                    'at {:02d}:00.'.format(s['night_pct'], s['peak_hour']))
+    if (s['changed_pct'] is not None and s['changed_pct'] >= 60
+            and s['state_before']):
+        bits.append(
+            'In {:.0f}% of cases the block changed operating state within the '
+            'half hour around the alarm, and it was most often in {} '
+            'immediately before ({:.0f}%) — the fault follows the '
+            'transition, not the load.'.format(
+                s['changed_pct'], s['state_before'].title(),
+                s['state_before_pct'] or 0))
+    return ' '.join(bits)
+
+
+def build_recurring_faults(g, top_n=5):
+    """Review items 5, 6, 7, 24, 27: what repeats, where, for how long, and
+    what the data says about why."""
+    stats = g.get('recurring_faults')
+    if stats is None:
+        stats = recurring_fault_stats(g.get('p_real'), g.get('ws_long'), top_n)
+    if not stats:
+        return _none_block(
+            'No fault recurred often enough this period to be analysed '
+            '(the threshold is {} occurrences).'.format(RECURRING_MIN_EVENTS))
+    blocks = [('h3', 'Recurring faults — analysis for this period')]
+    blocks.append(('p',
+        'The faults below each occurred {} times or more. For every one the '
+        'table gives how often it cleared without intervention, how long it '
+        'lasted and how widely it was spread; the notes beneath say what the '
+        'operating data shows about the circumstances it occurs in. All of it '
+        'is recalculated from this month\'s data.'.format(
+            RECURRING_MIN_EVENTS)))
+    rows = []
+    for s in stats:
+        rows.append([
+            s['reason'],
+            f"{s['events']:,}",
+            str(s['blocks']),
+            f"{s['cleared_pct']:.0f}%",
+            ('—' if s['median_min'] is None else f"{s['median_min']:.0f}"),
+            ('—' if s['max_min'] is None else f"{s['max_min']:.0f}"),
+            f"{s['total_h']:.1f}",
+        ])
+    blocks.append(('table',
+                   ['Fault', 'Events', 'Blocks', 'Self-cleared',
+                    'Median (min)', 'Longest (min)', 'Total (h)'],
+                   rows))
+    for s in stats:
+        sentence = _recurring_sentence(s)
+        if sentence:
+            blocks.append(('p', '<b>{}</b> — {}'.format(s['reason'], sentence)))
+    blocks.append(('small',
+        'Events inside an availability exclusion window, and faults on a '
+        'block under a planned or manual stop, are not counted here — they '
+        'are reported separately in 5.1.'))
+    return blocks
+
+
+# ── Annex register (review item 42) ─────────────────────────────────────────
+ANNEX_ROWS = 8
+
+
+def build_annex_register(g):
+    """Review item 42: the annexes were listed by name only, with no way to
+    tell which revision was attached or what it concluded. The register is
+    filled in by hand — the documents come from the OEM, the EPC and the
+    project, not from the data this report is generated from."""
+    rows = [[str(i), '', '', '', ''] for i in range(1, ANNEX_ROWS + 1)]
+    return [
+        ('h3', 'Annex register'),
+        ('p', 'The documents attached to this report. The register records '
+              'the revision and date of what was actually attached, so a '
+              'later reader can tell which issue of a document the month was '
+              'settled against.'),
+        ('table', ['No.', 'Document title', 'Type', 'Revision', 'Date'], rows),
+    ]
+
+
+# ── Permit register (review item 37) ────────────────────────────────────────
+def build_permit_register(g):
+    """Review item 37: the HSE section said only that there were no safety
+    incidents. The permits are the record of what was actually worked on
+    under control during the month, and they are the one HSE fact this
+    report can state from a source rather than from recollection."""
+    permits = g.get('permits') or []
+    if not permits:
+        return _none_block(
+            'No permit register was supplied for this period, so the permits '
+            'issued cannot be listed here.')
+    rows = [[str(p.get('no', '')), str(p.get('date', '')),
+             str(p.get('title', ''))[:120], str(p.get('status', ''))]
+            for p in permits]
+    out = [('h3', 'Permits to work issued during the period'),
+           ('p', '<b>{}</b> permit(s) were issued for this scope during the '
+                 'reporting period. Each is listed below with its number, '
+                 'date and the work it covered.'.format(len(permits))),
+           ('table', ['Permit No.', 'Issued', 'Work', 'Status'], rows)]
+    return out
+
+
+def load_cptw_register(path, year=None, month=None, issued_to=None):
+    """The permit register as rows for build_permit_register. Reads the
+    project's CPTW workbook; `issued_to` filters by the party a permit was
+    issued to (substring, case-insensitive)."""
+    import datetime as _dt
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(path, data_only=True)
+    except Exception:
+        return []
+    ws = wb[wb.sheetnames[0]]
+
+    def _d(v):
+        if isinstance(v, (_dt.datetime, _dt.date)):
+            return v.date() if isinstance(v, _dt.datetime) else v
+        s = str(v or '').strip()
+        for f in ('%d/%m/%Y', '%d/%m/%y', '%d.%m.%Y', '%Y-%m-%d', '%d-%m-%Y'):
+            try:
+                return _dt.datetime.strptime(s, f).date()
+            except ValueError:
+                pass
+        return None
+
+    out = []
+    for r in range(3, ws.max_row + 1):
+        no = str(ws.cell(r, 2).value or '').strip()
+        d = _d(ws.cell(r, 6).value)
+        if not (no and d):
+            continue
+        if year is not None and (d.year, d.month) != (year, month):
+            continue
+        to = str(ws.cell(r, 3).value or '').strip()
+        if issued_to and issued_to.lower() not in to.lower():
+            continue
+        title = (str(ws.cell(r, 5).value or '').strip()
+                 or str(ws.cell(r, 4).value or '').strip())
+        out.append({'no': no, 'date': d.strftime('%d.%m.%Y'), 'title': title,
+                    'status': str(ws.cell(r, 8).value or '').strip(),
+                    'issued_to': to})
+    out.sort(key=lambda x: (x['date'][6:], x['date'][3:5], x['date'][:2],
+                            x['no']))
+    return out
+
+
 def build_data_quality(g):
     """Review item 44: coverage, gaps, and how missing data was treated."""
     streams = g.get('data_streams')
@@ -2868,6 +3154,9 @@ def generate_tashkent_report(
     history_records=None,
     annexes=None,
     output_format='docx',          # 'docx' (default), 'pdf', or 'both'
+    permits=None,                  # [{no, date, title, status}] for 6.x
+    permit_register_path=None,     # or the CPTW workbook to read them from
+    permit_issued_to=None,         # filter: the party permits were issued to
     exclusions=None,               # list of dicts from availability_service.get_exclusions()
     balancing_periods=None,        # list of dicts from availability_service.get_balancing_periods()
     project_id=None,               # when set, this month's alarms become equipment history
@@ -3538,6 +3827,32 @@ def generate_tashkent_report(
     dates = sorted(daily_kpi['date'].unique())
     if not dates:
         raise RuntimeError("No valid days found in the data")
+
+    # Permits issued during the period (review item 37). Read from the CPTW
+    # register when a path is given; a caller that already holds the rows
+    # passes them directly.
+    if not permits and permit_register_path:
+        try:
+            permits = load_cptw_register(
+                permit_register_path, int(dates[0].year), int(dates[0].month),
+                issued_to=permit_issued_to)
+            log(f"Permit register: {len(permits)} permit(s) for "
+                f"{dates[0]:%B %Y}"
+                + (f" issued to {permit_issued_to}" if permit_issued_to else ""))
+        except Exception as e:                                  # noqa: BLE001
+            log(f"Note: could not read the permit register: {e}")
+            permits = []
+
+    # Recurring-fault analysis (review items 5, 6, 7, 24, 27). Computed once
+    # here so the PDF and the DOCX state the same findings.
+    try:
+        recurring_faults = recurring_fault_stats(p_real, ws_long)
+        if recurring_faults:
+            log(f"Recurring faults: {len(recurring_faults)} fault type(s) "
+                f"with {RECURRING_MIN_EVENTS}+ occurrences")
+    except Exception as e:                                      # noqa: BLE001
+        log(f"Note: could not analyse recurring faults: {e}")
+        recurring_faults = []
     period_str = f"{dates[0].strftime('%d %B %Y')} — {dates[-1].strftime('%d %B %Y')}"
     report_month = dates[0].strftime('%B %Y')
     n_blocks = daily_kpi['block'].nunique()
@@ -4373,6 +4688,8 @@ def generate_tashkent_report(
                                    STYLE_SMALL))
         story.append(Spacer(1, 4*mm))
 
+    _render_blocks_pdf(story, build_recurring_faults(locals()))
+
     if not warn_summary.empty:
         story.append(Paragraph('<b>Standing warnings</b>', STYLE_BODY))
         if n_warn_persistent_planned > 0:
@@ -4645,6 +4962,7 @@ def generate_tashkent_report(
         story.append(Paragraph('No safety incidents in the reporting period.',
                                 STYLE_BODY))
     story.append(Spacer(1, 4*mm))
+    _render_blocks_pdf(story, build_permit_register(locals()))
     story.append(Paragraph('<b>Site visits and inspections</b>', STYLE_H3))
     if site_visits:
         for v in site_visits: story.append(Paragraph(f'•  {v}', STYLE_BODY))
@@ -4688,6 +5006,8 @@ def generate_tashkent_report(
         story.append(Paragraph(f'•  {line}', STYLE_BODY))
     if annexes:
         for a in annexes: story.append(Paragraph(f'•  {a}', STYLE_BODY))
+    story.append(Spacer(1, 3*mm))
+    _render_blocks_pdf(story, build_annex_register(locals()))
 
     story.append(Spacer(1, 6*mm))
     story.append(Paragraph(
@@ -5350,6 +5670,9 @@ def _build_tashkent_docx(output_path, _ctx):
                 '— likely not a genuine fault.')
         if g.get('faults_general_note'):
             add_caption(doc, g['faults_general_note'])
+
+    _render_blocks_docx(doc, build_recurring_faults(g))
+
     if warn_summary is not None and not warn_summary.empty:
         add_paragraph(doc, 'Standing warnings', bold=True)
         if n_warn_persistent_planned > 0:
@@ -5560,6 +5883,7 @@ def _build_tashkent_docx(output_path, _ctx):
         add_styled_table(doc, ['Incident', 'Equipment Loss', 'Weight', 'Countermeasure'], rows)
     else:
         add_paragraph(doc, 'No safety incidents in the reporting period.')
+    _render_blocks_docx(doc, build_permit_register(g))
     add_heading(doc, 'Site visits and inspections', level=3)
     if site_visits:
         for v in site_visits: add_paragraph(doc, f'•  {v}')
@@ -5594,6 +5918,7 @@ def _build_tashkent_docx(output_path, _ctx):
         add_paragraph(doc, f'•  {line}')
     if annexes:
         for a in annexes: add_paragraph(doc, f'•  {a}')
+    _render_blocks_docx(doc, build_annex_register(g))
 
     save_doc(doc, output_path)
     return output_path
