@@ -689,7 +689,19 @@ def build_monthly_comparison(current_kpis, history_records=None):
 
 # Working-status enum (Bukhara LC level)
 RUNNING_STATES   = {'RUNNING'}
-STANDBY_STATES   = {'STANDBY', 'INITIAL STATUS', 'SELF-CHECKING'}
+# LOW ENERGY COMPENSATION is the LC online, drawing a trickle to hold the
+# pack against idle losses. STARTING is the same transition SELF-CHECKING
+# already counted as available. Both were in no state set at all, and
+# anything unrecognised fell through to "unavailable": September 2026 put
+# block 3 at the bottom of the fleet on 100 h unavailable, of which 77.8 h
+# was LOW ENERGY COMPENSATION — the container energised and ready the whole
+# time. Its real fault time that month was 18.6 h.
+STANDBY_STATES   = {'STANDBY', 'INITIAL STATUS', 'SELF-CHECKING',
+                    'LOW ENERGY COMPENSATION', 'STARTING'}
+# A blank or '0' status is the absence of a reading, not a state: it is left
+# out of the denominator rather than counted against the plant. See
+# NO_DATA_STATES' use in calc_daily_block_kpis_tashkent.
+NO_DATA_STATES   = {'0', '', 'NAN', 'NONE'}
 # 'FAULT' is the state name the SCADA actually emits (Tashkent); 'FAULT STOP'
 # etc. are kept for other firmware variants. ALARM RUNNING = still running.
 FAULT_STATES     = {'FAULT', 'FAULT STOP', 'ALARM RUNNING', 'STOPPING'}

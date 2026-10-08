@@ -73,7 +73,7 @@ from services.bukhara_report_service import (
     _chart_availability_heatmap_categorical,
     _chart_single_daily_bar,
     format_exclusion_narrative,
-    AVAILABLE_STATES, RUNNING_STATES, STANDBY_STATES, FAULT_STATES,
+    AVAILABLE_STATES, NO_DATA_STATES, RUNNING_STATES, STANDBY_STATES, FAULT_STATES,
     FAULT_SHUTDOWN_STATES,
     STOPPED_STATES,
     calc_block_availability,   # operates on a df with 'working_status' column
@@ -456,12 +456,19 @@ def calc_daily_block_kpis_tashkent(lc_daily, ws_long, soc_long,
     rows = []
     # Per-day availability (mean across both containers of the block) — built from
     # ws_long per (block, date)
+    # A sample with no status is missing data, not a block that was down, so
+    # it leaves the denominator instead of counting against availability. A
+    # block-day with no usable sample at all has no availability figure —
+    # NaN, which the aggregates already skip — rather than a flat 0 %.
     ws_day_block_avail = {}
     if not ws_long.empty:
         for (b, d), g in ws_long.groupby(['block_id', 'Date_only']):
-            avail = (g['working_status'].astype(str).isin(AVAILABLE_STATES)
-                     ).mean() * 100
-            ws_day_block_avail[(b, d)] = avail
+            st = g['working_status'].astype(str).str.strip().str.upper()
+            seen = st[~st.isin(NO_DATA_STATES) & g['working_status'].notna()]
+            if seen.empty:
+                continue
+            ws_day_block_avail[(b, d)] = (
+                seen.isin(AVAILABLE_STATES).mean() * 100)
 
     # Per-day SOC stats (mean / min / max across the block's containers per day,
     # valid samples only — zero samples are idle/disconnected periods).
@@ -2955,9 +2962,20 @@ def build_executive_summary(g):
     rested = {int(b) for b in (g.get('rested_blocks') or set())}
     worst = [r for r in rank if int(r['block']) not in rested]
     if worst and worst[0]['availability_pct'] < 99.0:
+        # "of the fleet" is only true when nothing was held out of it. Blocks
+        # rested to balance cycles sit at the top of the 4.4 table by
+        # construction, and a summary that called one of the others the
+        # fleet's worst would be contradicted by the table on the same page.
+        n_rested_worse = sum(
+            1 for r in rank if int(r['block']) in rested
+            and r['availability_pct'] < worst[0]['availability_pct'])
+        scope = ('of the fleet' if not n_rested_worse else
+                 'of the blocks in normal operation ({} block(s) rested for '
+                 'cycle balancing are lower, and are listed in 4.4)'.format(
+                     n_rested_worse))
         risks.append(
             f"Block {int(worst[0]['block'])} had the lowest "
-            f"{AVAIL_OPERATIONAL_NAME.lower()} of the fleet at "
+            f"{AVAIL_OPERATIONAL_NAME.lower()} {scope} at "
             f"{_fmt_pct(worst[0]['availability_pct'])} "
             f"({_fmt_num(worst[0]['unavailable_h'])} h unavailable).")
     n_below = g.get('n_blocks_below_target') or 0
