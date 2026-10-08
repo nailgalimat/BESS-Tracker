@@ -251,10 +251,13 @@ async function resolve(ctx, field, which) {
         && ctx._els['f-pm-group'].style.display === 'none',
         'photos, "Repeat on another node", the status and the PM hours are '
         + 'not on a correction form');
-  check(ctx._els['f-date'].disabled === true && ctx._els['f-note'].disabled === true
+  check(ctx._els['f-note'].disabled === true
         && ctx._els['f-ptw'].disabled === true && ctx._els['f-proj'].disabled === true,
         'what a correction does not save is visibly locked, not a box that '
         + 'quietly drops what is typed into it');
+  check(ctx._els['f-date'].disabled === false,
+        'the date IS editable — a record written the morning after carries '
+        + 'the wrong day, and the date is what puts it in a month');
   check(ctx._els['f-edit-note'].innerHTML.includes('Correcting a record you wrote'),
         'and the form says what it is');
 
@@ -503,6 +506,44 @@ async function resolve(ctx, field, which) {
   await typeAndSave(ctx, { 'f-fault': 'Fuse blown — August, corrected' });
   check(srv._state['rec-aug'].fault_name === 'Fuse blown — August, corrected',
         'and the correction goes through: ' + srv._state['rec-aug'].fault_name);
+
+  // ══ the date ═════════════════════════════════════════════════════════════
+  // A record written the morning after the work carries the wrong day, and
+  // the date is what puts it in a month — so it is editable.
+  srv = makeServer([OPEN], PROJECTS_TAUGHT);
+  ctx = sandbox(srv, [OPEN], PROJECTS_TAUGHT);
+  await ctx.App.editEntry('rec-1');
+  check(ctx._els['f-date'].value === OPEN.log_date,
+        'the correction form opens on the record\'s own date');
+  await typeAndSave(ctx, { 'f-date': '2026-09-13' });
+  check(srv._state['rec-1'].log_date === '2026-09-13',
+        'a new date within an open month saves straight away: '
+        + srv._state['rec-1'].log_date);
+
+  // ...but moving one INTO a settled month is confirmed, not merely warned:
+  // the note on the form is about the month the record is in now.
+  srv = makeServer([OPEN], PROJECTS_TAUGHT);
+  ctx = sandbox(srv, [OPEN], PROJECTS_TAUGHT);
+  await ctx.App.editEntry('rec-1');
+  await typeAndSave(ctx, { 'f-date': '2026-08-14' });
+  check(srv._state['rec-1'].log_date === OPEN.log_date,
+        'the first Save does not move it into closed August');
+  check((ctx._els['create-error'].textContent || '').includes('Press Save again'),
+        'it says the month is settled and asks again: '
+        + (ctx._els['create-error'].textContent || '').slice(0, 60));
+  await ctx.App.saveEntry();
+  await ctx.App._doSync();
+  check(srv._state['rec-1'].log_date === '2026-08-14',
+        'the second Save moves it: ' + srv._state['rec-1'].log_date);
+
+  // a date in the future is refused outright
+  srv = makeServer([OPEN], PROJECTS_TAUGHT);
+  ctx = sandbox(srv, [OPEN], PROJECTS_TAUGHT);
+  await ctx.App.editEntry('rec-1');
+  await typeAndSave(ctx, { 'f-date': '2099-01-01' });
+  check(srv._state['rec-1'].log_date === OPEN.log_date
+        && (ctx._els['create-error'].textContent || '').includes('future'),
+        'a future date is refused');
 
   // September is not locked, so September says nothing
   ctx = sandbox(makeServer([OPEN], PROJECTS_TAUGHT), [OPEN], PROJECTS_TAUGHT);

@@ -45,13 +45,13 @@ const App = {
   // pm_activities, and it is the one writer of them). A phone that changed
   // them here would put the record and the availability number out of step
   // with nothing to notice it.
-  EDIT_FIELDS: ['fault_name', 'description', 'spare_parts', 'site_location',
-                'sap_ticket', 'category', 'plant_block', 'node_lc',
-                'node_device'],
+  EDIT_FIELDS: ['log_date', 'fault_name', 'description', 'spare_parts',
+                'site_location', 'sap_ticket', 'category', 'plant_block',
+                'node_lc', 'node_device'],
 
   /** What each field is called when the phone has to talk about it. */
   FIELD_LABELS: {
-    fault_name: 'Fault', description: 'What was done',
+    log_date: 'Date', fault_name: 'Fault', description: 'What was done',
     spare_parts: 'Spare parts', site_location: 'Location text',
     sap_ticket: 'SAP ticket', category: 'Type', plant_block: 'Block',
     node_lc: 'Level', node_device: 'Device',
@@ -1855,6 +1855,7 @@ const App = {
     const entry = await DB.getEntry(id);
     if (!entry || !this._canEdit(entry)) return;
     this._editId = id;
+    this._dateConfirmed = null;      // a fresh form asks again
     // The base this correction is measured against. A correction still waiting
     // to be sent keeps the base it already had — that is the last state the
     // server agreed with, and it is what tells an office edit from ours.
@@ -1921,7 +1922,11 @@ const App = {
       technician would believe the office had been told. */
   // Visible, and obviously not changeable here. They are left on the screen
   // because the record reads as one thing — but they are the office's.
-  EDIT_LOCKED: ['f-date', 'f-note', 'f-ptw', 'f-serial', 'f-proj'],
+  // The date is editable: a record written the morning after the work, or
+  // picked up from a draft days later, carries the wrong day, and the date
+  // is what puts it in a month. The month it moves INTO is checked on save,
+  // not only the one it came from — see _saveEdit.
+  EDIT_LOCKED: ['f-note', 'f-ptw', 'f-serial', 'f-proj'],
   // Not on the correction form at all: the status decides whether the work is
   // reported to the customer yet, and the hours are already in the month's
   // availability figure.
@@ -1968,6 +1973,7 @@ const App = {
     }
 
     const next = {
+      log_date:      document.getElementById('f-date').value,
       fault_name:    document.getElementById('f-fault').value.trim(),
       description:   document.getElementById('f-desc').value.trim(),
       spare_parts:   document.getElementById('f-parts').value.trim(),
@@ -1979,6 +1985,30 @@ const App = {
       node_device:   document.getElementById('f-device').value || '',
     };
 
+    if (!next.log_date) {
+      _showErr(errEl, 'Enter the date the work was done.');
+      return;
+    }
+    if (next.log_date > _today(1)) {
+      _showErr(errEl, 'The date is in the future.');
+      return;
+    }
+    // Moving a record into a month the office has already settled is the one
+    // date change that reaches the customer, so it is confirmed rather than
+    // warned about: the warning on the form is about the month the record is
+    // in now, which is not the month it is being moved to.
+    if (next.log_date.slice(0, 7) !== (entry.log_date || '').slice(0, 7)) {
+      const months = await this._lockedMonths(entry.project_id);
+      if (months && months.indexOf(next.log_date.slice(0, 7)) >= 0
+          && this._dateConfirmed !== next.log_date) {
+        this._dateConfirmed = next.log_date;
+        _showErr(errEl, _fmtMonth(next.log_date.slice(0, 7))
+                 + ' is closed — the office has settled that month\'s report '
+                 + 'with the customer. Press Save again to move this record '
+                 + 'into it, and tell them.');
+        return;
+      }
+    }
     if (!next.description) {
       _showErr(errEl, 'Enter what was done — the customer reads this line.');
       return;
