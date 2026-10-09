@@ -209,6 +209,68 @@ def load_hv_meter_daily(path):
     return df
 
 
+def load_customer_monthly_summary(path, year, month, sheet='Monthly Summary'):
+    """The customer's own month row from their Daily Generation Report.
+
+    They settle the month on the revenue meter, we measure at the battery,
+    and the two are not the same number: September 2026 reads 89.35 % at the
+    meter against 91.72 % at the LC totalizers. The gap is the plant's own
+    consumption and the transformer losses between the cells and the point of
+    interconnection — real energy, and theirs to account for. Where the
+    customer has a figure, the report quotes the customer's, so the month is
+    settled against one set of numbers rather than two.
+
+    Their import is already net of the plant's charging consumption: our HV
+    meter file reads 22,569.4 MWh imported for September and their Import
+    Energy is 22,189.7, a difference of 379.7 against an Auxiliary
+    Consumption (Charge) of 382.27.
+
+    Returns {} when the sheet, the row or the columns are not there — a
+    missing customer file must never stop the report.
+    """
+    WANT = {
+        'rte': 'rte_pct', 'export energy': 'export_mwh',
+        'import energy': 'import_mwh',
+        'auxiliary consumption (charge)': 'aux_charge_mwh',
+        'auxiliary consumption (discharge)': 'aux_discharge_mwh',
+    }
+    # The sheet also carries SOH and availability columns, and two of its
+    # headers normalise to the same key — reading those would quote whichever
+    # column came last. Only the columns this report actually uses are taken.
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(path, data_only=True)
+        if sheet not in wb.sheetnames:
+            return {}
+        ws = wb[sheet]
+    except Exception:                                           # noqa: BLE001
+        return {}
+    cols = {}
+    for c in range(1, ws.max_column + 1):
+        key = ' '.join(str(ws.cell(1, c).value or '').split()).lower()
+        if key in WANT:
+            cols[WANT[key]] = c
+    if not cols:
+        return {}
+    for r in range(2, ws.max_row + 1):
+        d = ws.cell(r, 1).value
+        if not hasattr(d, 'year') or (d.year, d.month) != (year, month):
+            continue
+        out = {}
+        for name, c in cols.items():
+            v = ws.cell(r, c).value
+            if isinstance(v, (int, float)):
+                out[name] = float(v)
+        # They store RTE as a fraction, not a percentage.
+        if 'rte_pct' in out and out['rte_pct'] <= 1.5:
+            out['rte_pct'] *= 100.0
+        if 'aux_charge_mwh' in out or 'aux_discharge_mwh' in out:
+            out['aux_total_mwh'] = (out.get('aux_charge_mwh', 0.0)
+                                    + out.get('aux_discharge_mwh', 0.0))
+        return out
+    return {}
+
+
 def load_lc_total_monthly(charge_path, discharge_path):
     """
     Load the authoritative monthly charge/discharge totalizer from the
@@ -3172,6 +3234,8 @@ def generate_tashkent_report(
     history_records=None,
     annexes=None,
     output_format='docx',          # 'docx' (default), 'pdf', or 'both'
+    customer_summary=None,         # dict from load_customer_monthly_summary
+    customer_report_path=None,     # or the customer's workbook to read it from
     permits=None,                  # [{no, date, title, status}] for 6.x
     permit_register_path=None,     # or the CPTW workbook to read them from
     permit_issued_to=None,         # filter: the party permits were issued to
@@ -3861,6 +3925,20 @@ def generate_tashkent_report(
             log(f"Note: could not read the permit register: {e}")
             permits = []
 
+    # The customer's own month row — their metered RTE and the plant's
+    # auxiliary consumption, which they asked to see reported.
+    if not customer_summary and customer_report_path:
+        customer_summary = load_customer_monthly_summary(
+            customer_report_path, int(dates[0].year), int(dates[0].month))
+        if customer_summary:
+            log(f"Customer summary: RTE "
+                f"{customer_summary.get('rte_pct', float('nan')):.2f}%, "
+                f"auxiliary consumption "
+                f"{customer_summary.get('aux_total_mwh', 0):,.1f} MWh")
+        else:
+            log("Note: no customer row for this month in "
+                f"{os.path.basename(customer_report_path)}")
+
     # Recurring-fault analysis (review items 5, 6, 7, 24, 27). Computed once
     # here so the PDF and the DOCX state the same findings.
     try:
@@ -3935,6 +4013,21 @@ def generate_tashkent_report(
     # days stay in. The daily chart still uses full-cycle days only — that is the
     # right place to drop noisy daily values, not the monthly total.
     fleet_rte = (total_discharge_mwh / total_charge_mwh * 100) if total_charge_mwh > 0 else 0
+
+    # The customer settles the month on their revenue meter, we measure at the
+    # battery, and the two are different numbers: September 2026 reads 89.35 %
+    # at the meter against 91.72 % at the LC totalizers. The gap is the plant's
+    # own consumption and the losses between the cells and the point of
+    # interconnection. Where the customer has the figure, the report quotes
+    # theirs, so the month is settled against one number rather than two; ours
+    # stays as the battery-side measure, named as such in 4.2.1.
+    fleet_rte_battery = fleet_rte
+    cust = customer_summary or {}
+    if cust.get('rte_pct'):
+        fleet_rte = float(cust['rte_pct'])
+        log(f"RTE: using the customer's metered figure {fleet_rte:.2f}% "
+            f"(battery-side was {fleet_rte_battery:.2f}%)")
+    aux_total_mwh = cust.get('aux_total_mwh')
 
     # Counters for the daily-chart note: full cycles vs partial among VALID days.
     full_days = (valid[valid['full_cycle']]
@@ -4198,8 +4291,10 @@ def generate_tashkent_report(
     story.append(Paragraph('<b>4.1  Plant Performance Data</b>', STYLE_H3))
     story.append(_styled_table(
         ['No', 'Item', 'Total (MWh)'],
-        [['1', 'Imported Energy (Charge)',  f'{total_charge_mwh:,.2f}'],
-         ['2', 'Exported Energy (Discharge)', f'{total_discharge_mwh:,.2f}']],
+        ([['1', 'Imported Energy (Charge)',  f'{total_charge_mwh:,.2f}'],
+          ['2', 'Exported Energy (Discharge)', f'{total_discharge_mwh:,.2f}']]
+         + ([['3', 'Auxiliary Consumption (BESS)',
+              f'{aux_total_mwh:,.2f}']] if aux_total_mwh else [])),
         col_widths=[20*mm, 110*mm, 40*mm]
     ))
     if calibration_applied:
@@ -5114,6 +5209,7 @@ def _build_tashkent_docx(output_path, _ctx):
     fleet_rte = g['fleet_rte']
     fleet_availability_container = g['fleet_availability_container']
     total_charge_mwh = g['total_charge_mwh']; total_discharge_mwh = g['total_discharge_mwh']
+    aux_total_mwh = g.get('aux_total_mwh')
     total_efc_fleet = g['total_efc_fleet']; avg_efc_per_block = g['avg_efc_per_block']
     days_excluded = g['days_excluded']
     n_prod_alarms = g['n_prod_alarms']; n_warn_persistent = g['n_warn_persistent']
@@ -5239,7 +5335,9 @@ def _build_tashkent_docx(output_path, _ctx):
     add_heading(doc, '4.1  Plant Performance Data', level=3)
     add_styled_table(doc, ['No', 'Item', 'Total (MWh)'], [
         ['1', 'Imported Energy (Charge)',  f'{total_charge_mwh:,.2f}'],
-        ['2', 'Exported Energy (Discharge)', f'{total_discharge_mwh:,.2f}']])
+        ['2', 'Exported Energy (Discharge)', f'{total_discharge_mwh:,.2f}']]
+        + ([['3', 'Auxiliary Consumption (BESS)', f'{aux_total_mwh:,.2f}']]
+           if aux_total_mwh else []))
     add_image_from_fig(doc, _chart_single_daily_bar(
         daily_kpi, 'charge_kwh', 'Daily Imported Power', '#0071E3'))
     add_caption(doc, 'Graph 1: Daily Imported Power (MWh)')
