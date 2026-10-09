@@ -17,6 +17,12 @@ Four inner tabs:
 Stock counts arrive as SAP exports; Import from Excel reads one through
 services/stock_excel_service.py and always shows what it would change first —
 nothing is written until that preview is confirmed.
+
+A count can also be typed in: Add material / Edit on the Stock Levels tab opens
+StockItemDialog, and everything it collects — including the description, which
+lives in the materials catalogue and not on the stock row — goes through the one
+service call `stock_service.edit_stock_item`, so a hand edit leaves the same
+audit trail an import does.
 """
 
 from PyQt5.QtWidgets import (
@@ -24,7 +30,8 @@ from PyQt5.QtWidgets import (
     QLabel, QComboBox, QDateEdit, QLineEdit, QDoubleSpinBox,
     QPushButton, QTableWidget, QTableWidgetItem, QGroupBox,
     QHeaderView, QAbstractItemView, QTabWidget, QMessageBox,
-    QFileDialog, QTextEdit, QDialog, QDialogButtonBox, QInputDialog
+    QFileDialog, QTextEdit, QDialog, QDialogButtonBox, QInputDialog,
+    QCompleter
 )
 from PyQt5.QtCore import Qt, QDate
 from PyQt5.QtGui import QColor
@@ -34,7 +41,7 @@ from services import stock_excel_service as stock_excel
 from services.stock_service import (
     get_all_warehouses, get_main_warehouse,
     ensure_project_warehouse, get_stock,
-    get_stock_all_warehouses, set_stock_level,
+    get_stock_all_warehouses, edit_stock_item,
     record_transaction, get_transactions,
     get_low_stock_items, export_stock_excel,
     create_warehouse, rename_warehouse,
@@ -93,9 +100,17 @@ class StockPage(QWidget):
 
 # ── STOCK VIEW ────────────────────────────────────────────────────────────────
 
+def _qty(value) -> str:
+    """A quantity as a count of things: 10, not 10.0 — but 1.5 when it is."""
+    try:
+        return "{:g}".format(float(value or 0))
+    except (TypeError, ValueError):
+        return str(value or "")
+
 class StockViewTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._items = []
         self._build_ui()
         self.refresh()
 
@@ -145,53 +160,51 @@ class StockViewTab(QWidget):
         top_row.addWidget(export_btn)
         layout.addLayout(top_row)
 
-        # Edit stock group
-        edit_group = QGroupBox("Set / Update Stock Level")
-        ef = QHBoxLayout()
-        ef.addWidget(QLabel("Material:"))
-        self.edit_mat = QComboBox()
-        self.edit_mat.setMinimumWidth(180)
-        self.edit_mat.setEditable(True)
-        ef.addWidget(self.edit_mat)
-        ef.addWidget(QLabel("Qty:"))
-        self.edit_qty = QDoubleSpinBox()
-        self.edit_qty.setRange(0, 999999)
-        self.edit_qty.setDecimals(1)
-        ef.addWidget(self.edit_qty)
-        ef.addWidget(QLabel("Min Qty:"))
-        self.edit_min = QDoubleSpinBox()
-        self.edit_min.setRange(0, 999999)
-        self.edit_min.setDecimals(1)
-        ef.addWidget(self.edit_min)
-        ef.addWidget(QLabel("Unit:"))
-        self.edit_unit = QLineEdit()
-        self.edit_unit.setFixedWidth(60)
-        ef.addWidget(self.edit_unit)
-        set_btn = PrimaryButton("💾  Set")
-        set_btn.clicked.connect(self._set_stock)
-        ef.addWidget(set_btn)
-        ef.addStretch()
-        edit_group.setLayout(ef)
-        layout.addWidget(edit_group)
+        # Typing a count in by hand — one row at a time, through the same
+        # service call the Excel import uses.
+        edit_row = QHBoxLayout()
+        add_btn = PrimaryButton("➕  Add material")
+        add_btn.setToolTip("Put a material on this warehouse's shelf, with its "
+                           "description and unit")
+        add_btn.clicked.connect(self._add_item)
+        edit_row.addWidget(add_btn)
+
+        self.edit_btn = SecondaryButton("✏️  Edit")
+        self.edit_btn.setToolTip("Correct the selected row — quantity, "
+                                 "description, unit or low-stock threshold")
+        self.edit_btn.clicked.connect(self._edit_item)
+        edit_row.addWidget(self.edit_btn)
+
+        hint = QLabel("Double-click a row to edit it. A quantity change is "
+                      "recorded in the History tab as IN or OUT.")
+        hint.setStyleSheet("color:#6B7A8D;")
+        edit_row.addWidget(hint)
+        edit_row.addStretch()
+        layout.addLayout(edit_row)
 
         self.stock_table = make_table([
             "Material #","Description","Qty","Min Qty","Unit","Status"
         ])
+        self.stock_table.doubleClicked.connect(lambda *_: self._edit_item())
         layout.addWidget(self.stock_table)
 
     def refresh(self):
+        # Keep the warehouse that is open. Rebuilding the list resets the combo
+        # to index 0 — the main warehouse — so every refresh used to silently
+        # bounce the user back to it: after an Excel import they were looking at
+        # a different shelf than the one they had just written to.
+        want = self.wh_combo.currentData()
         warehouses = get_all_warehouses()
         self.wh_combo.blockSignals(True)
         self.wh_combo.clear()
         for w in warehouses:
             label = ("🏭  " if w["is_main"] else "📦  ") + w["name"]
             self.wh_combo.addItem(label, userData=w["id"])
+        if want is not None:
+            i = self.wh_combo.findData(want)
+            if i >= 0:
+                self.wh_combo.setCurrentIndex(i)
         self.wh_combo.blockSignals(False)
-
-        # Update material dropdown
-        self.edit_mat.clear()
-        for mat in get_material_numbers():
-            self.edit_mat.addItem(mat)
 
         # Low stock alert
         low = get_low_stock_items()
@@ -207,6 +220,7 @@ class StockViewTab(QWidget):
         if not wh_id:
             return
         items = get_stock(wh_id)
+        self._items = items          # row index -> the dict the dialog edits
         self.stock_table.setRowCount(0)
         for item in items:
             row = self.stock_table.rowCount()
@@ -217,8 +231,8 @@ class StockViewTab(QWidget):
             for col, val in enumerate([
                 item["material_number"],
                 item.get("description",""),
-                str(item["quantity"]),
-                str(item["min_quantity"]),
+                _qty(item["quantity"]),
+                _qty(item["min_quantity"]),
                 item.get("unit",""),
                 status,
             ]):
@@ -227,15 +241,51 @@ class StockViewTab(QWidget):
                 cell.setBackground(bg)
                 self.stock_table.setItem(row, col, cell)
 
-    def _set_stock(self):
-        wh_id = self.wh_combo.currentData()
-        mat   = self.edit_mat.currentText().strip().upper()
-        if not wh_id or not mat:
-            QMessageBox.warning(self,"Required","Select warehouse and material.")
+    # ── one row by hand ───────────────────────────────────────────────────
+
+    def _add_item(self):
+        self._open_item_dialog(None)
+
+    def _edit_item(self):
+        row = self.stock_table.currentRow()
+        if row < 0 or row >= len(self._items):
+            QMessageBox.information(self, "Select a row",
+                                    "Click a material in the table first.")
             return
-        set_stock_level(wh_id, mat, self.edit_qty.value(),
-                        self.edit_min.value(), self.edit_unit.text().strip())
-        self._load_stock()
+        self._open_item_dialog(self._items[row])
+
+    def _open_item_dialog(self, existing):
+        """Collect the edit, apply it, then say what moved.
+
+        The dialog only collects — every write goes through the one service
+        call, which turns a quantity change into an IN/OUT transaction and
+        puts the description in the materials catalogue.
+        """
+        wh_id = self.wh_combo.currentData()
+        if not wh_id:
+            QMessageBox.warning(self, "No warehouse",
+                                "Select a warehouse first.")
+            return
+        dlg = StockItemDialog(self._warehouse_label(), wh_id, existing,
+                              parent=self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        try:
+            result = edit_stock_item(wh_id, **dlg.get_data())
+        except Exception as e:                                   # noqa: BLE001
+            QMessageBox.critical(self, "Error", str(e))
+            return
+        self.refresh()
+        self._select_material(result["material_number"])
+        QMessageBox.information(self, "Saved", _edit_summary(result))
+
+    def _select_material(self, material_number: str):
+        """Leave the row that was just edited selected, so the table shows it."""
+        for row, item in enumerate(self._items):
+            if item["material_number"] == material_number:
+                self.stock_table.selectRow(row)
+                self.stock_table.scrollToItem(self.stock_table.item(row, 0))
+                return
 
     def _export(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -422,6 +472,214 @@ class WarehouseDialog(QDialog):
         return (self.name_input.text().strip(),
                 self.proj_combo.currentData(),
                 self.notes_input.text().strip())
+
+
+# ── ONE STOCK ROW, BY HAND ────────────────────────────────────────────────────
+
+def _edit_summary(result: dict) -> str:
+    """What `edit_stock_item` just did, in the user's terms."""
+    mat = result["material_number"]
+    if not result["changed"]:
+        return f"{mat} — nothing changed."
+    lines = [f"{mat} added to this warehouse." if result["created"]
+             else f"{mat} updated."]
+    if result["delta"]:
+        direction = "IN" if result["delta"] > 0 else "OUT"
+        lines.append("  Quantity {:g} → {:g}  ({} {:g} in the History tab)"
+                     .format(result["before"], result["after"], direction,
+                             abs(result["delta"])))
+    if result["threshold_set"]:
+        lines.append("  Low-stock threshold set")
+    if result["catalogue"]:
+        lines.append("  Catalogue entry {} — the description shows everywhere "
+                     "this material appears, including the phone"
+                     .format(result["catalogue"]))
+    return "\n".join(lines)
+
+
+class StockItemDialog(QDialog):
+    """Put a material on the shelf, or correct the row that is already there.
+
+    The description deliberately sits in this dialog even though it is not a
+    property of the stock row: it lives in the `materials` catalogue, shared by
+    every warehouse, and `get_stock` only joins it in. Typing a material
+    straight into a warehouse used to leave it nameless — a quantity against a
+    number like VD000077 and nothing to say what it is — because the only place
+    to name it was the separate Materials catalogue dialog. Here it is one form.
+
+    Collects only; `StockViewTab` applies it through
+    `stock_service.edit_stock_item`.
+    """
+
+    def __init__(self, warehouse_label: str, warehouse_id: int,
+                 existing: dict = None, parent=None):
+        super().__init__(parent)
+        self._wh_id = warehouse_id
+        self._existing = existing or {}
+        self._editing = bool(existing)
+        self.setWindowTitle("Edit Stock Item" if self._editing
+                            else "Add Material to Stock")
+        self.setMinimumWidth(520)
+        self._build_ui(warehouse_label)
+        if self._editing:
+            self._populate(self._existing)
+        self._update_effect()
+
+    def _build_ui(self, warehouse_label: str):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        form = QFormLayout()
+        form.setSpacing(10)
+        form.addRow("Warehouse:", QLabel(f"<b>{warehouse_label}</b>"))
+
+        self.mat_input = QLineEdit()
+        self.mat_input.setPlaceholderText("e.g. VD000077")
+        if self._editing:
+            self.mat_input.setReadOnly(True)
+            self.mat_input.setStyleSheet("background:#f0f0f0;")
+        else:
+            # Contains-matching, as in the Daily Log form: the numbers are long
+            # and nobody remembers which one starts with what.
+            completer = QCompleter(get_material_numbers(), self)
+            completer.setCaseSensitivity(Qt.CaseInsensitive)
+            completer.setFilterMode(Qt.MatchContains)
+            self.mat_input.setCompleter(completer)
+            self.mat_input.editingFinished.connect(self._lookup_material)
+        form.addRow("Material # *:", self.mat_input)
+
+        self.desc_input = QLineEdit()
+        self.desc_input.setPlaceholderText("What this part is — e.g. "
+                                           "Fuse 250A 690V gG")
+        form.addRow("Description *:", self.desc_input)
+
+        self.unit_input = QLineEdit()
+        self.unit_input.setFixedWidth(90)
+        self.unit_input.setPlaceholderText("pcs")
+        form.addRow("Unit:", self.unit_input)
+
+        self.qty_spin = QDoubleSpinBox()
+        self.qty_spin.setRange(0, 999999)
+        self.qty_spin.setDecimals(2)
+        self.qty_spin.valueChanged.connect(lambda *_: self._update_effect())
+        form.addRow("Qty on the shelf:", self.qty_spin)
+
+        self.min_spin = QDoubleSpinBox()
+        self.min_spin.setRange(0, 999999)
+        self.min_spin.setDecimals(2)
+        self.min_spin.setToolTip("Low-stock alert threshold. 0 = no alert.")
+        form.addRow("Min Qty (alert):", self.min_spin)
+
+        self.reason_input = QLineEdit()
+        self.reason_input.setPlaceholderText(
+            "optional — why the quantity changed, e.g. recount after PM")
+        form.addRow("Reason:", self.reason_input)
+
+        layout.addLayout(form)
+
+        self.effect = QLabel("")
+        self.effect.setWordWrap(True)
+        layout.addWidget(self.effect)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save |
+                                   QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _populate(self, item: dict):
+        self.mat_input.setText(item.get("material_number", ""))
+        self.desc_input.setText(item.get("description", "") or "")
+        self.unit_input.setText(item.get("unit", "") or "")
+        self.qty_spin.setValue(float(item.get("quantity") or 0))
+        self.min_spin.setValue(float(item.get("min_quantity") or 0))
+
+    # ── typing a number that is already known ─────────────────────────────
+
+    def _lookup_material(self):
+        """Fill in what the app already knows about the number just typed.
+
+        Two sources, and the warehouse wins: a material already stocked here is
+        not a new row at all, so its quantity and threshold are shown rather
+        than left at zero — otherwise Save would read as 'count it as 0' and
+        book an OUT for everything on the shelf. Failing that, the catalogue
+        supplies the description and unit, so a known part is never renamed by
+        hand twice.
+        """
+        number = self.mat_input.text().strip().upper()
+        if not number or number == self._existing.get("material_number"):
+            return
+        self.mat_input.setText(number)
+
+        # get_stock carries the quantity, the threshold, the unit and the
+        # joined catalogue description — everything the form holds.
+        held = next((r for r in get_stock(self._wh_id)
+                     if r["material_number"] == number), None)
+        if held:
+            self._existing = held
+            self._populate(held)
+        else:
+            self._existing = {}
+            catalogue = get_material(number) or {}
+            if catalogue.get("description") and not self.desc_input.text().strip():
+                self.desc_input.setText(catalogue["description"])
+            if catalogue.get("unit") and not self.unit_input.text().strip():
+                self.unit_input.setText(catalogue["unit"])
+        self._update_effect()
+
+    # ── what Save will do ─────────────────────────────────────────────────
+
+    def _update_effect(self):
+        before = float(self._existing.get("quantity") or 0)
+        after = self.qty_spin.value()
+        delta = after - before
+        known = bool(self._existing)
+        if known and abs(delta) > 1e-9:
+            text = ("Quantity {:g} → {:g}: recorded as {} {:g} in the History "
+                    "tab.".format(before, after,
+                                  "IN" if delta > 0 else "OUT", abs(delta)))
+            colour = "#2E7D32" if delta > 0 else "#C62828"
+        elif known:
+            text = ("Already {:g} on the shelf — the quantity stays as it is."
+                    .format(before))
+            colour = "#6B7A8D"
+        elif after:
+            text = ("New row: recorded as IN {:g} in the History tab."
+                    .format(after))
+            colour = "#2E7D32"
+        else:
+            text = "New row with nothing on the shelf yet."
+            colour = "#6B7A8D"
+        if known and not self._editing:
+            text = "⚠️  This material is already stocked here.  " + text
+        self.effect.setText(text)
+        self.effect.setStyleSheet(f"color:{colour};")
+
+    def _validate_and_accept(self):
+        if not self.mat_input.text().strip():
+            QMessageBox.warning(self, "Required", "Material number is required.")
+            return
+        if not self.desc_input.text().strip():
+            # The whole point of having the field here: a number with no name
+            # is what this dialog exists to stop.
+            QMessageBox.warning(
+                self, "Description required",
+                "Give this material a description — a bare number tells the "
+                "next person nothing.\n\nIt is stored in the materials "
+                "catalogue and shows everywhere the material appears.")
+            return
+        self.accept()
+
+    def get_data(self) -> dict:
+        """Keyword arguments for `stock_service.edit_stock_item`."""
+        return {
+            "material_number": self.mat_input.text().strip().upper(),
+            "description":     self.desc_input.text().strip(),
+            "unit":            self.unit_input.text().strip(),
+            "quantity":        self.qty_spin.value(),
+            "min_quantity":    self.min_spin.value(),
+            "reason":          self.reason_input.text().strip(),
+        }
 
 
 # ── IMPORT PREVIEW DIALOG ─────────────────────────────────────────────────────

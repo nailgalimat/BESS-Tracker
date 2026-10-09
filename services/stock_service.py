@@ -11,6 +11,7 @@ Spare parts stock management.
 
 import pandas as pd
 from database.db_manager import get_connection
+from services import material_service as _materials
 from typing import Optional, List
 from datetime import date as date_type
 
@@ -368,6 +369,179 @@ def _adjust_stock(conn, warehouse_id: int, material_number: str, delta: float):
             INSERT INTO stock_items (warehouse_id, material_number, quantity)
             VALUES (?, ?, ?)
         """, (warehouse_id, material_number, max(0, delta)))
+
+
+# ── A HAND EDIT ───────────────────────────────────────────────────────────────
+
+def edit_stock_item(
+    warehouse_id: int,
+    material_number: str,
+    quantity: Optional[float] = None,
+    min_quantity: Optional[float] = None,
+    unit: Optional[str] = None,
+    description: Optional[str] = None,
+    reason: str = "",
+    reference: str = "",
+    transaction_date: Optional[str] = None,
+    project_id: Optional[int] = None,
+) -> dict:
+    """Add or correct one stock row by hand — the single entry point for it.
+
+    This is what the Stock Levels tab calls when a material is typed in or a
+    row is edited. It exists because the three obvious ways of doing it by hand
+    each lose something:
+
+    * `set_stock_level` writes quantity, threshold and unit in one go, so its
+      `min_quantity=0` default silently zeroes the low-stock alert of any row
+      edited for an unrelated reason, and it moves the quantity without an
+      audit row, leaving an unexplained jump in the history.
+    * `ensure_stock_item` + `set_min_quantity` keep each field honest but say
+      nothing about the quantity.
+    * None of them touch the `materials` catalogue, which is where the
+      description lives — `get_stock` reads it through a LEFT JOIN. A material
+      typed straight into the warehouse therefore had a quantity and a blank
+      name, and the only way to give it one was the Materials dialog.
+
+    So: `None` means "no opinion" and leaves that field exactly as it is; a
+    value is applied. A description or unit passed as "" is an explicit clear,
+    not an absent field — callers that merely have nothing to say pass None
+    (the UI sends only the fields the user actually edited).
+
+    The quantity moves as a difference through `record_transaction` — IN when
+    it goes up, OUT when it goes down — measured against what is on the shelf
+    at this moment, re-read here, so a dialog left open while stock moved
+    cannot overshoot. The same rule the Excel import follows. The audit row
+    always states the arithmetic; `reason` is the caller's own words added
+    after it, which is the one thing the numbers cannot say.
+
+    Returns what it did:
+        {'material_number', 'created', 'before', 'after', 'delta',
+         'transaction_id', 'threshold_set', 'unit_set', 'catalogue', 'changed'}
+    """
+    # Everything is validated before anything is written: a refusal halfway
+    # through would leave the row created and the quantity not moved, which is
+    # exactly the junk a hand edit is supposed to be able to fix.
+    material_number = (material_number or "").strip().upper()
+    if not material_number:
+        raise ValueError("material number is required")
+    if quantity is not None:
+        quantity = float(quantity)
+        if quantity < 0:
+            raise ValueError("quantity cannot be negative: {:g}".format(quantity))
+    if min_quantity is not None:
+        min_quantity = float(min_quantity)
+        if min_quantity < 0:
+            raise ValueError(
+                "min_quantity cannot be negative: {:g}".format(min_quantity))
+
+    unit_text = None if unit is None else unit.strip()
+    out = {"material_number": material_number, "created": False,
+           "before": 0.0, "after": 0.0, "delta": 0.0,
+           "transaction_id": None, "threshold_set": False,
+           "unit_set": False, "catalogue": None, "changed": False}
+
+    # The row first, carrying the unit — so a brand-new material arrives with
+    # its unit of measure rather than getting one on a later pass.
+    out["created"] = ensure_stock_item(warehouse_id, material_number,
+                                       unit_text or "")
+    if unit_text is not None and not out["created"]:
+        out["unit_set"] = _set_unit(warehouse_id, material_number, unit_text)
+    elif out["created"] and unit_text:
+        out["unit_set"] = True
+
+    held = get_stock_quantity(warehouse_id, material_number) or {}
+    out["before"] = float(held.get("quantity") or 0)
+    out["after"] = out["before"]
+
+    if quantity is not None:
+        target = quantity
+        delta = target - out["before"]
+        if abs(delta) > 1e-9:
+            if project_id is None:
+                project_id = _warehouse_project(warehouse_id)
+            out["transaction_id"] = record_transaction(
+                warehouse_id=warehouse_id,
+                material_number=material_number,
+                transaction_type="IN" if delta > 0 else "OUT",
+                quantity=abs(delta),
+                transaction_date=transaction_date or date_type.today().isoformat(),
+                project_id=project_id,
+                reference=(reference or "").strip() or "MANUAL EDIT",
+                notes="Hand edit: {:g} → {:g}".format(out["before"], target)
+                      + (" — " + reason.strip() if (reason or "").strip() else ""),
+            )
+            out["after"] = target
+            out["delta"] = delta
+
+    if min_quantity is not None:
+        out["threshold_set"] = set_min_quantity(warehouse_id, material_number,
+                                                min_quantity)
+
+    if description is not None or unit_text is not None:
+        out["catalogue"] = _save_catalogue(material_number, description,
+                                           unit_text)
+
+    out["changed"] = bool(out["created"] or out["delta"] or out["threshold_set"]
+                          or out["unit_set"] or out["catalogue"])
+    return out
+
+
+def _set_unit(warehouse_id: int, material_number: str, unit: str) -> bool:
+    """Writes the unit of measure on a stock row — including clearing it.
+
+    `ensure_stock_item` deliberately ignores an empty unit ("said nothing" is
+    not "blank it"), which is right for the Excel import and wrong for someone
+    deleting a unit they typed by mistake. Returns True when it changed.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute("""
+            SELECT id, unit FROM stock_items
+            WHERE warehouse_id=? AND material_number=?
+        """, (warehouse_id, material_number)).fetchone()
+        if row is None or (row["unit"] or "") == unit:
+            return False
+        conn.execute("""
+            UPDATE stock_items SET unit=?, updated_at=datetime('now')
+            WHERE id=?
+        """, (unit, row["id"]))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def _warehouse_project(warehouse_id: int) -> Optional[int]:
+    """The project a warehouse belongs to, so the audit row carries it."""
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT project_id FROM warehouses WHERE id=?",
+                           (warehouse_id,)).fetchone()
+        return row["project_id"] if row else None
+    finally:
+        conn.close()
+
+
+def _save_catalogue(material_number: str, description: Optional[str],
+                    unit: Optional[str]) -> Optional[str]:
+    """Merge a description / unit into the materials catalogue.
+
+    Returns 'created', 'updated' or None when nothing needed writing. Only the
+    fields that were passed are touched: `save_material` writes all three
+    columns, so whatever is not being edited is read back and written as it
+    was, and the notes are carried through untouched.
+    """
+    existing = _materials.get_material(material_number) or {}
+    want_description = ((existing.get("description") or "")
+                        if description is None else description.strip())
+    want_unit = (existing.get("unit") or "") if unit is None else unit
+    if existing and want_description == (existing.get("description") or "") \
+            and want_unit == (existing.get("unit") or ""):
+        return None
+    if not existing and not want_description and not want_unit:
+        return None
+    return _materials.save_material(material_number, want_description,
+                                    want_unit, existing.get("notes") or "")
 
 
 def get_transactions(warehouse_id: Optional[int] = None,
