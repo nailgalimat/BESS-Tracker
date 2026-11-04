@@ -953,6 +953,10 @@ def _parse_manual_unavail(manual_unavailability):
             'hours': hours,
             'cause': (m.get('cause') or 'Operator-reported').strip(),
             'subsystem': (m.get('subsystem') or '—').strip(),
+            # pm_as_unavailability stamps the PM record's id. Carried through
+            # so a PM row can be told from an operator-typed one by what it is
+            # rather than by reading its wording.
+            'pm_id': m.get('pm_id'),
         })
     return out
 
@@ -2228,6 +2232,31 @@ def _actions_by_block(action_items):
     return out
 
 
+def per_block_fault_hours(g, fault_states=None):
+    """Wall-clock hours each block spent in a fault shutdown.
+
+    Counted on the block's own clock: a sample counts once when either of the
+    block's local controllers is in a fault-shutdown state. Adding the two
+    controllers together instead would double the figure whenever both trip
+    at once, which is exactly what a block-level fault does — October's block
+    54 reads 5.0 controller-hours against 3.25 on the clock. The summed form
+    belongs in the contractual formula, where each controller carries half the
+    block's capacity; it does not belong in a column headed "hours".
+    """
+    ws = g.get('ws_long')
+    if ws is None or getattr(ws, 'empty', True):
+        return {}
+    if not {'Datetime', 'block_id', 'working_status'}.issubset(ws.columns):
+        return {}
+    states = {s.upper() for s in (fault_states or FAULT_SHUTDOWN_STATES)}
+    d = ws[['Datetime', 'block_id', 'working_status']].copy()
+    d['fault'] = (d['working_status'].astype(str).str.strip().str.upper()
+                  .isin(states))
+    per_ts = d.groupby(['block_id', 'Datetime'])['fault'].any()
+    return {int(b): h * 5 / 60.0
+            for b, h in per_ts.groupby('block_id').sum().items()}
+
+
 def build_lowest_availability_blocks(g, top_n=10):
     """Review item 20: a table beside the heatmap — block, total unavailable
     hours, reason, corrective-action status."""
@@ -2237,6 +2266,11 @@ def build_lowest_availability_blocks(g, top_n=10):
                            'this period, so no block ranking can be given.')
     reasons = _block_fault_reasons(g)
     rested = {int(b) for b in (g.get('rested_blocks') or set())}
+    # Blocks whose downtime was the PM. They are no longer in the 4.4.1 frame
+    # (see the filter where it is built), and without this they would read as
+    # "no fault shutdown recorded", which says nothing about what happened.
+    pm_blocks = {int(b) for b in (g.get('pm_blocks') or set())}
+    fault_hours = per_block_fault_hours(g)
     by_block = _actions_by_block(g.get('open_action_items'))
     rows = []
     for r in rank[:top_n]:
@@ -2246,6 +2280,8 @@ def build_lowest_availability_blocks(g, top_n=10):
                       '(not a fault)')
         elif b in reasons:
             reason = reasons[b]
+        elif b in pm_blocks:
+            reason = 'Preventive maintenance as scheduled (not a fault)'
         else:
             reason = ('No fault shutdown recorded — block on standby or out '
                       'of operation')
@@ -2262,11 +2298,19 @@ def build_lowest_availability_blocks(g, top_n=10):
         elif b in reasons:
             action = 'No open action recorded'
         else:
-            action = 'None required'
+            action = 'None required'          # PM, or simply idle
+        # Split the hours so the table cannot be read as "this block was in
+        # a fault for 381 hours". Fault time is the block's own clock; the
+        # rest is standby or a stop, which on this plant is mostly the
+        # periods when no dispatch instruction was given.
+        total_h = float(r['unavailable_h'] or 0.0)
+        fault_h = min(float(fault_hours.get(b, 0.0)), total_h)
         rows.append([
             f"Block {b}",
             _fmt_pct(r['availability_pct']),
-            _fmt_num(r['unavailable_h']),
+            _fmt_num(total_h),
+            _fmt_num(fault_h),
+            _fmt_num(total_h - fault_h),
             reason,
             action,
         ])
@@ -2278,9 +2322,18 @@ def build_lowest_availability_blocks(g, top_n=10):
         f'are the block\'s own clock — the share of the day its containers '
         f'were not in an available state — so they are not capacity-weighted '
         f'and are not the hours used for the contractual figure (see 4.2.1).'))
+    blocks.append(('p',
+        'The hours are split. "In fault shutdown" is the time a local '
+        'controller of that block was actually in a fault state, on the '
+        'block\'s clock. "Standby or stopped" is the rest: the block was '
+        'healthy but not operating. Most of it is time when no dispatch '
+        'instruction was given, which is why blocks with no fault at all '
+        'appear in this table.'))
     blocks.append(('table',
         ['Block', AVAIL_OPERATIONAL_NAME.split(' (')[0], 'Unavailable hours',
-         'Reason', 'Corrective action status'], rows, [16, 24, 22, 56, 52]))
+         'In fault shutdown', 'Standby or stopped',
+         'Reason', 'Corrective action status'], rows,
+        [14, 20, 18, 18, 20, 44, 36]))
     return blocks
 
 
@@ -2539,9 +2592,9 @@ def _recurring_sentence(s):
                           for b, c in s['top_blocks'])))
     elif s['blocks'] >= 20:
         bits.append(
-            'It is spread across {} blocks with no concentration, which '
-            'points to a fleet characteristic rather than a defect on '
-            'particular equipment.'.format(s['blocks']))
+            'It is spread evenly across {} blocks, so this is how the '
+            'equipment behaves across the whole plant, not a problem with '
+            'particular units.'.format(s['blocks']))
     if s['night_pct'] >= 70:
         bits.append('{:.0f}% of events fall between 20:00 and 06:00, peaking '
                     'at {:02d}:00.'.format(s['night_pct'], s['peak_hour']))
@@ -3714,6 +3767,7 @@ def generate_tashkent_report(
                 'cause': m['cause'], 'subsystem': m['subsystem'],
                 'severity': '', 'fault_events': None,
                 'downtime_h': m['hours'], 'manual': True,
+                'pm_id': m.get('pm_id'),
             })
         if man_rows:
             mdf = pd.DataFrame(man_rows)
@@ -3724,6 +3778,30 @@ def generate_tashkent_report(
                     [unavail_reasons.assign(manual=False), mdf],
                     ignore_index=True, sort=False,
                 ).sort_values('downtime_h', ascending=False).reset_index(drop=True)
+
+    # PM is not a fault shutdown, so it is not listed in 4.4.1.
+    #
+    # The hours are unchanged: a PM record still counts against availability,
+    # through manual_unavailability into the contractual figure and into the
+    # heatmap. What is dropped is the row in the table, whose own sentence says
+    # it lists genuine fault shutdowns. With seventy blocks serviced in a month
+    # the PM rows are seventy near-identical "PM as per the checklist — 4.0 h"
+    # lines that push every real incident past the twenty the table shows.
+    # The blocks are kept, so the lowest-availability table can say that is
+    # what their downtime was.
+    pm_blocks = set()
+    if (unavail_reasons is not None and not unavail_reasons.empty
+            and 'pm_id' in unavail_reasons.columns):
+        is_pm = unavail_reasons['pm_id'].notna()
+        if is_pm.any():
+            pm_blocks = {int(b) for b in
+                         unavail_reasons.loc[is_pm, 'block_id'].dropna()}
+            log(f"4.4.1: {int(is_pm.sum())} PM row(s) left out of the table — "
+                f"planned maintenance is not a fault shutdown; its "
+                f"{unavail_reasons.loc[is_pm, 'downtime_h'].sum():.1f} h still "
+                f"count against availability")
+            unavail_reasons = (unavail_reasons[~is_pm]
+                               .reset_index(drop=True))
 
     log("Computing plant-level hours availability...")
     plant_avail = calc_plant_hours_availability_tashkent(
