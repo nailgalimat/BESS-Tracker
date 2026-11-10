@@ -126,12 +126,51 @@ def add_paragraph(doc, text, *, bold=False, italic=False, size=10,
     return p
 
 
+def plain_text(text):
+    """Tidy the mechanical habits out of generated sentences before they are
+    printed.
+
+    The report text is assembled from templates, and three things gave that
+    away on every page: "3 period(s)" where a person writes "3 periods", the
+    spaced dash used as an all-purpose joint, and "genuine" in front of every
+    fault. This is done once here, for every paragraph, caption and table
+    cell, so a new template cannot bring them back.
+
+    A dash standing alone in a table cell means "no value" and is left alone.
+    """
+    import re
+    if not isinstance(text, str) or not text:
+        return text
+
+    def plural(m):
+        num = m.group(1).replace(',', '')
+        try:
+            one = float(num) == 1.0
+        except ValueError:
+            one = False
+        return m.group(0)[:-3] + ('' if one else 's')
+
+    # "3 planned exclusion period(s)", "<b>70</b> block(s)"
+    text = re.sub(r'(\d[\d,]*(?:\.\d+)?)(?:</b>)?\s(?:[A-Za-z\-/]+\s){0,4}'
+                  r'[A-Za-z\-/]+\(s\)', plural, text)
+    text = text.replace('(s)', 's')
+    # a date range
+    text = re.sub(r'(\d{4})\s—\s(\d)', r'\1 to \2', text)
+    # a label, then its explanation
+    text = re.sub(r'\s—\s(?=(?:<b>)?[A-Z])', ': ', text)
+    text = text.replace(' — ', ', ')
+    text = re.sub(r'\b[Gg]enuinely\s', '', text)
+    text = re.sub(r'\b(a|the|of|only|no|remaining \d+)\sgenuine\s', r'\1 ', text)
+    return text
+
+
 def _add_runs(p, text, *, bold=False, italic=False, size=10, color=NAVY):
     """Render a string that may contain <b>...</b> markers as alternating
     bold/non-bold runs. Also handles &amp; / &lt; / &gt; HTML entities."""
     import re
     if not text:
         return
+    text = plain_text(text)
     # Decode common HTML entities used in PDF paragraph text
     text = (text.replace('&amp;', '&')
                 .replace('&lt;', '<')
@@ -221,6 +260,8 @@ def add_styled_table(doc, headers, rows):
             # Strip HTML tags that may have been in the original PDF paragraph
             import re as _re
             txt = _re.sub(r'<[^>]+>', '', txt)
+            if txt.strip() != '—':
+                txt = plain_text(txt)
             run = p.add_run(txt)
             run.font.size = Pt(8)
             run.font.color.rgb = NAVY
@@ -260,7 +301,7 @@ def add_image_from_fig(doc, fig, width_inches=6.5):
 def add_caption(doc, text):
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run(text)
+    run = p.add_run(plain_text(text))
     run.italic = True
     run.font.size = Pt(8)
     run.font.color.rgb = TEXT_MUTE

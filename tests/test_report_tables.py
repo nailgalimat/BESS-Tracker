@@ -126,13 +126,18 @@ SECTIONS = {
     'Executive Summary':        'exec summary (item 45)',
     '4.2.1  KPI Calculation Summary': 'KPI calculation summary (item 3)',
     'Cycle definition':         'cycle definition (item 10)',
-    'Lowest-availability blocks': 'worst blocks beside the heatmap (item 20)',
+    # Ranked on fault-shutdown time since 2026-11: only that counts as
+    # unavailability, and no formula for an operational measure is agreed.
+    'Blocks with the most fault-shutdown time':
+        'worst blocks beside the heatmap (item 20)',
     'Open issues and action tracker': 'action tracker (item 43)',
-    '4.5  SCADA Data Quality and Coverage': 'data quality statement (item 44)',
+    # Moved out of 4.5 into an annex at the end of the report (2026-11).
+    'SCADA data quality and coverage': 'data quality statement (item 44)',
     'Round-trip efficiency: movement against previous months':
         'RTE variance commentary (item 19)',
-    # Stem only: the heading counts the measures actually shown.
-    'Availability: ': 'availability naming (item 16)',
+    # The 'Availability: N measures' block is no longer printed in the Word
+    # report: 4.2.1 names every measure with its formula, and saying it twice
+    # was one of the repeats removed in 2026-11.
 }
 
 print('\n' + '=' * 60)
@@ -363,7 +368,7 @@ H.check(T._support_requests({'recommendations': ['Keep the coolant topped up'],
 
 print('\n=== the data-quality statement can see a truncated export ===')
 DQ = '\n'.join(_docx_text(T.build_data_quality(CTX)))
-H.check('1 of 3 day(s)' in DQ and '2 day(s) of the reporting period are not '
+H.check('1 of 3 days' in DQ and '2 days of the reporting period are not '
         'covered' in DQ,
         'the 1-day alarm log in a 3-day period is reported as incomplete')
 H.check('row limit' in DQ,
@@ -377,7 +382,7 @@ H.check('How missing data was treated' in DOCX_TEXT
 
 print('\n=== the cycle definition describes what the code did ===')
 CYC_BMS = '\n'.join(_docx_text(T.build_cycle_definition(CTX)))
-H.check('BMS-reported' in CYC_BMS and 'register at the end of the period' in CYC_BMS
+H.check('BMS-reported' in CYC_BMS and 'counter at the end of the period' in CYC_BMS
         and 'CHARGE AND DISCHARGE CYCLES' in CYC_BMS,
         'with a CMU snapshot: the BMS register delta, with its tag')
 CYC_EFC = '\n'.join(_docx_text(T.build_cycle_definition(

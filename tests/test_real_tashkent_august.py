@@ -153,7 +153,7 @@ for gone in ('Dry Node Input Fault', 'LC System Alarm State', 'LCU Other Alarm')
 H.check('Unclassified' not in txt, 'no blank-resolution "Unclassified" row')
 
 print('\n=== availability ===')
-m = re.search(r'availability for the period was ([\d.]+)%', txt)
+m = re.search(r'Contractual BESS availability was ([\d.]+)%', txt)
 avail = float(m.group(1)) if m else None
 H.check(avail is not None and abs(avail - GOLDEN['availability_pct']) < 0.005,
         'BESS availability {}% (accepted {}%)'.format(avail, GOLDEN['availability_pct']))
@@ -183,15 +183,11 @@ for _title, _what in (
         ('Executive Summary', 'executive summary (item 45)'),
         ('4.2.1  KPI Calculation Summary', 'KPI calculation summary (item 3)'),
         ('Cycle definition', 'cycle definition (item 10)'),
-        ('Lowest-availability blocks', 'worst blocks beside the heatmap (item 20)'),
+        ('Blocks with the most fault-shutdown time', 'worst blocks beside the heatmap (item 20)'),
         ('Open issues and action tracker', 'action tracker (item 43)'),
-        ('4.5  SCADA Data Quality and Coverage', 'data quality (item 44)'),
+        ('SCADA data quality and coverage', 'data quality (item 44)'),
         ('Round-trip efficiency: movement against previous months',
-         'RTE variance commentary (item 19)'),
-        # The heading counts the measures actually shown — the plant-level one
-        # is withheld while no redundancy threshold is agreed — so match the
-        # stem, not a fixed number.
-        ('Availability: ', 'availability naming (item 16)')):
+         'RTE variance commentary (item 19)')):
     H.check(_title in txt, '{} — "{}"'.format(_what, _title))
 H.check('How missing data was treated' in txt and 'Coverage findings' in txt,
         'the data-quality section states coverage and treatment')
@@ -328,7 +324,7 @@ H.check(docx_value(docx2, 'Accumulative Number of Cycles in one Year')
         'Cycles in one Year stable on re-run (it used to grow by a month per run)')
 _txt2 = '\n'.join([p.text for p in Document(docx2).paragraphs]
                   + [c.text for t in Document(docx2).tables for r in t.rows for c in r.cells])
-m2 = re.search(r'availability for the period was ([\d.]+)%', _txt2)
+m2 = re.search(r'Contractual BESS availability was ([\d.]+)%', _txt2)
 H.check(m2 and abs(float(m2.group(1)) - GOLDEN['availability_pct']) < 0.005,
         'v1 availability {}% — the same as the export-folder run'.format(m2.group(1) if m2 else None))
 

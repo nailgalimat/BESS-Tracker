@@ -2133,29 +2133,17 @@ def build_cycle_definition(g):
     snap_used = not getattr(snap, 'empty', True)
     blocks = [('h3', 'Cycle definition')]
     if snap_used:
+        # Was 190 words over three paragraphs. What a reader needs is what
+        # the number is and where it comes from; how unreadable registers
+        # are bridged is in the data-quality annex.
         blocks.append(('p',
-            'The cycle figures are <b>BMS-reported</b>, not an estimate from '
-            'energy. Every CMU (battery module controller) keeps a cumulative '
-            '"charge and discharge cycles" register. For one block the reading '
-            'is the mean across that block\'s CMUs, and <b>cycles in the month '
-            '= register at the end of the period − register at the start</b>. '
-            'A register reading of 0 means the module was not communicating — '
-            'a cumulative counter cannot go down — so the nearest non-zero '
-            'reading is used instead: walking forward from the start of the '
-            'period, and backward from its end.'))
-        blocks.append(('p',
-            '"Number of Cycles in Reported Month" is the mean of those '
-            'per-block deltas. The fleet total is that mean × the number of '
-            'blocks, so that total = average × blocks reconciles on the page '
-            'even when a few registers were unreadable. "Accumulative Number '
-            'of Cycles" is the register itself at the end of the month, and '
-            '"Accumulative Number of Cycles in one Year" is the register now '
-            'minus its reading at the start of the calendar year — so a month '
-            'with no report of its own is still carried by the counter.'))
-        blocks.append(('small',
-            'Source tag: ' + TAG_CYCLES + '. Blocks whose register could not '
-            'be read at a period boundary are left out of the average and are '
-            'named in the note under the per-block table.'))
+            'The cycle figures are <b>BMS-reported</b>: every battery module '
+            'controller keeps a cumulative cycle counter. Cycles in the '
+            'month are the counter at the end of the period minus the '
+            'counter at its start, averaged over the modules of a block and '
+            'then over the blocks. The yearly figure is counted the same '
+            'way from the start of the calendar year.'))
+        blocks.append(('small', 'Source tag: ' + TAG_CYCLES + '.'))
     else:
         blocks.append(('p',
             'No BMS cycle register was exported for this period, so the '
@@ -2179,7 +2167,13 @@ def per_block_availability(g):
     """Per-block operational availability and unavailable hours, worst first.
 
     Both come from the same `daily_kpi` frame the heatmap and the
-    container-level figure use, so the table cannot disagree with them."""
+    container-level figure use, so the table cannot disagree with them.
+
+    Nothing calls this at the moment. The 4.4 table and the summary's top
+    risk both rank on fault-shutdown time instead, because only that counts
+    as unavailability and no formula for an operational measure has been
+    agreed for this plant. Kept for when one is: the KPI table still carries
+    the fleet figure, marked as awaiting that formula."""
     dk = g.get('daily_kpi')
     if dk is None or getattr(dk, 'empty', True) or 'availability_pct' not in dk.columns:
         return []
@@ -2232,6 +2226,92 @@ def _actions_by_block(action_items):
     return out
 
 
+def build_operation_summary(g):
+    """Section 2: how the plant was run in the month.
+
+    This section used to repeat the executive summary sentence for sentence.
+    What neither said is the thing that explains the month's figures: on how
+    many days the plant was actually discharged, and how much of the energy it
+    took in was still in the battery when the month closed. October 2026
+    discharged on 14 of 31 days and ended 77 points of SOC above where it
+    began; without that, an RTE of 77 % and under ten cycles read as a plant
+    in trouble.
+
+    Only what the data shows is stated. Why the plant was not dispatched is
+    the operator's to add.
+    """
+    dk = g.get('daily_kpi')
+    if dk is None or getattr(dk, 'empty', True):
+        return [('p', 'No daily operating data is available for this period.')]
+    d = dk.copy()
+    d['date'] = pd.to_datetime(d['date'], errors='coerce')
+    d = d.dropna(subset=['date'])
+    by_day = d.groupby('date')[['charge_kwh', 'discharge_kwh']].sum()
+    n_days = int(len(by_day))
+    if not n_days:
+        return [('p', 'No daily operating data is available for this period.')]
+    # A day counts when it moved a real share of a normal day's energy; a few
+    # units trickling for an hour is not the plant being dispatched.
+    floor_dis = 0.05 * float(by_day['discharge_kwh'].max() or 0)
+    floor_chg = 0.05 * float(by_day['charge_kwh'].max() or 0)
+    dis_days = by_day[by_day['discharge_kwh'] > floor_dis]
+    chg_days = by_day[by_day['charge_kwh'] > floor_chg]
+    out = []
+    text = (f"The plant was discharged on <b>{len(dis_days)}</b> of "
+            f"{n_days} days and charged on <b>{len(chg_days)}</b>.")
+    if len(dis_days):
+        last = dis_days.index.max()
+        text += f" The last discharge of the month was on {last:%d %B}."
+        idle_tail = int((by_day.index.max() - last).days)
+        if idle_tail >= 2:
+            text += (f" For the {idle_tail} days after it the plant was "
+                     f"charged or on standby and was not discharged.")
+    out.append(('p', text))
+
+    first_day, last_day = by_day.index.min(), by_day.index.max()
+    s0 = pd.to_numeric(d[d['date'] == first_day].get('start_soc_pct'),
+                       errors='coerce').mean()
+    s1 = pd.to_numeric(d[d['date'] == last_day].get('end_soc_pct'),
+                       errors='coerce').mean()
+    installed = float((g.get('contractual_avail') or {}).get('installed_kwh')
+                      or 0) / 1000.0
+    if pd.notna(s0) and pd.notna(s1) and installed and abs(s1 - s0) >= 10:
+        mwh = (s1 - s0) / 100.0 * installed
+        if mwh > 0:
+            out.append(('p',
+                f"State of charge was about <b>{s0:.0f}%</b> at the start of "
+                f"the month and <b>{s1:.0f}%</b> at the end. About "
+                f"<b>{mwh:,.0f} MWh</b> taken in during the month was "
+                f"therefore still in the battery when it closed, and is not "
+                f"in the month's exported energy. A month that ends this way "
+                f"shows a lower round-trip efficiency than the equipment "
+                f"has."))
+        else:
+            out.append(('p',
+                f"State of charge was about <b>{s0:.0f}%</b> at the start of "
+                f"the month and <b>{s1:.0f}%</b> at the end. About "
+                f"<b>{-mwh:,.0f} MWh</b> exported in the month had been "
+                f"stored before it began, so the month shows a higher "
+                f"round-trip efficiency than the equipment has."))
+    return out
+
+
+def lightly_dispatched(g):
+    """True when the plant averaged under half a cycle per block per day.
+
+    In such a month the "blocks below the rest of the site" comparison is
+    not about the blocks. October 2026 stood without dispatch for half the
+    month, ran with part of the fleet on the other days, and listed 17 blocks
+    as underperforming — a list of which blocks happened to be called on.
+    The summary does not offer that as a risk in a month like this."""
+    try:
+        days = len(g.get('dates') or [])
+        cyc = float(g.get('avg_efc_per_block'))
+    except (TypeError, ValueError):
+        return False
+    return days > 0 and cyc / days < 0.5
+
+
 def per_block_fault_hours(g, fault_states=None):
     """Wall-clock hours each block spent in a fault shutdown.
 
@@ -2258,19 +2338,29 @@ def per_block_fault_hours(g, fault_states=None):
 
 
 def build_lowest_availability_blocks(g, top_n=10):
-    """Review item 20: a table beside the heatmap — block, total unavailable
-    hours, reason, corrective-action status."""
-    rank = per_block_availability(g)
+    """Review item 20: a table beside the heatmap — the blocks that spent the
+    most time in a fault shutdown.
+
+    It used to rank by operational availability and print that percentage and
+    its unavailable hours. Both are gone: only fault shutdown counts as
+    unavailability, and no formula for an operational measure has been agreed
+    for this plant. Ranking by it also put the wrong blocks at the top —
+    October led with a block that stood idle for 381 hours and was in fault
+    for 3.2 of them, above two blocks with 29.3 and 21.3 hours of real fault.
+    """
+    fault_hours = per_block_fault_hours(g)
+    rank = [{'block': b, 'fault_h': h}
+            for b, h in sorted(fault_hours.items(), key=lambda kv: -kv[1])
+            if h > 0]
     if not rank:
-        return _none_block('No per-block availability data is available for '
-                           'this period, so no block ranking can be given.')
+        return [('h3', 'Blocks with the most fault-shutdown time'),
+                ('p', 'No block was in a fault shutdown during this period.')]
     reasons = _block_fault_reasons(g)
     rested = {int(b) for b in (g.get('rested_blocks') or set())}
     # Blocks whose downtime was the PM. They are no longer in the 4.4.1 frame
     # (see the filter where it is built), and without this they would read as
     # "no fault shutdown recorded", which says nothing about what happened.
     pm_blocks = {int(b) for b in (g.get('pm_blocks') or set())}
-    fault_hours = per_block_fault_hours(g)
     by_block = _actions_by_block(g.get('open_action_items'))
     rows = []
     for r in rank[:top_n]:
@@ -2283,8 +2373,12 @@ def build_lowest_availability_blocks(g, top_n=10):
         elif b in pm_blocks:
             reason = 'Preventive maintenance as scheduled (not a fault)'
         else:
-            reason = ('No fault shutdown recorded — block on standby or out '
-                      'of operation')
+            # The table now holds only blocks that were in a fault, so the
+            # old "no fault shutdown recorded" fallback contradicted the
+            # hours beside it. A block reaches here when its fault states
+            # were too short to become an incident in 4.4.1.
+            reason = ('Brief fault states only — none long enough to be '
+                      'recorded as an incident in 4.4.1')
         acts = by_block.get(b) or []
         if acts:
             a = acts[0]
@@ -2299,41 +2393,26 @@ def build_lowest_availability_blocks(g, top_n=10):
             action = 'No open action recorded'
         else:
             action = 'None required'          # PM, or simply idle
-        # Split the hours so the table cannot be read as "this block was in
-        # a fault for 381 hours". Fault time is the block's own clock; the
-        # rest is standby or a stop, which on this plant is mostly the
-        # periods when no dispatch instruction was given.
-        total_h = float(r['unavailable_h'] or 0.0)
-        fault_h = min(float(fault_hours.get(b, 0.0)), total_h)
         rows.append([
             f"Block {b}",
-            _fmt_pct(r['availability_pct']),
-            _fmt_num(total_h),
-            _fmt_num(fault_h),
-            _fmt_num(total_h - fault_h),
+            _fmt_num(r['fault_h']),
             reason,
             action,
         ])
-    blocks = [('h3', f'Lowest-availability blocks (worst {len(rows)})')]
+    blocks = [('h3', f'Blocks with the most fault-shutdown time '
+                     f'(worst {len(rows)})')]
     blocks.append(('p',
-        f'The {len(rows)} block(s) with the lowest '
-        f'{AVAIL_OPERATIONAL_NAME.lower()} this period, read from the same '
-        f'daily working-status record as the heatmap above. Unavailable hours '
-        f'are the block\'s own clock — the share of the day its containers '
-        f'were not in an available state — so they are not capacity-weighted '
-        f'and are not the hours used for the contractual figure (see 4.2.1).'))
+        f'The {len(rows)} block(s) with the most time in fault shutdown '
+        f'this month. Only fault shutdown is counted as unavailability. '
+        f'Standby, a stop by command and days without dispatch are not '
+        f'counted.'))
     blocks.append(('p',
-        'The hours are split. "In fault shutdown" is the time a local '
-        'controller of that block was actually in a fault state, on the '
-        'block\'s clock. "Standby or stopped" is the rest: the block was '
-        'healthy but not operating. Most of it is time when no dispatch '
-        'instruction was given, which is why blocks with no fault at all '
-        'appear in this table.'))
+        'The hours are clock hours of the block. If both local '
+        'controllers of a block are in fault at the same time, the time '
+        'is counted once.'))
     blocks.append(('table',
-        ['Block', AVAIL_OPERATIONAL_NAME.split(' (')[0], 'Unavailable hours',
-         'In fault shutdown', 'Standby or stopped',
-         'Reason', 'Corrective action status'], rows,
-        [14, 20, 18, 18, 20, 44, 36]))
+        ['Block', 'Fault shutdown hours', 'Reason',
+         'Corrective action status'], rows, [16, 26, 60, 48]))
     return blocks
 
 
@@ -2565,10 +2644,9 @@ def _recurring_sentence(s):
     med, p90 = s['median_min'], s['p90_min']
     if med is not None and s['cleared_pct'] >= 90 and med <= RECURRING_BRIEF_MIN:
         bits.append(
-            'It clears without intervention in {:.0f}% of cases, with a '
-            'median of {:.0f} minutes and 90% within {:.0f}. At that length '
-            'the restart is the equipment\'s own recovery rather than a '
-            'workaround standing in for a repair.'.format(
+            'It cleared by itself in {:.0f}% of cases, usually in about '
+            '{:.0f} minutes and almost always within {:.0f}. No action was '
+            'needed from the site team.'.format(
                 s['cleared_pct'], med, p90 or med))
     elif med is not None and s['cleared_pct'] >= 90:
         bits.append(
@@ -2622,12 +2700,9 @@ def build_recurring_faults(g, top_n=5):
             '(the threshold is {} occurrences).'.format(RECURRING_MIN_EVENTS))
     blocks = [('h3', 'Recurring faults — analysis for this period')]
     blocks.append(('p',
-        'The faults below each occurred {} times or more. For every one the '
-        'table gives how often it cleared without intervention, how long it '
-        'lasted and how widely it was spread; the notes beneath say what the '
-        'operating data shows about the circumstances it occurs in. All of it '
-        'is recalculated from this month\'s data.'.format(
-            RECURRING_MIN_EVENTS)))
+        'Faults that occurred {} times or more this month: how often each '
+        'cleared by itself, how long it lasted and how many blocks it '
+        'touched.'.format(RECURRING_MIN_EVENTS)))
     rows = []
     for s in stats:
         rows.append([
@@ -2645,6 +2720,12 @@ def build_recurring_faults(g, top_n=5):
                    rows))
     for s in stats:
         sentence = _recurring_sentence(s)
+        # The first two sentences carry the finding; the rest restated the
+        # table row above them.
+        if sentence:
+            _parts = sentence.split('. ')
+            if len(_parts) > 2:
+                sentence = '. '.join(_parts[:2]).rstrip('.') + '.'
         if sentence:
             blocks.append(('p', '<b>{}</b> — {}'.format(s['reason'], sentence)))
     blocks.append(('small',
@@ -2779,7 +2860,7 @@ def build_data_quality(g):
         f'listed below. The reporting period runs from '
         f'{p_start:%d %B %Y} to {p_end:%d %B %Y} — '
         f'<b>{n_period} of the {n_month} day(s)</b> in '
-        f'{p_start:%B %Y}. Each row states what the export actually '
+        f'{p_start:%B %Y}. Each row shows what the export '
         f'contained, not what was expected of it.'))
     blocks.append(('table',
         ['Data set', 'Rows', 'First sample', 'Last sample',
@@ -2896,7 +2977,7 @@ def build_rte_variance(g):
                    f'operation to balance cycles; their low throughput is '
                    f'deliberate and carries no efficiency penalty for the site.')
     n_below = g.get('n_blocks_below_target') or 0
-    if n_below:
+    if n_below and not lightly_dispatched(g):
         why.append(f'{n_below} block(s) finished the month below the '
                    f'{RTE_TARGET_PCT:.0f}% target and are listed in 4.4.')
     de = g.get('days_excluded') or 0
@@ -2985,7 +3066,7 @@ def _conclusion_lines(g):
          f"blocks under a planned or manual stop are also excluded)."),
     ]
     n_anomalies = g.get('n_anomalies') or 0
-    if n_anomalies:
+    if n_anomalies and not lightly_dispatched(g):
         auto.append(f"<b>{n_anomalies}</b> block(s) performed below the rest of "
                     f"the site and are worth keeping an eye on.")
     days_excluded = g.get('days_excluded') or 0
@@ -3019,19 +3100,13 @@ def build_executive_summary(g):
             f"charging at a round-trip efficiency of "
             f"<b>{_fmt_pct(g.get('fleet_rte'))}</b>. ")
     if contractual:
-        lead += (f"{AVAIL_CONTRACTUAL_NAME} — the contractual SLA figure — was "
+        lead += (f"{AVAIL_CONTRACTUAL_NAME} was "
                  f"<b>{_fmt_pct(contractual['value'])}</b>")
-        if operational:
-            lead += (f"; {AVAIL_OPERATIONAL_NAME.lower()}, the stricter "
-                     f"unweighted view, was "
-                     f"<b>{_fmt_pct(operational['value'])}</b>")
         lead += '. '
     elif operational:
         lead += (f"{AVAIL_OPERATIONAL_NAME} was "
                  f"<b>{_fmt_pct(operational['value'])}</b>. ")
-    lead += ('Each availability figure is named for what it measures '
-             'throughout this report; 4.2.1 gives the formula, the data '
-             'source and the value of every indicator.')
+    lead += 'The formula and the data source of each figure are in 4.2.1.'
     blocks.append(('p', lead))
 
     # ── KPI status ────────────────────────────────────────────────────────
@@ -3049,8 +3124,14 @@ def build_executive_summary(g):
         kpi_rows.append([AVAIL_PLANT_NAME, _fmt_pct(plant['value']),
                          'reference', '—'])
     if operational:
+        # Kept as a line so the customer can see the measure exists and that
+        # we can produce it. It is not offered as a result: no formula for it
+        # has been agreed for this plant, and until one is, the figure counts
+        # standby and commanded stops as unavailable, which the contractual
+        # measure does not.
         kpi_rows.append([AVAIL_OPERATIONAL_NAME, _fmt_pct(operational['value']),
-                         'reference', '—'])
+                         'no agreed formula',
+                         'Indicative — awaiting an agreed formula'])
     rte = g.get('fleet_rte')
     if rte is not None:
         kpi_rows.append(['Round-trip efficiency', _fmt_pct(rte),
@@ -3073,32 +3154,28 @@ def build_executive_summary(g):
 
     # ── Top risks ─────────────────────────────────────────────────────────
     risks = []
-    rank = per_block_availability(g)
+    # Ranked on fault-shutdown time, like the 4.4 table. It used to name the
+    # block with the lowest operational availability, which in October was a
+    # block that stood idle on dispatch and was in fault for 3.2 h — reported
+    # beside a table that no longer ranks that way, and against a measure
+    # with no agreed formula.
     rested = {int(b) for b in (g.get('rested_blocks') or set())}
-    worst = [r for r in rank if int(r['block']) not in rested]
-    if worst and worst[0]['availability_pct'] < 99.0:
-        # "of the fleet" is only true when nothing was held out of it. Blocks
-        # rested to balance cycles sit at the top of the 4.4 table by
-        # construction, and a summary that called one of the others the
-        # fleet's worst would be contradicted by the table on the same page.
-        n_rested_worse = sum(
-            1 for r in rank if int(r['block']) in rested
-            and r['availability_pct'] < worst[0]['availability_pct'])
-        scope = ('of the fleet' if not n_rested_worse else
-                 'of the blocks in normal operation ({} block(s) rested for '
-                 'cycle balancing are lower, and are listed in 4.4)'.format(
-                     n_rested_worse))
+    fault_rank = sorted(((b, h) for b, h in per_block_fault_hours(g).items()
+                         if h > 0 and b not in rested),
+                        key=lambda kv: -kv[1])
+    if fault_rank:
+        b, h = fault_rank[0]
         risks.append(
-            f"Block {int(worst[0]['block'])} had the lowest "
-            f"{AVAIL_OPERATIONAL_NAME.lower()} {scope} at "
-            f"{_fmt_pct(worst[0]['availability_pct'])} "
-            f"({_fmt_num(worst[0]['unavailable_h'])} h unavailable).")
+            f"Block {b} spent the most time in a fault shutdown this period, "
+            f"{_fmt_num(h)} h. The blocks are listed in 4.4.")
     n_below = g.get('n_blocks_below_target') or 0
-    if n_below:
+    # Not a risk about the blocks in a month the plant was barely run; the
+    # KPI table already shows the month's RTE against its target.
+    if n_below and not lightly_dispatched(g):
         risks.append(f"{n_below} block(s) finished the month with a round-trip "
                      f"efficiency below the {RTE_TARGET_PCT:.0f}% target.")
     n_anom = g.get('n_anomalies') or 0
-    if n_anom:
+    if n_anom and not lightly_dispatched(g):
         risks.append(f"{n_anom} block(s) performed below the rest of the site "
                      f"and are listed in section 4.")
     overdue = [it for it in (g.get('open_action_items') or []) if it.get('overdue')]
@@ -3177,9 +3254,8 @@ def build_executive_summary(g):
         gaps = sum(s['gaps'] for s in streams)
         blocks.append(('p',
             f'{full} of {len(streams)} SCADA data set(s) cover all '
-            f'{n_period} day(s) of the reporting period; {gaps} gap(s) longer '
-            f'than one hour were found. Section 4.5 states the coverage of '
-            f'each export and how missing data was treated.'))
+            f'{n_period} day(s) of the month. {gaps} gap(s) longer than one '
+            f'hour were found. The details are in the data quality annex.'))
     else:
         blocks.append(('p', 'No coverage information could be derived for this '
                             'period\'s data set (see 4.5).'))
@@ -3200,6 +3276,16 @@ def _markup(s) -> str:
 
 def _render_blocks_pdf(story, blocks):
     """Render a section model into a reportlab story."""
+    # The same tidying the Word renderer applies, so the two say the same.
+    from services.docx_renderer import plain_text as _pt
+
+    def _tidy(x):
+        if isinstance(x, str):
+            return _pt(x)
+        if isinstance(x, (list, tuple)):
+            return type(x)(_tidy(v) for v in x)
+        return x
+    blocks = [(b[0],) + tuple(_tidy(v) for v in b[1:]) for b in blocks or []]
     for b in blocks or []:
         kind = b[0]
         if kind == 'h3':
@@ -3980,6 +4066,46 @@ def generate_tashkent_report(
     # June 8 of the 10 "breakdown incidents" offered to the operator were the
     # dry-node input, which describes no breakdown.
     breakdown_candidates = build_breakdown_candidates(p_real, ws_long=ws_long)
+    # A candidate's hours are how long its alarm stood, which is not downtime:
+    # October offered five "Insulation Impedance Low" incidents of 3 to 6 h on
+    # blocks that never left operation. Only fault shutdown is downtime, so a
+    # candidate is kept when its block actually spent an hour or more in one,
+    # and its downtime cannot exceed that.
+    #
+    # And the alarm is the wrong thing to build the list from in the first
+    # place: block 63 sat in a fault shutdown for 29.3 h behind a handful of
+    # five-minute BSC-PCS alarms, so it had the most downtime on the site and
+    # was not offered at all. The candidates are taken from the fault-shutdown
+    # episodes of 4.4.1 instead — one per block, with the block's clock hours —
+    # so 4.4, 4.4.1 and 5.2 name the same blocks.
+    _fault_h = per_block_fault_hours({'ws_long': ws_long})
+    _cands = []
+    if unavail_reasons is not None and not unavail_reasons.empty:
+        _ur = unavail_reasons
+        if 'manual' in _ur.columns:
+            _ur = _ur[~_ur['manual'].fillna(False).astype(bool)]
+        for _blk, _grp in _ur.groupby('block_id'):
+            _h = float(_fault_h.get(int(_blk), 0.0))
+            if _h < 1.0:
+                continue
+            _top = _grp.sort_values('downtime_h', ascending=False).iloc[0]
+            _first = pd.to_datetime(_grp['date_from'], errors='coerce').min()
+            _n = pd.to_numeric(_grp.get('fault_events'), errors='coerce').sum()
+            _cands.append({
+                'incident':           str(_top.get('cause') or ''),
+                'blocks':             str(int(_blk)),
+                'date_time':          (_first.strftime('%d.%m.%Y')
+                                       if pd.notna(_first) else ''),
+                'breakdown_type':     str(_top.get('subsystem') or ''),
+                'downtime_h':         round(_h, 1),
+                'occurrences':        int(_n) if pd.notna(_n) else 0,
+                'temporary_solution': '',
+                'final_solution':     '',
+                'closure_date':       '',
+                'auto':               True,
+            })
+        _cands.sort(key=lambda r: -r['downtime_h'])
+    breakdown_candidates = _cands[:10]
     breakdown_rows    = breakdown_incidents if breakdown_incidents else breakdown_candidates
     breakdown_is_auto = (not breakdown_incidents) and bool(breakdown_candidates)
 
@@ -4106,6 +4232,16 @@ def generate_tashkent_report(
         log(f"RTE: using the customer's metered figure {fleet_rte:.2f}% "
             f"(battery-side was {fleet_rte_battery:.2f}%)")
     aux_total_mwh = cust.get('aux_total_mwh')
+    # The energy quoted beside that RTE has to be the energy it was computed
+    # from. October 2026 printed "6,628.5 MWh ÷ 8,003.8 MWh = 77.11%": the
+    # percentage was the customer's meter and the two energies were ours from
+    # the LC totalizers, which divide to 82.82. When the customer's export and
+    # import are there, they are the plant totals everywhere in the text; the
+    # battery-side sums stay in the per-block tables, which are built from
+    # daily_kpi and are not touched by this.
+    if cust.get('rte_pct') and cust.get('export_mwh') and cust.get('import_mwh'):
+        total_discharge_mwh = float(cust['export_mwh'])
+        total_charge_mwh = float(cust['import_mwh'])
 
     # Counters for the daily-chart note: full cycles vs partial among VALID days.
     full_days = (valid[valid['full_cycle']]
@@ -5311,6 +5447,9 @@ def _build_tashkent_docx(output_path, _ctx):
     avail_status = 'above' if fleet_availability_container >= 95 else 'below'
 
     doc = make_doc()
+    # Listings too long for the body of the report. Each entry is a title
+    # and a function that prints it; they are printed after section 8.
+    _annex = []
     add_cover(doc, report_month, site_name, n_blocks, period_str)
 
     # Executive Summary (review item 45) — unnumbered and first, so the
@@ -5331,50 +5470,8 @@ def _build_tashkent_docx(output_path, _ctx):
     add_hr(doc)
 
     # 2. Summary
-    add_section_banner(doc, '2.  Summary')
-    sm = (f"During {period_str}, the {site_name} site ({n_blocks} blocks) "
-           f"discharged <b>{total_discharge_mwh:,.1f} MWh</b> from "
-           f"<b>{total_charge_mwh:,.1f} MWh</b> of charging. The site's average "
-           f"round-trip efficiency was <b>{fleet_rte:.2f}%</b> "
-           f"({rte_status} the 85% target). ")
-    if contractual_avail and contractual_avail.get('availability_pct') is not None:
-        sm += (f"Contractual BESS availability for the period was "
-                f"<b>{contractual_avail['availability_pct']:.2f}%</b> "
-                f"(the SLA figure — capacity-weighted, counting only genuine "
-                f"fault-shutdown time, with agreed planned work excluded). ")
-    if (plant_avail and plant_avail.get('plant_availability_pct') is not None
-            and not plant_measure_degenerate(plant_avail)):
-        sm += (f"{AVAIL_PLANT_NAME}, which credits the plant's spare capacity, "
-                f"was <b>{plant_avail['plant_availability_pct']:.2f}%</b>, and "
-                f"{AVAIL_OPERATIONAL_NAME.lower()} — the unweighted mean of "
-                f"each block's daily available time, with no exclusions "
-                f"applied — was "
-                f"<b>{fleet_availability_container:.2f}%</b>. These are three "
-                f"different measures of the same month, not three attempts at "
-                f"one number; 4.2.1 gives the formula, the data source and the "
-                f"value of each. ")
-        if plant_avail.get('contractual_plant_capacity_mw'):
-            sm += (f"Contracted capacity: "
-                    f"<b>{plant_avail['contractual_plant_capacity_mw']:.1f} MW</b>. ")
-    elif not contractual_avail:
-        sm += (f"{AVAIL_OPERATIONAL_NAME} was "
-                f"<b>{fleet_availability_container:.2f}%</b> "
-                f"({avail_status} the 95% target). No contractual figure could "
-                f"be calculated for this period. ")
-    else:
-        sm += (f"{AVAIL_OPERATIONAL_NAME} — the unweighted mean of each "
-                f"block's daily available time, with no exclusions applied — "
-                f"was <b>{fleet_availability_container:.2f}%</b>. The two are "
-                f"different measures of the same month, not two attempts at "
-                f"one number; 4.2.1 gives the formula, the data source and the "
-                f"value of each. ")
-    sm += (f"Average state of charge was <b>{avg_soc_pct:.2f}%</b> and average "
-            f"state of health (at month end) <b>{avg_soh_pct:.2f}%</b>. The "
-            f"blocks completed about <b>{total_efc_fleet:.0f}</b> full charge / "
-            f"discharge cycles in total (roughly {avg_efc_per_block:.1f} each). "
-            f"On average <b>{days_excluded:.1f}</b> day(s) per block had no "
-            f"usable data and were left out of the figures.")
-    add_paragraph(doc, sm)
+    add_section_banner(doc, '2.  Summary of Operation')
+    _render_blocks_docx(doc, build_operation_summary(g))
     add_hr(doc)
 
     # 3. Services Provision
@@ -5391,15 +5488,12 @@ def _build_tashkent_docx(output_path, _ctx):
     if cm_activities:
         for act in cm_activities: add_paragraph(doc, f'•  {act}')
     elif cls_summary is not None and not cls_summary.empty:
+        # The fault table is in 5.1; a second, shorter copy of it here
+        # was one of ten places the same faults were listed.
         add_paragraph(doc,
-            'Automated summary based on alarm classification — recurring '
-            'corrective items observed:')
-        cm_rows = [[r['cls_reason'], str(int(r['n_events'])),
-                     r['cls_resolution'] or '—']
-                    for _, r in cls_summary.head(7).iterrows()]
-        add_styled_table(doc, ['Item', 'Occurrences', 'Resolution applied'], cm_rows)
-        if g.get('cls_general_note'):
-            add_caption(doc, g['cls_general_note'])
+            'No corrective maintenance work was recorded by the site team '
+            'for this period. The faults of the month and how they '
+            'cleared are in 5.1.')
     else:
         # Without this the section was a bare heading, and a month of purely
         # general alarms lost its sentence along with the table.
@@ -5450,60 +5544,65 @@ def _build_tashkent_docx(output_path, _ctx):
                 charge_kwh=('charge_kwh', 'sum'),
                 discharge_kwh=('discharge_kwh', 'sum'),
             ).to_dict('index')
-        add_heading(doc, 'Cycles per block', level=3)
-        add_paragraph(doc,
-            'For each block: the total number of charge / discharge cycles it '
-            'has accumulated to date, and how many of those were completed this '
-            f'month ({month_name_only}). Cycle figures are the average across '
-            'the battery modules in the block; the energy figures are the '
-            'block\'s total charging and discharging for the month.',
-            italic=True)
-        cdf = cycles_snap_local.sort_values('block_id').reset_index(drop=True)
-        chunk_size = 10
-        def _fmt_d(v):
-            return f'{v:.2f}' if _pd.notna(v) else '—'
-        def _fmt_e(v):
-            return f'{v:.0f}' if (v is not None and _pd.notna(v)) else '—'
-        for start in range(0, len(cdf), chunk_size):
-            chunk = cdf.iloc[start:start+chunk_size]
-            headers = [''] + [f'Block {int(r.block_id)}' for r in chunk.itertuples()]
-            row_acc = ['Accumulative cycles'] + [
-                _fmt_d(r.cycle_end) for r in chunk.itertuples()]
-            row_dlt = [f'Cycles in {month_name_only}'] + [
-                _fmt_d(r.cycle_delta) for r in chunk.itertuples()]
-            rows_to_emit = [row_acc, row_dlt]
-            _proj_factor = g.get('cycle_projection_factor')
-            if _proj_factor:
-                row_prj = ['Projected Cycles for the Month'] + [
-                    _fmt_d(r.cycle_delta * _proj_factor
-                           if _pd.notna(r.cycle_delta) else float('nan'))
-                    for r in chunk.itertuples()]
-                rows_to_emit.append(row_prj)
-            if per_block_energy_kwh:
-                row_chg = ['Charged Energy (kWh)']
-                row_dis = ['Discharged Energy (kWh)']
-                for r in chunk.itertuples():
-                    b = int(r.block_id)
-                    e = per_block_energy_kwh.get(b, {})
-                    row_chg.append(_fmt_e(e.get('charge_kwh')))
-                    row_dis.append(_fmt_e(e.get('discharge_kwh')))
-                rows_to_emit.extend([row_chg, row_dis])
-            add_styled_table(doc, headers, rows_to_emit)
-        # Blocks where the snapshot couldn't fill EVERY field (e.g. no comms
-        # at the start of the period and no later non-zero in the first-day
-        # file). Surface them as a footnote so the customer knows the gap
-        # was a data-availability issue, not a missing block.
-        partial = cycles_snap_local[
-            cycles_snap_local[['cycle_begin','cycle_end','cycle_delta']].isna().any(axis=1)
-        ]
-        if not partial.empty:
-            ids = ', '.join(str(int(b)) for b in partial['block_id'])
+        def _annex_cycles():
             add_paragraph(doc,
-                f'Note: block(s) {ids} had no reading at the start or end of the '
-                f'month — usually because of maintenance or a communication gap '
-                f'on those days. The nearest available reading was used where '
-                f'possible; a "—" means the gap could not be filled.',
+                'For each block: the total number of charge / discharge cycles it '
+                'has accumulated to date, and how many of those were completed this '
+                f'month ({month_name_only}). Cycle figures are the average across '
+                'the battery modules in the block; the energy figures are the '
+                'block\'s total charging and discharging for the month.',
                 italic=True)
+            cdf = cycles_snap_local.sort_values('block_id').reset_index(drop=True)
+            chunk_size = 10
+            def _fmt_d(v):
+                return f'{v:.2f}' if _pd.notna(v) else '—'
+            def _fmt_e(v):
+                return f'{v:.0f}' if (v is not None and _pd.notna(v)) else '—'
+            for start in range(0, len(cdf), chunk_size):
+                chunk = cdf.iloc[start:start+chunk_size]
+                headers = [''] + [f'Block {int(r.block_id)}' for r in chunk.itertuples()]
+                row_acc = ['Accumulative cycles'] + [
+                    _fmt_d(r.cycle_end) for r in chunk.itertuples()]
+                row_dlt = [f'Cycles in {month_name_only}'] + [
+                    _fmt_d(r.cycle_delta) for r in chunk.itertuples()]
+                rows_to_emit = [row_acc, row_dlt]
+                _proj_factor = g.get('cycle_projection_factor')
+                if _proj_factor:
+                    row_prj = ['Projected Cycles for the Month'] + [
+                        _fmt_d(r.cycle_delta * _proj_factor
+                               if _pd.notna(r.cycle_delta) else float('nan'))
+                        for r in chunk.itertuples()]
+                    rows_to_emit.append(row_prj)
+                if per_block_energy_kwh:
+                    row_chg = ['Charged Energy (kWh)']
+                    row_dis = ['Discharged Energy (kWh)']
+                    for r in chunk.itertuples():
+                        b = int(r.block_id)
+                        e = per_block_energy_kwh.get(b, {})
+                        row_chg.append(_fmt_e(e.get('charge_kwh')))
+                        row_dis.append(_fmt_e(e.get('discharge_kwh')))
+                    rows_to_emit.extend([row_chg, row_dis])
+                add_styled_table(doc, headers, rows_to_emit)
+            # Blocks where the snapshot couldn't fill EVERY field (e.g. no comms
+            # at the start of the period and no later non-zero in the first-day
+            # file). Surface them as a footnote so the customer knows the gap
+            # was a data-availability issue, not a missing block.
+            partial = cycles_snap_local[
+                cycles_snap_local[['cycle_begin','cycle_end','cycle_delta']].isna().any(axis=1)
+            ]
+            if not partial.empty:
+                ids = ', '.join(str(int(b)) for b in partial['block_id'])
+                add_paragraph(doc,
+                    f'Note: block(s) {ids} had no reading at the start or end of the '
+                    f'month — usually because of maintenance or a communication gap '
+                    f'on those days. The nearest available reading was used where '
+                    f'possible; a "—" means the gap could not be filled.',
+                    italic=True)
+
+        _annex.append(('Cycles and energy per block', _annex_cycles))
+        add_paragraph(doc, 'Cycles and energy for each block are in '
+                           'the annex at the end of this report.',
+                      italic=True)
 
         _rested = g.get('rested_blocks') or set()
         if _rested:
@@ -5517,30 +5616,50 @@ def _build_tashkent_docx(output_path, _ctx):
                 f'availability.',
                 italic=True)
 
+    add_heading(doc, '4.2  Key Performance Indicators', level=3)
+    # 4.2.1 KPI calculation summary (review items 3 and 16)
+    _render_blocks_docx(doc, build_kpi_methodology(g))
+
+    add_image_from_fig(doc, _chart_soc_trend(socsoh))
+    add_caption(doc, 'Graph 3: Site-wide average SOC trend (daily)')
+
+    add_heading(doc, '4.3  Monthly Performance Comparison', level=3)
+    if not monthly_compare.empty and len(monthly_compare) > 1:
+        cmp_rows = []
+        for _, r in monthly_compare.iterrows():
+            cmp_rows.append([
+                str(r['month']),
+                f"{r['avg_soc_pct']:.1f}%" if _pd.notna(r['avg_soc_pct']) else '—',
+                f"{r['avg_soh_pct']:.1f}%" if _pd.notna(r['avg_soh_pct']) else '—',
+                f"{r['rte_pct']:.1f}%"     if _pd.notna(r['rte_pct']) else '—',
+                f"{r['cycles']:.1f}"        if _pd.notna(r['cycles']) else '—',
+                f"{r['discharge_mwh']:,.0f}" if _pd.notna(r['discharge_mwh']) else '—',
+                f"{r['charge_mwh']:,.0f}"    if _pd.notna(r['charge_mwh']) else '—',
+            ])
+        add_styled_table(doc,
+            ['Month', 'SOC', 'SOH', 'RTE', 'Cycles',
+             'Discharge (MWh)', 'Charge (MWh)'], cmp_rows)
+
+    # RTE variance commentary (review item 19)
+    _render_blocks_docx(doc, build_rte_variance(g))
+
+    add_heading(doc, '4.4  System Availability', level=3)
     # Availability: name each measure before the figures (review item 16)
-    _render_blocks_docx(doc, build_availability_definitions(g))
 
     if contractual_avail and contractual_avail.get('availability_pct') is not None:
         ca = contractual_avail
         _refined = (ca.get('method') == 'pcs_unit')
         add_heading(doc, AVAIL_CONTRACTUAL_NAME, level=3)
         add_paragraph(doc,
-            'This is the contractual measure of BESS availability. A unit '
-            'counts as unavailable only for the time it spent in a genuine '
-            'fault shutdown — standby, startup, manual stops and data gaps do '
-            'not count against it — and every outage is weighted by the '
-            'nameplate capacity taken out of service. ' +
-            ('Resolution is at the PCS-unit level: during a fault we count only '
-             'the converter units that actually stopped (the charge/discharge '
-             'data confirms units that kept running), so a partly-failed LC '
-             'loses only the capacity that genuinely went off-line.'
+            'A unit is counted as unavailable only while it is in fault '
+            'shutdown. Standby, start-up, manual stops and gaps in the '
+            'data are not counted. Each outage is weighted by the '
+            'capacity that was out of service. ' +
+            ('The count is made per PCS unit, so when one unit of an LC '
+             'stops and the other keeps working, only the stopped unit '
+             'is counted.'
              if _refined else
-             'Resolution is at the LC level (the whole LC is counted down for '
-             'its fault time).') +
-            (' Per-unit fault flags from the PCS fault-status export are also '
-             'taken into account, so a fault on a single converter unit is '
-             'captured even when its LC reads healthy.'
-             if ca.get('used_unit_fault') else ''))
+             'The count is made per LC.'))
         add_paragraph(doc,
             f"{AVAIL_CONTRACTUAL_NAME} = 1 − (fault-shutdown time × capacity out "
             f"of service) ÷ (hours in period × installed nameplate) "
@@ -5572,7 +5691,9 @@ def _build_tashkent_docx(output_path, _ctx):
             f"MWh. Fault-shutdown time is the total across all units.{_excl_note}",
             italic=True)
 
-    if plant_avail:
+    # No redundancy threshold is agreed for this plant, so the plant-level
+    # view has nothing to say; it is printed only when one is configured.
+    if plant_avail and not plant_measure_degenerate(plant_avail):
         add_heading(doc, 'Availability Hours (plant-level redundancy method)', level=3)
         add_paragraph(doc,
             'These are supplementary views of availability; the contractual '
@@ -5631,31 +5752,23 @@ def _build_tashkent_docx(output_path, _ctx):
     exclusions_local  = g.get('exclusions') or []
     if exclusions_local and excl_result_local and excl_result_local.get('events'):
         add_heading(doc, 'Scheduled Unavailability', level=3)
-        lead, bullets = format_exclusion_narrative(exclusions_local)
-        if lead:
-            add_paragraph(doc, lead)
-            for b in bullets:
-                add_paragraph(doc, f"•  {b}")
-        add_paragraph(doc, 'Applied Exclusions (Detail):', bold=True)
         total_excl = excl_result_local['excluded_hours']
         applied    = (plant_avail.get('excluded_effective', 0.0)
                        if plant_avail else 0.0)
         add_paragraph(
             doc,
-            f"During the period there were {len(excl_result_local['events'])} "
-            f"planned exclusion period(s) — agreed downtime that does not count "
-            f"against availability. Together they added up to "
-            f"{total_excl:,.1f} h (counting how many blocks each one affected). "
-            f"Of that, only {applied:,.1f} h were removed from the availability "
-            f"figure, because we set aside only the time the plant was genuinely "
-            f"down for this work — never more than was actually lost."
+            f"There were {len(excl_result_local['events'])} planned "
+            f"exclusion period(s) in the month. This is agreed downtime "
+            f"and it is not counted against availability. Only the time "
+            f"the equipment was actually stopped for this work is "
+            f"excluded: {applied:,.1f} h."
         )
         brk_rows = [
             [t, f"{h:.1f} h",
              f"{(h/total_excl*100 if total_excl else 0):.1f}%"]
             for t, h in excl_result_local['breakdown'].items() if h > 0
         ]
-        if brk_rows:
+        if len(brk_rows) > 1:
             add_styled_table(doc,
                 ['Exclusion Type', 'Weighted Hours', '% of Excluded'],
                 brk_rows)
@@ -5678,45 +5791,6 @@ def _build_tashkent_docx(output_path, _ctx):
             ['Type', 'From', 'To', 'Hours', 'Blocks', 'Description'],
             detail_rows)
 
-    add_heading(doc, '4.2  Key Performance Indicators', level=3)
-    add_kpi_row(doc, [
-        (f"{avg_soc_pct:.2f}%", 'Average state of charge', '#0071E3'),
-        (f"{avg_soh_pct:.2f}%", 'Average state of health', '#34C759'),
-        (f"{fleet_rte:.2f}%",   'Round-trip efficiency',   '#FF9500'),
-    ])
-    add_paragraph(doc,
-        f'Round-trip efficiency = total energy discharged ÷ total energy '
-        f'charged over the month = {total_discharge_mwh:,.1f} MWh ÷ '
-        f'{total_charge_mwh:,.1f} MWh = {fleet_rte:.2f}%.',
-        size=8, italic=True)
-
-    # 4.2.1 KPI calculation summary (review items 3 and 16)
-    _render_blocks_docx(doc, build_kpi_methodology(g))
-
-    add_image_from_fig(doc, _chart_soc_trend(socsoh))
-    add_caption(doc, 'Graph 3: Site-wide average SOC trend (daily)')
-
-    add_heading(doc, '4.3  Monthly Performance Comparison', level=3)
-    if not monthly_compare.empty and len(monthly_compare) > 1:
-        cmp_rows = []
-        for _, r in monthly_compare.iterrows():
-            cmp_rows.append([
-                str(r['month']),
-                f"{r['avg_soc_pct']:.1f}%" if _pd.notna(r['avg_soc_pct']) else '—',
-                f"{r['avg_soh_pct']:.1f}%" if _pd.notna(r['avg_soh_pct']) else '—',
-                f"{r['rte_pct']:.1f}%"     if _pd.notna(r['rte_pct']) else '—',
-                f"{r['cycles']:.1f}"        if _pd.notna(r['cycles']) else '—',
-                f"{r['discharge_mwh']:,.0f}" if _pd.notna(r['discharge_mwh']) else '—',
-                f"{r['charge_mwh']:,.0f}"    if _pd.notna(r['charge_mwh']) else '—',
-            ])
-        add_styled_table(doc,
-            ['Month', 'SOC', 'SOH', 'RTE', 'Cycles',
-             'Discharge (MWh)', 'Charge (MWh)'], cmp_rows)
-
-    # RTE variance commentary (review item 19)
-    _render_blocks_docx(doc, build_rte_variance(g))
-
-    add_heading(doc, '4.4  System Availability', level=3)
     add_image_from_fig(doc, _chart_availability_heatmap_categorical(
         g.get('container_day_status'),
         exclusions=g.get('exclusions'),
@@ -5782,52 +5856,57 @@ def _build_tashkent_docx(output_path, _ctx):
     add_caption(doc, 'Graph 5: Daily round-trip efficiency. Light lines are '
                      'individual blocks, the dark line is the site average.')
     add_caption(doc,
-        'The daily values above include only days with a full charge / discharge '
-        'cycle, so the chart stays readable. The headline efficiency figure is '
-        'based on the whole month\'s charging and discharging together, which '
-        'evens out the day-to-day swings (a single cycle often runs across '
-        'midnight) and is the dependable number.')
-    if not anomalies.empty:
-        flagged = anomalies[anomalies['anomaly_flag']].sort_values('rte_z')
-        if not flagged.empty:
-            add_paragraph(doc,
-                f'<b>Blocks performing below the rest of the site</b> '
-                f'({len(flagged)} block(s) noticeably below both the 85% target '
-                f'and the site average):')
-            rows = [[f"Block {int(r['block'])}",
-                      f"{r['avg_rte']:.2f}%",
-                      f"{r['avg_throughput']/1000:,.1f} MWh",
-                      (f"{r['avg_availability']:.2f}%" if _pd.notna(r['avg_availability']) else '—'),
-                      str(int(r['total_alarms'])),
-                      str(r.get('likely_cause', '') or '')]
-                     for _, r in flagged.iterrows()]
-            add_styled_table(doc,
-                ['Block', 'Round-trip efficiency', 'Energy per day',
-                 'Availability', 'Faults', 'Likely cause'], rows)
-
-    # Round-trip efficiency — a short, honest note (daily readings are noisy on
-    # this data; the monthly figure is the reliable one).
-    _n_below = g.get('n_blocks_below_target', 0)
-    if _n_below:
+        'Only days with a full charge / discharge cycle are plotted. The '
+        'monthly figure, not the daily one, is the efficiency of record.')
+    if lightly_dispatched(g):
         add_paragraph(doc,
-            f'{_n_below} block(s) finished the month with an average round-trip '
-            f'efficiency below the 85% target — these are listed above. '
-            f'Individual daily readings are noisy (a charge / discharge cycle '
-            f'often runs across midnight and the daily energy counters do not '
-            f'line up exactly with it), so efficiency is best judged on the '
-            f'monthly figure.')
+            'The plant worked only part of the month and not with all '
+            'blocks, so the blocks are not compared with each other '
+            'this month.')
     else:
-        add_paragraph(doc,
-            f'Every block met the 85% round-trip efficiency target over the month '
-            f'(site average <b>{fleet_rte:.1f}%</b>). Some individual daily '
-            f'readings fall below 85%, but that reflects where the calendar day '
-            f'falls within a charge / discharge cycle and how the daily energy '
-            f'counters line up — not a real loss of efficiency. Efficiency is '
-            f'read from the monthly figure, which balances all of the month\'s '
-            f'charging and discharging.')
+        if not anomalies.empty:
+            flagged = anomalies[anomalies['anomaly_flag']].sort_values('rte_z')
+            if not flagged.empty:
+                add_paragraph(doc,
+                    f'<b>Blocks performing below the rest of the site</b> '
+                    f'({len(flagged)} block(s) noticeably below both the 85% target '
+                    f'and the site average):')
+                rows = [[f"Block {int(r['block'])}",
+                          f"{r['avg_rte']:.2f}%",
+                          f"{r['avg_throughput']/1000:,.1f} MWh",
+                          (f"{r['avg_availability']:.2f}%" if _pd.notna(r['avg_availability']) else '—'),
+                          str(int(r['total_alarms'])),
+                          str(r.get('likely_cause', '') or '')]
+                         for _, r in flagged.iterrows()]
+                add_styled_table(doc,
+                    ['Block', 'Round-trip efficiency', 'Energy per day',
+                     'Availability', 'Faults', 'Likely cause'], rows)
+
+        # Round-trip efficiency — a short, honest note (daily readings are noisy on
+        # this data; the monthly figure is the reliable one).
+        _n_below = g.get('n_blocks_below_target', 0)
+        if _n_below:
+            add_paragraph(doc,
+                f'{_n_below} block(s) finished the month with an average round-trip '
+                f'efficiency below the 85% target — these are listed above. '
+                f'Individual daily readings are noisy (a charge / discharge cycle '
+                f'often runs across midnight and the daily energy counters do not '
+                f'line up exactly with it), so efficiency is best judged on the '
+                f'monthly figure.')
+        else:
+            add_paragraph(doc,
+                f'Every block met the 85% round-trip efficiency target over the month '
+                f'(site average <b>{fleet_rte:.1f}%</b>). Some individual daily '
+                f'readings fall below 85%, but that reflects where the calendar day '
+                f'falls within a charge / discharge cycle and how the daily energy '
+                f'counters line up — not a real loss of efficiency. Efficiency is '
+                f'read from the monthly figure, which balances all of the month\'s '
+                f'charging and discharging.')
 
     # 4.5 SCADA data quality and coverage (review item 44)
-    _render_blocks_docx(doc, build_data_quality(g))
+    _annex.append(('SCADA data quality and coverage',
+                   lambda: _render_blocks_docx(
+                       doc, build_data_quality(g)[1:])))
     add_hr(doc)
 
     # 5. System Operation
@@ -5890,7 +5969,7 @@ def _build_tashkent_docx(output_path, _ctx):
             add_caption(doc, g['warn_general_note'])
 
     # Events During Exclusion Windows (informational)
-    if (n_prod_alarms_excluded + n_warn_persistent_excluded) > 0:
+    def _annex_excl_events():
         add_paragraph(doc,
             'Events During Exclusion Windows (Informational)', bold=True)
         add_paragraph(doc,
@@ -5930,94 +6009,108 @@ def _build_tashkent_docx(output_path, _ctx):
             for _n in excl_general_notes:
                 add_caption(doc, _n)
 
+    if (n_prod_alarms_excluded + n_warn_persistent_excluded) > 0:
+        _annex.append(('Events inside exclusion windows',
+                       _annex_excl_events))
+
     add_image_from_fig(doc, _chart_alarm_by_class(alarm_sum))
-    add_caption(doc, 'Graph 6: Number of faults and total downtime by type of equipment')
+    add_caption(doc, 'Graph 6: Fault alarms by type of equipment: number of '
+                     'alarm records and their total duration. Every unit\'s '
+                     'alarm is counted, so the numbers are higher than the '
+                     'occurrences in the tables, where alarms raised together '
+                     'on one block count once. The hours are alarm time, not '
+                     'plant downtime.')
 
     # Trigger-level pie chart
     add_image_from_fig(doc, _chart_alarm_pie_by_trigger(p_dedup_all))
     add_caption(doc, 'Graph 7: Most common faults (12 most frequent, rest grouped as Other)')
 
-    # Faults table — customer-template layout
-    add_paragraph(doc, 'Faults', bold=True)
-    add_paragraph(doc,
-        f'The faults that mattered: critical events and any fault lasting '
-        f'{int(IMPORTANT_DURATION_THRESHOLD_MIN)} minutes or more. Brief '
-        f'flickers, routine manual stops and events during planned maintenance '
-        f'are left out.', italic=True)
-    important = g.get('important_events', _pd.DataFrame())
-    if important is None or important.empty:
-        add_paragraph(doc, 'No critical events during the reporting period.')
-    else:
-        # One row per fault TYPE — see the PDF builder for the rationale.
-        et = build_event_type_table(important, top_n=50)
-        et, et_general = _split_general(et)
-        rows = []
-        any_planned = '*' in ''.join(et['blocks'].astype(str)) if not et.empty else False
-        any_active = int(et['active'].sum()) if not et.empty else 0
-        for i, (_, r) in enumerate(et.iterrows(), start=1):
-            worst = (f"{r['worst_when']} · {r['worst_h']:.1f} h"
-                     if r['worst_when'] else f"{r['worst_h']:.1f} h")
-            rows.append([
-                str(i),
-                str(r['trigger']) + (' ⚠' if r['active'] else ''),
-                str(r['subsystem'] or ''),
-                str(r['blocks'] or ''),
-                str(int(r['events'])),
-                f"{r['total_h']:,.1f}",
-                worst,
-                str(r['resolution'] or '—'),
-            ])
-        add_styled_table(doc,
-            ['No.', 'Fault Name', 'Equipment', 'Blocks affected',
-             'Events', 'Total h', 'Worst single', 'Resolution'], rows)
-        add_caption(doc,
-            'One row per fault type — the same fault occurring on several '
-            'units of a block is counted, not repeated. "Events" is the number '
-            'of occurrences in the month; "Worst single" is the longest '
-            'individual occurrence.')
-        if any_planned:
-            add_caption(doc, '* block was under a planned or manual stop at '
-                             'the time of the event.')
-        if any_active:
-            add_caption(doc, '⚠ alarm was still active at the end of the '
-                             'reporting period.')
-        _gen = _general_sentence(et_general)
-        if _gen:
-            add_caption(doc, _gen)
+    # The per-trigger Faults and Warnings tables list again what the two
+    # summary tables above already give, one level finer.
+    def _annex_fault_listings():
+        # Faults table — customer-template layout
+        add_paragraph(doc, 'Faults', bold=True)
+        add_paragraph(doc,
+            f'The faults that mattered: critical events and any fault lasting '
+            f'{int(IMPORTANT_DURATION_THRESHOLD_MIN)} minutes or more. Brief '
+            f'flickers, routine manual stops and events during planned maintenance '
+            f'are left out.', italic=True)
+        important = g.get('important_events', _pd.DataFrame())
+        if important is None or important.empty:
+            add_paragraph(doc, 'No critical events during the reporting period.')
+        else:
+            # One row per fault TYPE — see the PDF builder for the rationale.
+            et = build_event_type_table(important, top_n=50)
+            et, et_general = _split_general(et)
+            rows = []
+            any_planned = '*' in ''.join(et['blocks'].astype(str)) if not et.empty else False
+            any_active = int(et['active'].sum()) if not et.empty else 0
+            for i, (_, r) in enumerate(et.iterrows(), start=1):
+                worst = (f"{r['worst_when']} · {r['worst_h']:.1f} h"
+                         if r['worst_when'] else f"{r['worst_h']:.1f} h")
+                rows.append([
+                    str(i),
+                    str(r['trigger']) + (' ⚠' if r['active'] else ''),
+                    str(r['subsystem'] or ''),
+                    str(r['blocks'] or ''),
+                    str(int(r['events'])),
+                    f"{r['total_h']:,.1f}",
+                    worst,
+                    str(r['resolution'] or '—'),
+                ])
+            add_styled_table(doc,
+                ['No.', 'Fault Name', 'Equipment', 'Blocks affected',
+                 'Events', 'Total h', 'Worst single', 'Resolution'], rows)
+            add_caption(doc,
+                'One row per fault type — the same fault occurring on several '
+                'units of a block is counted, not repeated. "Events" is the number '
+                'of occurrences in the month; "Worst single" is the longest '
+                'individual occurrence.')
+            if any_planned:
+                add_caption(doc, '* block was under a planned or manual stop at '
+                                 'the time of the event.')
+            if any_active:
+                add_caption(doc, '⚠ alarm was still active at the end of the '
+                                 'reporting period.')
+            _gen = _general_sentence(et_general)
+            if _gen:
+                add_caption(doc, _gen)
 
-    # Alarms table — persistent warnings, same columns minus Date
-    add_paragraph(doc, 'Warnings', bold=True)
-    warn_detail = g.get('warn_detail', _pd.DataFrame())
-    if warn_detail is None or warn_detail.empty:
-        add_paragraph(doc, 'No standing warnings of note during the month.')
-    else:
-        wt = build_event_type_table(warn_detail, top_n=50)
-        wt, wt_general = _split_general(wt)
-        rows = []
-        any_planned = '*' in ''.join(wt['blocks'].astype(str)) if not wt.empty else False
-        any_active = int(wt['active'].sum()) if not wt.empty else 0
-        for i, (_, r) in enumerate(wt.iterrows(), start=1):
-            rows.append([
-                str(i),
-                str(r['trigger']) + (' ⚠' if r['active'] else ''),
-                str(r['subsystem'] or ''),
-                str(r['blocks'] or ''),
-                str(int(r['events'])),
-                f"{r['total_h']:,.1f}",
-                str(r['resolution'] or '—'),
-            ])
-        add_styled_table(doc,
-            ['No.', 'Warning', 'Equipment', 'Blocks affected',
-             'Events', 'Total h', 'Resolution'], rows)
-        if any_planned:
-            add_caption(doc, '* block was under a planned or manual stop at '
-                             'the time of the event.')
-        if any_active:
-            add_caption(doc, '⚠ warning was still active at the end of the '
-                             'reporting period.')
-        _gen = _general_sentence(wt_general)
-        if _gen:
-            add_caption(doc, _gen)
+        # Alarms table — persistent warnings, same columns minus Date
+        add_paragraph(doc, 'Warnings', bold=True)
+        warn_detail = g.get('warn_detail', _pd.DataFrame())
+        if warn_detail is None or warn_detail.empty:
+            add_paragraph(doc, 'No standing warnings of note during the month.')
+        else:
+            wt = build_event_type_table(warn_detail, top_n=50)
+            wt, wt_general = _split_general(wt)
+            rows = []
+            any_planned = '*' in ''.join(wt['blocks'].astype(str)) if not wt.empty else False
+            any_active = int(wt['active'].sum()) if not wt.empty else 0
+            for i, (_, r) in enumerate(wt.iterrows(), start=1):
+                rows.append([
+                    str(i),
+                    str(r['trigger']) + (' ⚠' if r['active'] else ''),
+                    str(r['subsystem'] or ''),
+                    str(r['blocks'] or ''),
+                    str(int(r['events'])),
+                    f"{r['total_h']:,.1f}",
+                    str(r['resolution'] or '—'),
+                ])
+            add_styled_table(doc,
+                ['No.', 'Warning', 'Equipment', 'Blocks affected',
+                 'Events', 'Total h', 'Resolution'], rows)
+            if any_planned:
+                add_caption(doc, '* block was under a planned or manual stop at '
+                                 'the time of the event.')
+            if any_active:
+                add_caption(doc, '⚠ warning was still active at the end of the '
+                                 'reporting period.')
+            _gen = _general_sentence(wt_general)
+            if _gen:
+                add_caption(doc, _gen)
+
+    _annex.append(('Faults and warnings by type', _annex_fault_listings))
 
     add_heading(doc, '5.2  Major Incidents and Breakdowns', level=3)
     add_paragraph(doc, 'Summary of breakdowns, incidents and their weight '
@@ -6026,9 +6119,10 @@ def _build_tashkent_docx(output_path, _ctx):
     if breakdown_rows_local:
         if g.get('breakdown_is_auto'):
             add_caption(doc,
-                'Auto-detected from the longest production faults (planned / '
-                'manual stops excluded). Review and complete the temporary / '
-                'final solution columns.')
+                'Taken from the fault shutdowns of the month: one row per '
+                'block that spent an hour or more in one, with the hours on '
+                'the block\'s clock. The solution columns are for the site '
+                'team to complete.')
         rows = []
         for i, inc in enumerate(breakdown_rows_local, start=1):
             dt = (f"{inc['downtime_h']:.1f} h"
@@ -6113,6 +6207,10 @@ def _build_tashkent_docx(output_path, _ctx):
     if annexes:
         for a in annexes: add_paragraph(doc, f'•  {a}')
     _render_blocks_docx(doc, build_annex_register(g))
+    for _i, (_title, _fn) in enumerate(_annex):
+        add_hr(doc)
+        add_section_banner(doc, 'Annex %s.  %s' % ('ABCDEFGH'[_i], _title))
+        _fn()
 
     save_doc(doc, output_path)
     return output_path

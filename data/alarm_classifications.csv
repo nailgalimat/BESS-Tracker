@@ -68,8 +68,8 @@ trigger_pattern,subsystem,reason,severity,resolution_hint
 "CMU FAULT: CELL UNDERVOLTAGE",BESS,Cell Under-voltage,Fault,Check BMS voltage; cell health
 "CELL OVERVOLTAGE",BESS,Cell Over-voltage,Fault,Check BMS voltage; balance cells
 "CELL UNDERVOLTAGE",BESS,Cell Under-voltage,Fault,Check BMS voltage; cell health
-"DCDC - FAULT STATUS",PCS,DC-DC Converter Fault,Fault,Restart DC-DC; investigate insulation
-"DCDC FAULT",PCS,DC-DC Converter Fault,Fault,Restart DC-DC converter
+"DCDC - FAULT STATUS",BESS,DC-DC Converter Fault,Fault,Restart DC-DC; investigate insulation
+"DCDC FAULT",BESS,DC-DC Converter Fault,Fault,Restart DC-DC converter
 "LOW BATTERY INSULATION IMPEDANCE",BESS,Insulation Impedance Low,Fault,Insulation resistance test required
 "INSULATION IMPEDANCE",BESS,Insulation Impedance,Warning,Insulation resistance test required
 "BSC - SYSTEM FAULT STATUS: INPUT DRY NODE",BESS,Dry Node Input Fault,Fault,Check field signal wiring (BMS input)

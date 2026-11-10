@@ -340,7 +340,7 @@ def load_alarms(path):
                 df['Deactivation'] - df['Activated']
             ).dt.total_seconds() / 60.0
             df['element_class'] = df['Element'].astype(str).str.extract(
-                r'^(BSC|PCS|Battery|System|LC)', flags=re.IGNORECASE
+                r'^(BSC|PCS|Battery|System|LC|DC/DC|CMU)', flags=re.IGNORECASE
             )[0].str.upper().fillna('OTHER')
             out[sheet.lower()] = df
         except Exception as e:
@@ -2227,7 +2227,8 @@ def _chart_alarm_by_class(alarm_summary):
              color='#FF9500', alpha=0.85)
     for i, v in enumerate(by_class['total_duration_h']):
         ax2.text(v+1, i, f'{v:.0f}h', va='center', fontsize=7)
-    ax2.set_xlabel('Total downtime (hours)', fontsize=8)
+    # Alarm time summed over single units — not downtime of the plant.
+    ax2.set_xlabel('Total alarm duration (hours)', fontsize=8)
     ax2.set_title('Production alarm duration by device class', fontsize=9,
                   fontweight='bold', color='#1A2B45')
     ax2.invert_yaxis()
@@ -2263,7 +2264,9 @@ def format_exclusion_narrative(exclusions, default_reason='ongoing construction 
             continue
         m_from = df_d.strftime('%B')
         m_to   = dt_d.strftime('%B')
-        if m_from == m_to:
+        if df_d == dt_d:
+            rng = f"{m_from} {df_d.day}"       # one day read "October 2-2"
+        elif m_from == m_to:
             rng = f"{m_from} {df_d.day}-{dt_d.day}"
         else:
             rng = f"{m_from} {df_d.day} - {m_to} {dt_d.day}"
