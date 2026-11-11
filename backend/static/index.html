@@ -10,7 +10,7 @@
   <title>BESS Field Log</title>
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="apple-touch-icon" href="/app/icons/icon-192.png" />
-  <link rel="stylesheet" href="/app/css/app.css?v=24" />
+  <link rel="stylesheet" href="/app/css/app.css?v=25" />
 </head>
 <body>
 
@@ -245,9 +245,9 @@
       <input id="f-serial" type="text" placeholder="optional" />
     </div>
     <div class="form-group">
-      <label>Project</label>
+      <label>Project *</label>
       <select id="f-proj">
-        <option value="">— No project —</option>
+        <option value="">— Choose the project —</option>
       </select>
     </div>
     <!-- The free text an old record was written with, before the node picker.
@@ -753,10 +753,10 @@
   <button class="tab" data-tab="more" onclick="App.goSettings()"><span>More</span></button>
 </nav>
 
-<script>window.APP_VERSION = 'v24';</script>
-<script src="/app/js/db.js?v=24"></script>
-<script src="/app/js/api.js?v=24"></script>
-<script src="/app/js/app.js?v=24"></script>
+<script>window.APP_VERSION = 'v25';</script>
+<script src="/app/js/db.js?v=25"></script>
+<script src="/app/js/api.js?v=25"></script>
+<script src="/app/js/app.js?v=25"></script>
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/app/sw.js').then(reg => {

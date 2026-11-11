@@ -218,6 +218,15 @@ try:
 except Exception as e:                                   # noqa: BLE001
     print('   note   node not available or failed:', e)
 
+# ── a new record, actually executed ──────────────────────────────────────
+try:
+    p = subprocess.run(['node', os.path.join(H.MVP, 'tests', 'newrecord_check.js')],
+                       capture_output=True, text=True, shell=True, timeout=180)
+    print((p.stdout or p.stderr).rstrip())
+    H.check('RESULT PASS' in (p.stdout or ''), 'the new-record check passes')
+except Exception as e:                                   # noqa: BLE001
+    print('   note   node not available or failed:', e)
+
 # ── the phone's recording, actually executed ─────────────────────────────
 try:
     p = subprocess.run(['node', os.path.join(H.MVP, 'tests', 'video_check.js')],

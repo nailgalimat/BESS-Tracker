@@ -788,7 +788,9 @@ const App = {
   async _fillProjectSelect() {
     const sel      = document.getElementById('f-proj');
     const projects = await DB.getMeta('projects', []);
-    sel.innerHTML  = '<option value="">— No project —</option>';
+    sel.innerHTML  = projects.length
+      ? '<option value="">— Choose the project —</option>'
+      : '<option value="">— No projects yet: sync first —</option>';
     for (const p of projects) {
       const opt = document.createElement('option');
       opt.value       = p.id;
@@ -798,6 +800,7 @@ const App = {
     // Preselect the last used project (field techs usually stay on one site)
     const last = localStorage.getItem('last_project_id');
     if (last && projects.some(p => String(p.id) === last)) sel.value = last;
+    else if (projects.length === 1) sel.value = String(projects[0].id);
   },
 
   // ── Add sheet (choose what to create) ───────────────────────────────────────
@@ -1011,9 +1014,12 @@ const App = {
     const device = document.getElementById('f-device').value || '';
     const ptw    = document.getElementById('f-ptw').value.trim();
     const note   = document.getElementById('f-note').value.trim();
-    const tFrom  = document.getElementById('f-start').value || '';
-    const tTo    = document.getElementById('f-end').value || '';
-    const hours  = parseFloat(document.getElementById('f-hours').value) || null;
+    // Start, end and hours are PM fields: a fault record carries none,
+    // whatever was left in them.
+    const isPm   = (cat === 'maintenance');
+    const tFrom  = isPm ? (document.getElementById('f-start').value || '') : '';
+    const tTo    = isPm ? (document.getElementById('f-end').value || '') : '';
+    const hours  = isPm ? (parseFloat(document.getElementById('f-hours').value) || null) : null;
     const loc    = document.getElementById('f-loc').value.trim();
     const ser    = document.getElementById('f-serial').value.trim();
     const fault  = document.getElementById('f-fault').value.trim();
@@ -1026,6 +1032,15 @@ const App = {
 
     if (!date || !desc) {
       _showErr(errEl, 'Enter the date and what was done.');
+      return;
+    }
+    // A record without a project shows up under every project on the
+    // desktop. It is asked for whenever the phone knows the projects; a
+    // phone that has never synced has none to offer and still saves.
+    const projSel = document.getElementById('f-proj');
+    if (!projVal && projSel.options && projSel.options.length > 1) {
+      _showErr(errEl, 'Choose the project.');
+      if (projSel.focus) projSel.focus();
       return;
     }
     // A record with no plant block cannot reach the customer's report — it is
@@ -1939,6 +1954,13 @@ const App = {
     };
     show('f-edit-note', on);
     for (const id of this.EDIT_HIDDEN) show(id, !on);
+    // Un-hiding the list above showed the PM hours on every new record,
+    // fault records included, and hours typed there were saved with the
+    // fault. On a new record the block belongs to PM only.
+    if (!on) {
+      const c = document.getElementById('f-cat');
+      show('f-pm-group', !!c && c.value === 'maintenance');
+    }
     for (const id of this.EDIT_LOCKED) {
       const el = document.getElementById(id);
       if (el) el.disabled = on;
