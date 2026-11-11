@@ -724,7 +724,7 @@ def flag_incidents_near_exclusions(project_id: int, incidents: List[dict],
 
 
 def reapply_exclusions(project_id: int, year: int = None, month: int = None,
-                       log=print) -> dict:
+                       log=print, extra_windows=None) -> dict:
     """Recompute is_excluded / excluded_by on alarms already stored.
 
     The flags are written once, at import. Anything that changes the
@@ -732,10 +732,16 @@ def reapply_exclusions(project_id: int, year: int = None, month: int = None,
     grid outage nobody had recorded — would otherwise leave the history
     frozen at what was known on the day it was imported, and re-importing
     fixes nothing because the import is idempotent.
+
+    `extra_windows`: more exclusion-style windows to tag with, after the
+    stored ones — the PM stop windows (tashkent pm_stop_windows), so an alarm
+    a PM record covers keeps 'Preventive maintenance'. Without them (the
+    Equipment page's call) PM-covered alarms are reset to "not excluded" —
+    known issue D3 in docs/MONTHLY_REPORT_WORKFLOW_PLAN.md.
     """
     from services.availability_service import get_exclusions, match_alarm_to_exclusions
 
-    exclusions = get_exclusions(project_id=project_id) or []
+    exclusions = list(get_exclusions(project_id=project_id) or []) + list(extra_windows or [])
     where = ["project_id=?"]
     params = [project_id]
     if year is not None:
@@ -771,6 +777,103 @@ def reapply_exclusions(project_id: int, year: int = None, month: int = None,
 
     log(f"Exclusions reapplied: {len(updates)} alarm(s) changed.")
     return {'checked': len(rows), 'changed': len(updates)}
+
+
+def store_month_alarms(project_id: int, year: int, month: int, progress=None) -> dict:
+    """Store the month's alarms as equipment history, from the month's data set
+    — the Monthly report's own step, so Equipment and "Needs a report" are
+    filled before the report is generated.
+
+    The same preparation as the report (tashkent_report_service.
+    prepare_month_alarms): alarms Activated in the month only — an export's
+    previous-month backlog is left out, never stamped as this month — tagged
+    with the month's exclusion windows and the PM stop windows. Then the
+    idempotent import, the asset tree, and a re-tag of the month's rows that
+    were already stored (windows or PM records may have changed since).
+    Not blocked by the month lock: equipment history is not a report input.
+
+    Returns {inserted, skipped, unparsed, in_month, outside_month,
+    last_activated, pm_tagging} — pm_tagging False when the month has no
+    working status (PM stops cannot be found)."""
+    import services.month_dataset_service as mds
+    import services.report_workflow_service as rw
+    import services.tashkent_report_service as T
+
+    def log(msg):
+        if progress:
+            progress(msg)
+    files = mds.active_by_type(project_id, year, month)
+    al = files.get('alarms')
+    if not al:
+        raise ValueError('the month has no alarms export')
+    ws_long = None
+    if files.get('working_status'):
+        log('Reading the LC working status for the PM stops…')
+        ws_long = T.load_lc_working_status(files['working_status']['abs_path'])
+    inp = rw.report_inputs(project_id, year, month)
+    log('Reading the alarms export…')
+    dropped = {}
+    alarms, pm_stops = T.prepare_month_alarms(
+        al['abs_path'], ws_long, inp.get('exclusions') or [],
+        inp.get('manual_unavailability') or [], pd.Period(f'{int(year):04d}-{int(month):02d}', 'M'),
+        log=log, dropped=dropped)
+    in_month, last = 0, None
+    for key in IMPORT_CATEGORIES:
+        df = alarms.get(key)
+        if df is None or not hasattr(df, 'empty') or df.empty:
+            continue
+        in_month += len(df)
+        if 'Activated' in df.columns:
+            mx = pd.to_datetime(df['Activated'], errors='coerce').max()
+            if pd.notna(mx) and (last is None or mx > last):
+                last = mx
+    log('Storing the alarms…')
+    res = import_alarm_events(project_id, int(year), int(month), alarms, log=log)
+    # An export taken a day or two into the next month carries that month's
+    # first alarms. They were dropped here and would be lost if the next
+    # export started later. They are stored under their own month, untagged;
+    # the insert ignores rows already there, and that month's own store
+    # tags them when it runs.
+    nxt = pd.Period(f'{int(year):04d}-{int(month):02d}', 'M') + 1
+    next_month = 0
+    try:
+        later, _ = T.prepare_month_alarms(al['abs_path'], None, [], [], nxt,
+                                          log=lambda m: None)
+        if any(getattr(later.get(k), 'empty', True) is False
+               for k in IMPORT_CATEGORIES):
+            r2 = import_alarm_events(project_id, nxt.year, nxt.month, later,
+                                     log=lambda m: None)
+            next_month = int(r2.get('inserted', 0))
+    except Exception as e:                                  # noqa: BLE001
+        log(f'Note: the alarms dated after the month were not stored: {e}')
+    cfg = rw.get_project_config(project_id)
+    blk_kwh = float(cfg.get('per_block_capacity_mw') or 0) * 1000.0
+    rebuild_asset_tree(project_id,
+                       unit_capacity_kwh=(blk_kwh / 4.0) if blk_kwh else None,
+                       lc_capacity_kwh=(blk_kwh / 2.0) if blk_kwh else None)
+    reapply_exclusions(project_id, int(year), int(month), log=log,
+                       extra_windows=[w['exclusion'] for w in pm_stops if w['exclusion']])
+    return dict(res, in_month=in_month, next_month=next_month,
+                outside_month=sum(v for k, v in dropped.items() if k in IMPORT_CATEGORIES),
+                last_activated=f'{last:%Y-%m-%d %H:%M}' if last is not None else None,
+                pm_tagging=ws_long is not None)
+
+
+def alarm_history_status(project_id: int, year: int, month: int) -> dict:
+    """What the equipment history holds: {stored (the month's rows),
+    stored_at (latest import of the month, UTC as SQLite writes it),
+    last_activated_month, last_activated_overall}."""
+    conn = get_connection()
+    try:
+        m = conn.execute("""SELECT COUNT(*) AS n, MAX(activated) AS last, MAX(imported_at) AS at
+                              FROM alarm_events WHERE project_id=? AND year=? AND month=?""",
+                         (project_id, int(year), int(month))).fetchone()
+        o = conn.execute("SELECT MAX(activated) FROM alarm_events WHERE project_id=?",
+                         (project_id,)).fetchone()
+    finally:
+        conn.close()
+    return {'stored': int(m['n'] or 0), 'stored_at': m['at'],
+            'last_activated_month': m['last'], 'last_activated_overall': o[0]}
 
 
 def suggest_exclusion_windows(project_id: int, year: int = None,

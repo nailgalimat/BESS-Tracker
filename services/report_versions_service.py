@@ -52,7 +52,9 @@ import services.report_workflow_service as rw
 MANIFEST_FORMAT = 1
 TEXT_KEYS = ('site_name', 'project_details', 'report_number', 'prepared_by', 'reviewed_by',
              'cm_activities', 'site_visits', 'recommendations', 'planned_next_period',
-             'safety_incidents', 'breakdown_incidents')
+             'safety_incidents', 'breakdown_incidents',
+             # only in params when set, so an un-noted month hashes as before
+             'operation_note', 'permit_issued_to')
 REPORT_INPUT_KEYS = ('plant_capacity_mw', 'per_block_capacity_mw',
                      'contractual_plant_capacity_mw', 'redundancy_threshold_pct',
                      'yearly_cycle_target', 'pm_activities', 'pm_rows', 'exclusions',

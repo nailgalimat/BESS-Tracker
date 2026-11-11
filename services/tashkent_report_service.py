@@ -25,6 +25,7 @@ Output: PDF report.
 
 from __future__ import annotations
 import os, re, io, warnings
+import html
 warnings.filterwarnings('ignore')
 
 import pandas as pd
@@ -2238,8 +2239,29 @@ def build_operation_summary(g):
     in trouble.
 
     Only what the data shows is stated. Why the plant was not dispatched is
-    the operator's to add.
+    the operator's to add: `operation_note` (Monthly report → Customer text,
+    "How the plant was run") follows the data paragraphs, one paragraph per
+    line. Without a note the section is exactly the data paragraphs.
     """
+    out = _operation_data_paragraphs(g)
+    for line in _note_lines(g.get('operation_note')):
+        # 'verbatim': the operator's own sentence, not run through the
+        # wording tidier, which would drop a word like "genuine" from it.
+        out.append(('verbatim', html.escape(line, quote=False)))
+    return out
+
+
+def _note_lines(note):
+    """A free-text note as its non-empty lines (a list passes through)."""
+    if not note:
+        return []
+    if isinstance(note, str):
+        note = note.splitlines()
+    return [str(x).strip() for x in note if str(x).strip()]
+
+
+def _operation_data_paragraphs(g):
+    """Section 2's paragraphs from the data alone (build_operation_summary)."""
     dk = g.get('daily_kpi')
     if dk is None or getattr(dk, 'empty', True):
         return [('p', 'No daily operating data is available for this period.')]
@@ -2777,10 +2799,100 @@ def build_permit_register(g):
     return out
 
 
-def load_cptw_register(path, year=None, month=None, issued_to=None):
+_RMU_RE = re.compile(r'RMU[\s\-]*0*(\d{1,3})((?:\s*[/,&]\s*0*\d{1,3})*)', re.I)
+
+
+def permit_blocks(*texts, n_blocks=None, out_of_range=None):
+    """Plant blocks a permit names: "RMU-06", "BESS Zone3 RMU-22", "RMU-21/22",
+    "RMU 3, 4 & 5". The RMU number is the plant block (1..num_blocks), never a
+    zone-local number. Numbers outside 1..n_blocks are dropped (appended to
+    `out_of_range` when a list is given)."""
+    found = []
+    for t in texts:
+        for m in _RMU_RE.finditer(str(t or '')):
+            found.append(int(m.group(1)))
+            found += [int(x) for x in re.findall(r'\d{1,3}', m.group(2) or '')]
+    out = []
+    for b in dict.fromkeys(found):
+        if b < 1 or (n_blocks and b > int(n_blocks)):
+            if out_of_range is not None:
+                out_of_range.append(b)
+            continue
+        out.append(b)
+    return sorted(out)
+
+
+PERMIT_MAX_DAYS = 60    # a permit's issue date lies at most this far before its "valid till"
+
+
+def _swappable(v, d):
+    """The day<->month swap of a date Excel stored as a datetime, or None.
+
+    The register is typed as day/month/year text. Where the day was 12 or less
+    Excel on a month-first locale read it as month/day and stored a datetime
+    with the two swapped; the rest stayed text. Only a datetime cell can be
+    swapped that way, and only when day and month differ."""
+    import datetime as _dt
+    if not isinstance(v, (_dt.datetime, _dt.date)) or d is None:
+        return None
+    if d.day > 12 or d.day == d.month:
+        return None
+    try:
+        return d.replace(month=d.day, day=d.month)
+    except ValueError:
+        return None
+
+
+def resolve_permit_dates(issue_cell, valid_cell, parse):
+    """(issue, valid_till, unclear) for one register row.
+
+    Text dates are taken as written. A datetime cell may have its day and
+    month swapped (see _swappable). The face values win when they make a
+    permit — issue on or before "valid till", within PERMIT_MAX_DAYS. Else
+    the swapped readings are tried and the shortest permit they give is used:
+    CPTW-APRS-312 reads issue 2026-10-04 (datetime), valid till 13/4/2026
+    (text) — really 10 April, not 4 October. When the issue date could be
+    swapped and no reading makes a permit, the row is `unclear` and the caller
+    leaves it out of any month. An issue date that cannot have been swapped
+    (text, or day > 12) is always kept, whatever "valid till" says."""
+    i0, v0 = parse(issue_cell), parse(valid_cell)
+    if i0 is None:
+        return None, v0, False
+    if v0 is None:
+        return i0, None, False
+
+    def ok(i, v):
+        return 0 <= (v - i).days <= PERMIT_MAX_DAYS
+    # The face values are one reading among the others, not a winner by
+    # default: "9/10/2026" stored as 10 September, valid till 16/10/2026,
+    # still makes a 36-day permit as stored, and taking it first listed an
+    # October permit in September. The shortest permit of all readings is
+    # used; on a tie the dates as stored are kept (they come first).
+    i1, v1 = _swappable(issue_cell, i0), _swappable(valid_cell, v0)
+    cands = [(i, v) for i, v in ((i0, v0), (i1, v0), (i0, v1), (i1, v1))
+             if i is not None and v is not None and ok(i, v)]
+    if cands:
+        i, v = min(cands, key=lambda p: (p[1] - p[0]).days)
+        return i, v, False
+    if i1 is None:              # the issue date is as typed — keep it
+        return i0, v0, False
+    if i0 <= v0:                # a long permit, as written
+        return i0, v0, False
+    return i0, v0, True
+
+
+def load_cptw_register(path, year=None, month=None, issued_to=None,
+                       unclear_out=None):
     """The permit register as rows for build_permit_register. Reads the
     project's CPTW workbook; `issued_to` filters by the party a permit was
-    issued to (substring, case-insensitive)."""
+    issued to (substring, case-insensitive).
+
+    Each row: no, date (issue, dd.mm.yyyy), valid_till (dd.mm.yyyy or ''),
+    title, area, status, issued_to. Dates go through resolve_permit_dates, so
+    an April permit Excel stored as "2026-10-04" is not listed in October.
+    Rows whose dates cannot be made sense of are left out; pass a list as
+    `unclear_out` to receive them (those that may belong to the month, or all
+    of them without a month), with 'date_unclear': True."""
     import datetime as _dt
     try:
         import openpyxl
@@ -2800,21 +2912,32 @@ def load_cptw_register(path, year=None, month=None, issued_to=None):
                 pass
         return None
 
+    def _fmt(d):
+        return d.strftime('%d.%m.%Y') if d else ''
+
     out = []
     for r in range(3, ws.max_row + 1):
         no = str(ws.cell(r, 2).value or '').strip()
-        d = _d(ws.cell(r, 6).value)
+        raw_issue, raw_valid = ws.cell(r, 6).value, ws.cell(r, 7).value
+        d, vt, unclear = resolve_permit_dates(raw_issue, raw_valid, _d)
         if not (no and d):
-            continue
-        if year is not None and (d.year, d.month) != (year, month):
             continue
         to = str(ws.cell(r, 3).value or '').strip()
         if issued_to and issued_to.lower() not in to.lower():
             continue
-        title = (str(ws.cell(r, 5).value or '').strip()
-                 or str(ws.cell(r, 4).value or '').strip())
-        out.append({'no': no, 'date': d.strftime('%d.%m.%Y'), 'title': title,
-                    'status': str(ws.cell(r, 8).value or '').strip(),
+        if unclear:
+            if unclear_out is not None:
+                seen = {x for x in (d, vt, _swappable(raw_issue, d)) if x}
+                if year is None or any((x.year, x.month) == (year, month) for x in seen):
+                    unclear_out.append({'no': no, 'date': _fmt(d), 'valid_till': _fmt(vt),
+                                        'issued_to': to, 'date_unclear': True})
+            continue
+        if year is not None and (d.year, d.month) != (year, month):
+            continue
+        area = str(ws.cell(r, 4).value or '').strip()
+        title = str(ws.cell(r, 5).value or '').strip() or area
+        out.append({'no': no, 'date': _fmt(d), 'valid_till': _fmt(vt), 'title': title,
+                    'area': area, 'status': str(ws.cell(r, 8).value or '').strip(),
                     'issued_to': to})
     out.sort(key=lambda x: (x['date'][6:], x['date'][3:5], x['date'][:2],
                             x['no']))
@@ -3285,13 +3408,15 @@ def _render_blocks_pdf(story, blocks):
         if isinstance(x, (list, tuple)):
             return type(x)(_tidy(v) for v in x)
         return x
-    blocks = [(b[0],) + tuple(_tidy(v) for v in b[1:]) for b in blocks or []]
+    blocks = [b if b[0] == 'verbatim'
+              else (b[0],) + tuple(_tidy(v) for v in b[1:])
+              for b in blocks or []]
     for b in blocks or []:
         kind = b[0]
         if kind == 'h3':
             story.append(Paragraph('<b>' + _xml(b[1]) + '</b>', STYLE_H3))
             story.append(Spacer(1, 1 * mm))
-        elif kind == 'p':
+        elif kind in ('p', 'verbatim'):
             story.append(Paragraph(_markup(b[1]), STYLE_BODY))
             story.append(Spacer(1, 2 * mm))
         elif kind == 'small':
@@ -3322,6 +3447,8 @@ def _render_blocks_docx(doc, blocks):
             add_heading(doc, b[1], level=3)
         elif kind == 'p':
             add_paragraph(doc, b[1])
+        elif kind == 'verbatim':
+            add_paragraph(doc, b[1], plain=False)
         elif kind == 'small':
             add_caption(doc, re.sub(r'</?[bi]>', '', b[1]))
         elif kind == 'bullets':
@@ -3330,6 +3457,62 @@ def _render_blocks_docx(doc, blocks):
         elif kind == 'table':
             add_styled_table(doc, b[1], b[2])
     return doc
+
+
+def prepare_month_alarms(alarm_path, ws_long, exclusions, manual_unavailability, ym,
+                         alarm_classifications_path=None, log=None, dropped=None):
+    """The month's alarms as the report uses them, and the PM stop windows.
+
+    load → classify → keep the alarms Activated in `ym` (a pandas Period, or
+    None to keep all) → PM stop windows → tag with the exclusion windows and
+    the PM stops. Returns (alarms, pm_stops). The report and the Monthly
+    report's "store the month's alarms" step both call it, so equipment
+    history is tagged exactly as the report's tables are.
+
+    Keep only the report month's alarms: a SCADA alarm export carries whatever
+    backlog was on the panel when it was taken, not the month that was asked
+    for. The September file merged from the daily exports held 2,395
+    production alarms and 19,363 warnings dated August, because the export
+    taken on 2 September reached back to 3 August — and the report's "Major
+    incidents" then led with three August breakdowns (blocks 32, 3 and 28,
+    03–07 August). Every alarm table, the fault and warning summaries and 5.2
+    read the same frames. Deactivation is left alone: an event that starts
+    inside the month and clears after it is this month's event.
+
+    A PM record covers its own stop (see pm_stop_windows) — for availability
+    and, user decision 2026-09-15, for the alarm tables too: the isolation
+    alarms of a PM stop are tagged exactly like those inside a Scheduled
+    Maintenance window, so 3.2, 5.1, the Faults/Warnings tables and 5.2 drop
+    them by the same is_excluded path. Only the PM-covered stop of a block
+    that has a PM record that day; the same alarm at another time still counts.
+
+    `dropped`: a dict that receives {frame: rows left out as outside `ym`}.
+    """
+    def _log(msg):
+        if log:
+            log(msg)
+    alarms = load_alarms(alarm_path)
+    cls = load_alarm_classifications(alarm_classifications_path)
+    alarms = apply_alarm_classifications(alarms, cls)
+    if ym is not None:
+        for _k, _df in list(alarms.items()):
+            if not isinstance(_df, pd.DataFrame) or _df.empty:
+                continue
+            if 'Activated' not in _df.columns:
+                continue
+            _a = pd.to_datetime(_df['Activated'], errors='coerce')
+            _keep = _a.dt.to_period('M') == ym
+            _n = int((~_keep).sum())
+            if dropped is not None:
+                dropped[_k] = _n
+            if _n:
+                _log(f"  Alarms: dropping {_n:,} '{_k}' row(s) outside {ym}")
+                alarms[_k] = _df[_keep].reset_index(drop=True)
+    pm_stops = pm_stop_windows(ws_long, pm_records_from_manual(manual_unavailability))
+    pm_windows = [w['exclusion'] for w in pm_stops if w['exclusion']]
+    # Tag alarms inside availability-exclusion windows (no-op if none)
+    alarms = tag_alarms_with_exclusions(alarms, list(exclusions or []) + pm_windows)
+    return alarms, pm_stops
 
 
 def generate_tashkent_report(
@@ -3370,6 +3553,7 @@ def generate_tashkent_report(
     site_visits=None,
     recommendations=None,
     planned_next_period=None,
+    operation_note=None,           # section 2: "How the plant was run" (lines)
     history_records=None,
     annexes=None,
     output_format='docx',          # 'docx' (default), 'pdf', or 'both'
@@ -3446,51 +3630,17 @@ def generate_tashkent_report(
                 "falling back to daily-totalizer EFC estimate.")
 
     log("Loading alarms...")
-    alarms = load_alarms(alarm_path)
-    cls = load_alarm_classifications(alarm_classifications_path)
-    alarms = apply_alarm_classifications(alarms, cls)
-
-    # ── Keep only the report month's alarms ───────────────────────────────
-    # A SCADA alarm export carries whatever backlog was on the panel when it
-    # was taken, not the month that was asked for. The September file merged
-    # from the daily exports held 2,395 production alarms and 19,363 warnings
-    # dated August, because the export taken on 2 September reached back to
-    # 3 August — and the report's "Major incidents" then led with three
-    # August breakdowns (blocks 32, 3 and 28, 03–07 August). Every alarm
-    # table, the fault and warning summaries and 5.2 read the same frames.
-    #
     # The month comes from the daily totalizer, which is what sets the
-    # reporting period everywhere else. Deactivation is left alone: an event
-    # that starts inside the month and clears after it is this month's event.
+    # reporting period everywhere else (see prepare_month_alarms).
     _ym = None
     if lc_daily is not None and not lc_daily.empty:
         _ld = pd.to_datetime(pd.Series(lc_daily.index), errors='coerce')
         _mode = _ld.dt.to_period('M').mode()
         _ym = _mode.iloc[0] if len(_mode) else None
-    if _ym is not None:
-        for _k, _df in list(alarms.items()):
-            if not isinstance(_df, pd.DataFrame) or _df.empty:
-                continue
-            if 'Activated' not in _df.columns:
-                continue
-            _a = pd.to_datetime(_df['Activated'], errors='coerce')
-            _keep = _a.dt.to_period('M') == _ym
-            _n = int((~_keep).sum())
-            if _n:
-                log(f"  Alarms: dropping {_n:,} '{_k}' row(s) outside {_ym}")
-                alarms[_k] = _df[_keep].reset_index(drop=True)
-
-    # A PM record covers its own stop (see pm_stop_windows) — for availability
-    # and, user decision 2026-09-15, for the alarm tables too: the isolation
-    # alarms of a PM stop are tagged exactly like those inside a Scheduled
-    # Maintenance window, so 3.2, 5.1, the Faults/Warnings tables and 5.2 drop
-    # them by the same is_excluded path. Only the PM-covered stop of a block
-    # that has a PM record that day; the same alarm at another time still counts.
-    pm_stops = pm_stop_windows(ws_long, pm_records_from_manual(manual_unavailability))
+    alarms, pm_stops = prepare_month_alarms(
+        alarm_path, ws_long, exclusions, manual_unavailability, _ym,
+        alarm_classifications_path=alarm_classifications_path, log=log)
     pm_windows = [w['exclusion'] for w in pm_stops if w['exclusion']]
-
-    # Tag alarms inside availability-exclusion windows (no-op if none)
-    alarms = tag_alarms_with_exclusions(alarms, list(exclusions or []) + pm_windows)
 
     log("Summarising alarms...")
     alarm_sum = summarize_alarms(alarms)
@@ -4119,12 +4269,15 @@ def generate_tashkent_report(
     # passes them directly.
     if not permits and permit_register_path:
         try:
+            _unclear = []
             permits = load_cptw_register(
                 permit_register_path, int(dates[0].year), int(dates[0].month),
-                issued_to=permit_issued_to)
+                issued_to=permit_issued_to, unclear_out=_unclear)
             log(f"Permit register: {len(permits)} permit(s) for "
                 f"{dates[0]:%B %Y}"
-                + (f" issued to {permit_issued_to}" if permit_issued_to else ""))
+                + (f" issued to {permit_issued_to}" if permit_issued_to else "")
+                + (f"; left out, dates unclear: "
+                   f"{', '.join(u['no'] for u in _unclear)}" if _unclear else ""))
         except Exception as e:                                  # noqa: BLE001
             log(f"Note: could not read the permit register: {e}")
             permits = []

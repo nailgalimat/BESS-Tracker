@@ -115,14 +115,15 @@ def add_section_banner(doc, text):
 
 
 def add_paragraph(doc, text, *, bold=False, italic=False, size=10,
-                   color=NAVY, align=None):
+                   color=NAVY, align=None, plain=True):
     p = doc.add_paragraph()
     if align == 'center':
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     elif align == 'right':
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     # Allow basic HTML-ish <b>...</b> markup the PDF code passes around
-    _add_runs(p, text, bold=bold, italic=italic, size=size, color=color)
+    _add_runs(p, text, bold=bold, italic=italic, size=size, color=color,
+              plain=plain)
     return p
 
 
@@ -164,13 +165,16 @@ def plain_text(text):
     return text
 
 
-def _add_runs(p, text, *, bold=False, italic=False, size=10, color=NAVY):
+def _add_runs(p, text, *, bold=False, italic=False, size=10, color=NAVY,
+              plain=True):
     """Render a string that may contain <b>...</b> markers as alternating
     bold/non-bold runs. Also handles &amp; / &lt; / &gt; HTML entities."""
     import re
     if not text:
         return
-    text = plain_text(text)
+    # plain=False is for words a person typed: they are printed as typed.
+    if plain:
+        text = plain_text(text)
     # Decode common HTML entities used in PDF paragraph text
     text = (text.replace('&amp;', '&')
                 .replace('&lt;', '<')

@@ -37,11 +37,12 @@ _CONFIG_FIELDS = [
     'project_capacity_str', 'plant_capacity_mw', 'per_block_capacity_mw',
     'contractual_plant_capacity_mw', 'availability_basis_mwh',
     'redundancy_threshold_pct', 'yearly_cycle_target',
-    'prepared_by', 'reviewed_by',
+    'prepared_by', 'reviewed_by', 'permit_issued_to',
 ]
 _MONTH_FIELDS = [
     'report_number', 'status', 'cm_activities', 'site_visits',
     'recommendations', 'planned_next', 'safety_incidents', 'notes',
+    'operation_note',
 ]
 
 

@@ -393,7 +393,8 @@ def initialize_database():
 
         # ── AVAILABILITY EXCLUSIONS ───────────────────────────────────────
         # Manual entries for periods to exclude from technical availability:
-        #   Scheduled Maintenance, Grid Outage, Force Majeure, Major Fault
+        #   Scheduled Maintenance, Grid Outage, Force Majeure, Major Fault,
+        #   KKS work, Dispatch instruction (availability_service.EXCLUSION_TYPES)
         # time_from / time_to are HH:MM strings ('00:00' and '23:59' = full day)
         c.execute("""
             CREATE TABLE IF NOT EXISTS availability_exclusions (
@@ -1165,6 +1166,16 @@ def initialize_database():
         _rm_cols = [r[1] for r in c.execute("PRAGMA table_info(report_months)").fetchall()]
         if "locked_at" not in _rm_cols:
             c.execute("ALTER TABLE report_months ADD COLUMN locked_at TEXT")
+        # "How the plant was run" — the one sentence only a person can write,
+        # printed in section 2 after what the data shows. Its own column: the
+        # old `notes` column has no defined meaning and must never print.
+        if "operation_note" not in _rm_cols:
+            c.execute("ALTER TABLE report_months ADD COLUMN operation_note TEXT DEFAULT ''")
+        # The party the permit register is filtered by ("Sungrow") — section 6
+        # and the permit check on the Monthly report use the same filter.
+        _prc_cols = [r[1] for r in c.execute("PRAGMA table_info(project_report_config)").fetchall()]
+        if "permit_issued_to" not in _prc_cols:
+            c.execute("ALTER TABLE project_report_config ADD COLUMN permit_issued_to TEXT DEFAULT ''")
 
         # ── Action list ───────────────────────────────────────────────────
         # Organisational action items — "confirm the EPC bought the spare

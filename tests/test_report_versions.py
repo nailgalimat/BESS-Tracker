@@ -329,4 +329,21 @@ H.check(man['text']['report_number'] == 'APRS-BESS-2026-10', 'the customer text 
 H.check(page.versions_table.rowCount() == 1 and 'v1' in page.log.toPlainText(),
         'the Release step lists it: "{}"'.format(page.log.toPlainText()[-60:].replace(chr(10), ' ')))
 
+print(chr(10) + '=== an optional customer file reaches the generator; without it nothing changes ===')
+import openpyxl
+dgr = os.path.join(H.WORK, 'Customer Daily Generation Report.xlsx')
+wb = openpyxl.Workbook(); wb.active.title = 'DGR'
+ms = wb.create_sheet('Monthly Summary')
+ms.append(['Month', 'RTE', 'Export Energy', 'Import Energy'])
+ms.append([__import__('datetime').datetime(2026, 10, 31), 0.7711, 6483.1, 8407.2])
+wb.save(dgr)
+H.check('customer_report_path' not in CALLS[-1][1], 'October v1 had no customer file: no customer_report_path')
+mds.add_files(PID, Y, OCT, [dgr])
+v2o = rvs.generate_version(PID, Y, OCT, params())
+H.check(os.path.isfile(v2o['docx_abs']) and CALLS[-1][1].get('customer_report_path', '').endswith(
+    'Customer Daily Generation Report.xlsx'), 'v2 written; the generator got customer_report_path')
+man = rvs.load_manifest(v2o['manifest_abs'])
+H.check('operation_note' not in man['text'] and 'permit_issued_to' not in man['text'],
+        'no note, no party filter: not in the manifest text (hash as before)')
+
 H.finish()

@@ -8,6 +8,17 @@ Exclusion types:
   - Grid Outage           — utility-side downtime
   - Force Majeure         — natural disasters, etc.
   - Major Fault           — exceptional events to be reviewed separately
+  - KKS work              — planned KKS / EPC work under a permit (not PM:
+                            it stays out of "Scheduled unavailability (PM)")
+  - Dispatch instruction  — blocks held out of operation on the dispatcher's
+                            order; excluded from availability like any window,
+                            but alarms inside it are not tagged as excluded
+                            (ALARM_NEUTRAL_TYPES) — faults during a standby
+                            are still reported
+
+New types are appended, never inserted: index 0 is every combo's default.
+A window's type does not change its excluded hours; it only labels the
+"Exclusion Type" row of the report.
 
 Each exclusion has:
   date_from, date_to    — date range
@@ -25,7 +36,14 @@ EXCLUSION_TYPES = [
     "Grid Outage",
     "Force Majeure",
     "Major Fault",
+    "KKS work",
+    "Dispatch instruction",
 ]
+
+# Windows of these types exclude hours from availability but never hide an
+# alarm from the fault tables (3.2 / 5.1 / 5.2): a half-month dispatch standby
+# would otherwise swallow every genuine fault of that fortnight.
+ALARM_NEUTRAL_TYPES = {"Dispatch instruction"}
 
 
 def parse_block_spec(spec) -> Optional[set]:
@@ -597,8 +615,11 @@ def _exclusion_windows(exclusions: List[dict]):
     Returns [(start_ts, end_ts, blocks_set_or_None, exc), ...]; a None block
     set means plant-wide.
     """
+    # the type is part of the key: the cached exc dicts carry it, and alarm
+    # matching depends on it (ALARM_NEUTRAL_TYPES)
     key = tuple((e.get("date_from"), e.get("time_from"), e.get("date_to"),
-                 e.get("time_to"), e.get("affected_blocks"))
+                 e.get("time_to"), e.get("affected_blocks"),
+                 e.get("exclusion_type"))
                 for e in exclusions or [])
     hit = _EXC_WINDOW_CACHE.get(key)
     if hit is not None:
@@ -662,7 +683,8 @@ def match_alarm_to_exclusions(activated_dt,
         (a per-block exclusion should not cover an unattributable alarm)
 
     Returns the exclusion dict on first match; the alarm is considered
-    excluded under that exclusion_type even if multiple overlap.
+    excluded under that exclusion_type even if multiple overlap. Windows of
+    an ALARM_NEUTRAL_TYPES type ("Dispatch instruction") never match.
     """
     if activated_dt is None or pd.isna(activated_dt):
         return None
@@ -684,6 +706,8 @@ def match_alarm_to_exclusions(activated_dt,
     lead = pd.Timedelta(minutes=float(lead_minutes or 0))
 
     for start_dt, end_dt, blocks, exc in _exclusion_windows(exclusions):
+        if exc.get("exclusion_type") in ALARM_NEUTRAL_TYPES:
+            continue        # a dispatch standby does not hide faults
         inside = start_dt <= activated_ts <= end_dt
         # came up just before the stop and was still up when it began
         leading = (lead > pd.Timedelta(0)

@@ -193,4 +193,20 @@ new = [e for e in av.get_exclusions(project_id=PID) if e['date_from'] == '2026-0
 H.check(new and (new[0]['time_from'], new[0]['time_to']) == ('14:05', '16:40'),
         'window 14:05-16:40 (was 00:00 -> hours): {}'.format([(e['time_from'], e['time_to']) for e in new]))
 
+print('\n=== D1: a Fix button for an inputs question opens the Availability page ===')
+pm_any = rw.get_pm_activities(PID, 2026, 9)[0]
+emitted = []
+page.open_availability.connect(lambda: emitted.append(1))
+page._goto({'target': 'inputs.pm', 'ref': pm_any['id']})
+H.check(not emitted, 'editor still a tab here: no page switch ({})'.format(len(emitted)))
+editor = page.take_inputs_tab()
+page.pm_table.clearSelection()
+cur_tab = page.tabs.currentIndex()
+page._goto({'target': 'inputs.pm', 'ref': pm_any['id']})
+r = page.pm_table.currentRow()
+H.check(len(emitted) == 1, 'hosted elsewhere: open_availability emitted once ({})'.format(len(emitted)))
+H.check(r >= 0 and page.pm_table.item(r, 0).text() == str(pm_any['id']),
+        'and the PM row #{} is selected'.format(pm_any['id']))
+H.check(page.tabs.currentIndex() == cur_tab, 'the Monthly page tab did not change')
+
 H.finish()

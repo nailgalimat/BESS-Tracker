@@ -642,6 +642,60 @@ class MonthlyReportsPage(QWidget):
         fl.addWidget(self.files_table)
         l.addWidget(fg)
 
+        # Optional customer / site files: one row each, with its own Add button
+        self.cust_group = QGroupBox("Customer and site files — optional")
+        cfl = QVBoxLayout(self.cust_group)
+        self._cust_rows = {}
+        for key, hint in (
+                ('customer_dgr', "The report quotes these figures from the customer's "
+                                 "\"Monthly Summary\" sheet. Without the file it uses our "
+                                 "own meter figures."),
+                ('permit_register', "Listed in section 6 and checked against PM records "
+                                    "and SCADA stops on 2 · Check.")):
+            row = QHBoxLayout()
+            icon = QLabel("—"); icon.setFixedWidth(18)
+            row.addWidget(icon, 0, Qt.AlignTop)
+            col = QVBoxLayout()
+            name = QLabel(f"<b>{mds.TYPE[key]['label']}</b>")
+            status = QLabel(""); status.setWordWrap(True)
+            col.addWidget(name); col.addWidget(status)
+            if key == 'permit_register':
+                pr = QHBoxLayout()
+                pr.addWidget(QLabel("Permits issued to:"))
+                self.permit_issued_to = QLineEdit()
+                self.permit_issued_to.setPlaceholderText("every party")
+                self.permit_issued_to.setMaximumWidth(220)
+                self.permit_issued_to.editingFinished.connect(self._save_permit_issued_to)
+                pr.addWidget(self.permit_issued_to); pr.addStretch()
+                col.addLayout(pr)
+            h = QLabel(hint); h.setStyleSheet(_HINT_STYLE); h.setWordWrap(True)
+            col.addWidget(h)
+            row.addLayout(col, 1)
+            btn = SecondaryButton("Add…")
+            btn.clicked.connect(lambda _=False, k=key: self._add_customer_file(k))
+            self._editing(btn)
+            row.addWidget(btn, 0, Qt.AlignTop)
+            cfl.addLayout(row)
+            self._cust_rows[key] = {'icon': icon, 'status': status, 'button': btn}
+        l.addWidget(self.cust_group)
+
+        # The month's alarms into the equipment history — its own step, so
+        # Equipment and "Needs a report" do not wait for the report
+        self.alarm_group = QGroupBox("Equipment history — alarms")
+        agl = QHBoxLayout(self.alarm_group)
+        acol = QVBoxLayout()
+        self.alarm_status = QLabel(""); self.alarm_status.setWordWrap(True)
+        self.alarm_hint = QLabel(""); self.alarm_hint.setWordWrap(True)
+        self.alarm_hint.setStyleSheet(_HINT_STYLE)
+        acol.addWidget(self.alarm_status); acol.addWidget(self.alarm_hint)
+        agl.addLayout(acol, 1)
+        self.store_alarms_btn = PrimaryButton("⤓  Store alarms")
+        self.store_alarms_btn.clicked.connect(lambda: self._store_alarms(auto=False))
+        agl.addWidget(self.store_alarms_btn, 0, Qt.AlignTop)
+        self._al_worker = None
+        self._al_last = None        # the last store's result, for the hint
+        l.addWidget(self.alarm_group)
+
         cg = QGroupBox("Coverage by day"); cl = QVBoxLayout(cg)
         self.cov_table = QTableWidget(0, 0)
         self.cov_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -696,6 +750,17 @@ class MonthlyReportsPage(QWidget):
 
         ng = QGroupBox("Narrative"); f = QFormLayout(ng)
         self.report_number = QLineEdit(); f.addRow("Report No.:", self.report_number)
+        self.operation_note = QTextEdit(); self.operation_note.setMaximumHeight(80)
+        self.operation_note.setPlaceholderText(
+            "e.g. From 15 to 31 October the plant was not dispatched, by instruction "
+            "of the National Dispatch Centre.")
+        f.addRow("How the plant was run:", self.operation_note)
+        hint = QLabel("Printed in section 2 \"Summary of Operation\", after what the data shows "
+                      "(days discharged, last discharge, state of charge at the start and end of "
+                      "the month). Say why the plant ran the way it did. Leave empty and section 2 "
+                      "states only the data.")
+        hint.setStyleSheet(_HINT_STYLE); hint.setWordWrap(True)
+        f.addRow("", hint)
         self.recommendations = QTextEdit(); self.recommendations.setMaximumHeight(80)
         f.addRow("Recommendations:", self.recommendations)
         self.planned_next = QTextEdit(); self.planned_next.setMaximumHeight(80)
@@ -909,6 +974,7 @@ class MonthlyReportsPage(QWidget):
         cfg = rw.get_project_config(self._pid)
         self._site_type = (cfg.get('site_type') or 'tashkent')
         self._questions = []
+        self._al_last = None
         self.tabs.setEnabled(True)
         self.month_lbl.setText(f"{self.proj_combo.currentText()} — {MONTHS_EN[self._month]} {self._year} · type: {self._site_type}")
         self._load_all()
@@ -918,6 +984,7 @@ class MonthlyReportsPage(QWidget):
         self._refresh_work_reports()
         m = rw.get_report_month(self._pid, self._year, self._month) or {}
         self.report_number.setText(m.get('report_number', '') or '')
+        self.operation_note.setPlainText(m.get('operation_note', '') or '')
         self.cm_text.setPlainText(m.get('cm_activities', '') or '')
         self.site_visits.setPlainText(m.get('site_visits', '') or '')
         self.recommendations.setPlainText(m.get('recommendations', '') or '')
@@ -934,6 +1001,7 @@ class MonthlyReportsPage(QWidget):
         try:
             rw.save_report_month(self._pid, self._year, self._month,
                 report_number=self.report_number.text().strip(),
+                operation_note=self.operation_note.toPlainText().strip(),
                 cm_activities=self.cm_text.toPlainText().strip(),
                 site_visits=self.site_visits.toPlainText().strip(),
                 recommendations=self.recommendations.toPlainText().strip(),
@@ -958,7 +1026,7 @@ class MonthlyReportsPage(QWidget):
             lbl.setText(txt); lbl.setVisible(locked)
         for b in self._edit_buttons:
             b.setEnabled(not locked)
-        for wdg in (self.report_number, self.recommendations, self.planned_next,
+        for wdg in (self.report_number, self.operation_note, self.recommendations, self.planned_next,
                     self.safety_incidents, self.site_visits, self.cm_text):
             wdg.setReadOnly(locked)
         return locked
@@ -1507,8 +1575,17 @@ class MonthlyReportsPage(QWidget):
                            ('OEM', 'oem'), ('Equipment', 'equipment'),
                            ('Project Capacity', 'project_capacity_str')]:
             if cfg.get(key): pd[label] = cfg[key]
+        # Optional keys go in only when set: they are part of the manifest's
+        # customer-text hash, and a month without them must hash as before.
+        extra = {}
+        note = self._lines(self.operation_note.toPlainText())
+        if note:
+            extra['operation_note'] = note
+        if (cfg.get('permit_issued_to') or '').strip():
+            extra['permit_issued_to'] = cfg['permit_issued_to'].strip()
         return dict(
             rw.report_inputs(self._pid, self._year, self._month),
+            **extra,
             site_name=proj.get('name', ''),
             project_details=pd,
             prepared_by=cfg.get('prepared_by') or None,
@@ -1616,19 +1693,198 @@ class MonthlyReportsPage(QWidget):
             self._locked_warning(e)
         self._refresh_data()
 
+    # ── customer and site files (optional) ───────────────────────────────
+    def _add_customer_file(self, key):
+        if self._pid is None: return
+        path, _ = QFileDialog.getOpenFileName(
+            self, f"{mds.TYPE[key]['label']} for {MONTHS_EN[self._month]} {self._year}", "",
+            "Excel files (*.xlsx *.xlsm *.XLSX);;All files (*)")
+        if path:
+            self._add_paths([path], answers={path: key})
+
+    def _save_permit_issued_to(self):
+        if self._pid is None: return
+        val = self.permit_issued_to.text().strip()
+        if val == (rw.get_project_config(self._pid).get('permit_issued_to') or ''):
+            return
+        rw.save_project_config(self._pid, permit_issued_to=val)
+        self._refresh_customer_files()
+
+    def _customer_status(self, c):
+        """(icon, status line) for one optional file row."""
+        mname = MONTHS_EN[self._month]
+        cov = c['coverage'] or {}
+        if c['type'] == 'customer_dgr':
+            if not c['present']:
+                return "—", "Not added — the report uses our own meter figures"
+            if not cov.get('analysed_at'):
+                return "…", f"{c['file']['original_name']} · reading…"
+            r = cov.get('customer_row') or {}
+            if not r:
+                return "⚠", (f"Added, but it has no {mname} row — the report uses our own "
+                             "meter figures")
+            bits = [f"{mname} row found"]
+            for k, fmt in (('rte_pct', 'RTE {:.2f} %'), ('export_mwh', 'export {:,.1f} MWh'),
+                           ('import_mwh', 'import {:,.1f} MWh'),
+                           ('aux_total_mwh', 'auxiliary {:,.1f} MWh')):
+                if r.get(k) is not None:
+                    bits.append(fmt.format(r[k]))
+            return "✓", ' · '.join(bits)
+        if not c['present']:
+            return "—", "Not added — section 6 has no permit list and the permit check is skipped"
+        if not cov.get('analysed_at'):
+            return "…", f"{c['file']['original_name']} · reading…"
+        if cov.get('error'):
+            return "⚠", f"Could not be read: {cov['error'][:120]}"
+        party = (self.permit_issued_to.text() or '').strip()
+        bits = [f"{cov.get('permits', 0)} permits issued in {mname}"]
+        if party:
+            bits.append(f"{mds.permits_for_party(cov.get('by_party'), party)} issued to {party}")
+        bits.append(f"{cov.get('with_block', 0)} name a block (RMU-nn)")
+        if cov.get('unclear'):
+            bits.append(f"{len(cov['unclear'])} with unclear dates left out")
+        return "✓", ' · '.join(bits)
+
+    def _refresh_customer_files(self):
+        if self._pid is None:
+            return
+        files = mds.customer_files(self._pid, self._year, self._month)
+        self.cust_group.setVisible(bool(files))
+        if not self.permit_issued_to.hasFocus():
+            self.permit_issued_to.setText(
+                rw.get_project_config(self._pid).get('permit_issued_to') or '')
+        for c in files:
+            w = self._cust_rows.get(c['type'])
+            if not w:
+                continue
+            icon, txt = self._customer_status(c)
+            w['icon'].setText(icon)
+            w['status'].setText(txt)
+            w['button'].setText("Replace…" if c['present'] else "Add…")
+
+    # ── equipment history: the month's alarms ────────────────────────────
+    @staticmethod
+    def _utc_to_local(s):
+        """'YYYY-MM-DD HH:MM:SS' written by SQLite's datetime('now') -> local 'dd.mm HH:MM'."""
+        import datetime as _dt
+        try:
+            t = _dt.datetime.strptime(str(s)[:19], '%Y-%m-%d %H:%M:%S')
+            return t.replace(tzinfo=_dt.timezone.utc).astimezone().strftime('%d.%m %H:%M')
+        except (TypeError, ValueError):
+            return str(s or '')[:16]
+
+    @staticmethod
+    def _dmy(s):
+        s = str(s or '')
+        return f"{s[8:10]}.{s[5:7]}.{s[:4]} {s[11:16]}".strip() if len(s) >= 10 else '—'
+
+    def _refresh_alarm_strip(self):
+        if self._pid is None:
+            return
+        tk = self._site_type == 'tashkent'
+        self.alarm_group.setVisible(tk)
+        if not tk:
+            return
+        import services.asset_tree_service as ats
+        mname = MONTHS_EN[self._month]
+        f = mds.active_by_type(self._pid, self._year, self._month).get('alarms')
+        st = ats.alarm_history_status(self._pid, self._year, self._month)
+        busy = bool(self._al_worker and self._al_worker.isRunning())
+        last = self._al_last or {}
+        if not f:
+            self.alarm_status.setText(f"— Add the alarms export to store {mname}'s alarms.")
+            self.alarm_hint.setText("")
+            self.store_alarms_btn.setVisible(False)
+            return
+        self.store_alarms_btn.setVisible(True)
+        self.store_alarms_btn.setEnabled(not busy)
+        if st['stored']:
+            self.alarm_status.setText(
+                f"✓ {st['stored']:,} {mname} alarms stored {self._utc_to_local(st['stored_at'])} · "
+                f"history ends {self._dmy(st['last_activated_overall'])}")
+            self.store_alarms_btn.setText("⟲  Store again")
+            hint = ("Store again after exclusion windows or PM records change: the month's "
+                    "alarms are tagged again. Alarms already stored are not added twice.")
+        else:
+            self.alarm_status.setText(
+                f"! {mname} alarms are not in the equipment history yet. "
+                f"History ends {self._dmy(st['last_activated_overall'])}.")
+            self.store_alarms_btn.setText(f"⤓  Store {mname} alarms")
+            hint = ("Storing them fills Equipment → history and \"Needs a report\". "
+                    "Safe to repeat: alarms already stored are not added twice.")
+        if last.get('in_month') is not None:
+            hint = (f"From {f['original_name']}: {last['in_month']:,} alarms dated {mname}"
+                    + (f" ({last['outside_month']:,} from other months are left out)"
+                       if last.get('outside_month') else '') + ". " + hint)
+            if not last.get('pm_tagging'):
+                hint += " No LC working status in the month, so PM stops were not tagged."
+        self.alarm_hint.setText(hint)
+
+    def _store_alarms(self, auto=False):
+        """Store the month's alarms off the UI thread (button, or by itself
+        after the coverage read when the month has none stored yet)."""
+        if self._pid is None or self._site_type != 'tashkent':
+            return
+        if self._al_worker and self._al_worker.isRunning():
+            return
+        if not mds.active_by_type(self._pid, self._year, self._month).get('alarms'):
+            return
+        import services.asset_tree_service as ats
+        if auto and ats.alarm_history_status(self._pid, self._year, self._month)['stored']:
+            return
+        pid, y, m = self._pid, self._year, self._month
+        # A month whose export has no alarm in it stores nothing, so "none
+        # stored yet" stays true; without this it ran again on every visit.
+        tried = getattr(self, '_al_tried', None)
+        if tried is None:
+            tried = self._al_tried = set()
+        if auto and (pid, y, m) in tried:
+            return
+        tried.add((pid, y, m))
+        self.analyse_lbl.setText("Storing the month's alarms…")
+        self._al_worker = _Worker(lambda cb: ats.store_month_alarms(pid, y, m, cb))
+        self._al_worker.progress.connect(self.analyse_lbl.setText)
+
+        def _done(res):
+            # The user may have moved to another month while this ran: its
+            # counts are not that month's, and that month still needs its
+            # own store, which was skipped while this one was running.
+            if (pid, y, m) != (self._pid, self._year, self._month):
+                self._refresh_alarm_strip()
+                self._store_alarms(auto=True)
+                return
+            self._al_last = res
+            self.analyse_lbl.setText(
+                f"Alarms stored: {res.get('inserted', 0):,} new, "
+                f"{res.get('in_month', 0):,} in the month.")
+            self._refresh_alarm_strip()
+            self._refresh_gap_notice()
+
+        def _failed(msg):
+            self.analyse_lbl.setText("Alarms not stored: " + msg.splitlines()[0][:200])
+            self._refresh_alarm_strip()
+        self._al_worker.done.connect(_done)
+        self._al_worker.failed.connect(_failed)
+        self._al_worker.start()
+        self._refresh_alarm_strip()
+
     def _analyse(self):
         """Read the files that have no coverage yet, off the UI thread — this
-        also fills the parse cache, so the report run after it is quick."""
+        also fills the parse cache, so the report run after it is quick. Then,
+        when the month's alarms are not in the equipment history yet, store
+        them (Tashkent)."""
         if self._pid is None or (self._an_worker and self._an_worker.isRunning()):
             return
         if all(f['coverage'].get('analysed_at')
                for f in mds.list_files(self._pid, self._year, self._month)):
+            self._store_alarms(auto=True)
             return
         pid, y, m = self._pid, self._year, self._month
         self.analyse_lbl.setText("Reading the files for coverage…")
         self._an_worker = _Worker(lambda cb: mds.analyse_pending(pid, y, m, cb))
         self._an_worker.progress.connect(self.analyse_lbl.setText)
-        self._an_worker.done.connect(lambda *_: (self.analyse_lbl.setText(""), self._refresh_data()))
+        self._an_worker.done.connect(lambda *_: (self.analyse_lbl.setText(""), self._refresh_data(),
+                                                 self._store_alarms(auto=True)))
         self._an_worker.failed.connect(lambda msg: self.analyse_lbl.setText("Coverage: " + msg[:200]))
         self._an_worker.start()
 
@@ -1673,6 +1929,8 @@ class MonthlyReportsPage(QWidget):
             ("✓ " if e['present'] else "— ") + e['label']
             + (f" ({e['first'][8:10]}.{e['first'][5:7]})" if e['present'] and e.get('first') else '')
             for e in ends))
+        self._refresh_customer_files()
+        self._refresh_alarm_strip()
         i = self.tabs.indexOf(self._data_tab)
         self.tabs.setTabText(i, "1 · Data" + (f"  ({len(missing)} missing)" if missing else
                                               f"  ({len(files)} files)" if files else ""))
@@ -1725,8 +1983,16 @@ class MonthlyReportsPage(QWidget):
     def _goto(self, q):
         """Open the place a question is fixed — never change anything."""
         target, ref = q['target'], q.get('ref')
+        if target in ('inputs.pm.add', 'inputs.pm.ptw'):
+            self._pm_from_check(q)
+            return
         if target.startswith('inputs.'):
-            self.tabs.setCurrentWidget(self._inputs_tab)
+            if self.tabs.indexOf(self._inputs_tab) >= 0:
+                self.tabs.setCurrentWidget(self._inputs_tab)
+            else:
+                # The editor lives on the Availability page: go there first
+                # (showing it refreshes its tables), then select the row.
+                self.open_availability.emit()
             table = {'inputs.exclusions': self.excl_table, 'inputs.pm': self.pm_table,
                      'inputs.manual': self.man_table, 'inputs.pending': self.pend_table}[target]
             if ref is not None:
@@ -1740,6 +2006,52 @@ class MonthlyReportsPage(QWidget):
                     break
         else:
             self.tabs.setCurrentWidget(self._data_tab)
+
+    def _pm_from_check(self, q):
+        """A permit question's Fix: the PM dialog, pre-filled from the permit
+        and the SCADA stop. Nothing is written unless the user saves; the
+        check runs again afterwards."""
+        if self._pid is None:
+            return
+        pre = dict(q.get('prefill') or {})
+        if rw.month_locked_at(self._pid, self._year, self._month):
+            self._locked_warning(rw.MonthLockedError(
+                f"{MONTHS_EN[self._month]} {self._year} is locked (report sent) — "
+                "unlock it on 4 · Release to change its PM records."))
+            return
+        if q['target'] == 'inputs.pm.add':
+            dlg = PMDialog(self, project_id=self._pid, existing=pre,
+                           title="Add PM record from permit",
+                           info=chr(10).join(x for x in (q.get('detail'), q.get('explain')) if x))
+            if dlg.exec_() != QDialog.Accepted:
+                return
+            d = dlg.get_data()
+            self._write_pm(lambda mode: rw.record_pm(
+                self._pid, d['affected_blocks'], d['date_from'], d['date_to'], d['hours'],
+                d['description'], source='desktop', on_duplicate=mode,
+                ptw_no=d['ptw_no']), d['hours'])
+        else:
+            existing = rw.get_pm_record(int(q['ref'])) if q.get('ref') is not None else None
+            if not existing:
+                return
+            dlg = PMDialog(self, project_id=self._pid, existing=dict(existing, **pre),
+                           title="PM record — add the permit number",
+                           info=q.get('detail') or '')
+            if dlg.exec_() != QDialog.Accepted:
+                return
+            d = dlg.get_data()
+            try:
+                rw.update_pm_record(int(q['ref']), d['affected_blocks'], d['date_from'],
+                                    d['date_to'], d['hours'], d['description'],
+                                    ptw_no=d['ptw_no'])
+            except rw.PMDuplicateError as e:
+                QMessageBox.warning(self, "PM already recorded",
+                                    f"{e}\n\nEdit or delete that record instead.")
+            except (rw.PMValidationError, RuntimeError) as e:
+                QMessageBox.warning(self, "PM not saved",
+                                    '\n'.join(getattr(e, 'problems', [str(e)])))
+        self._refresh_inputs()
+        self._run_check()
 
     # ── 4 · Release ───────────────────────────────────────────────────────
     def _refresh_release(self):

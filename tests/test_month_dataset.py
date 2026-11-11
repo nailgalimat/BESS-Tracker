@@ -191,7 +191,111 @@ H.check([r['status'] for r in out] == ['added', 'skipped'],
         'page adds one, skips the unsure one on the user\'s answer: {}'.format([r['status'] for r in out]))
 H.check(page.last_add_group.isVisible() or page.last_add_table.rowCount() == 2, 'last upload listed')
 
+print('\n=== customer and site files: the DGR and the permit register ===')
+import datetime as _dt
+import openpyxl
+import services.report_precheck_service as rpc
+
+
+def make_dgr(path, months):
+    wb = openpyxl.Workbook()
+    wb.active.title = 'DAILY ESTIMATION'
+    ms = wb.create_sheet('Monthly Summary')
+    ms.append(['Month', 'RTE', 'Budget Cycle export', 'Export Energy', 'Import Energy',
+               'Auxiliary Consumption (Charge)', 'Auxiliary Consumption (Discharge)'])
+    for (y, m, last) in months:
+        ms.append([_dt.datetime(y, m, last), 0.7711, 31, 6483.1, 8407.2, 200.0, 119.9])
+    wb.create_sheet('PTW Register ')       # the real DGR carries one; it is not the register
+    wb.save(path)
+    return path
+
+
+def make_register(path, rows):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'CPTW Register'
+    ws.append(['Commissioning Permit To Work Register'])
+    ws.append(['Sr. No', 'CPTW No', 'Issued To', 'Area', 'Discription', 'Issue Date',
+               'Valid till', 'PTW Status'])
+    for i, r in enumerate(rows, start=1):
+        ws.append([i] + list(r))
+    wb.save(path)
+    return path
+
+
+qs0 = {q['title'] for q in rpc.customer_file_questions(PID, Y, M)}
+H.check(qs0 == {'Customer file not added', 'Permit register not added'}
+        and all(q['severity'] == 'info' for q in rpc.customer_file_questions(PID, Y, M)),
+        'neither file: two information lines, nothing to confirm')
+dgr = make_dgr(os.path.join(H.WORK, 'Customer Daily Generation Report.xlsx'), [(2026, 8, 31), (2026, 9, 30)])
+reg = make_register(os.path.join(H.WORK, '(CPTW) Register.xlsx'), [
+    ('CPTW-APRS-601', 'SUNGROW', 'RMU-06', 'BESS Preventive Maintenance', '02/09/2026', '02/09/2026', 'Closed'),
+    ('CPTW-APRS-602', 'HEEC', 'BESS', 'Painting', '03/09/2026', '05/09/2026', 'Closed'),
+    ('CPTW-APRS-603', 'Sungrow', 'BESS Zone3 RMU-22', 'KKS installation', '04/09/2026', '04/09/2026', 'Closed'),
+    ('CPTW-APRS-500', 'SUNGROW', 'BESS', 'Old work', '03/08/2026', '05/08/2026', 'Closed')])
+for p, key in ((dgr, 'customer_dgr'), (reg, 'permit_register')):
+    got = mds.classify(p, 'tashkent', Y, M)
+    H.check(got['status'] == 'recognised' and got['type'] == key,
+            '{} -> {} {}'.format(os.path.basename(p), got['status'], got['type']))
+H.check(mds.classify(dgr, 'bukhara', Y, M)['status'] == 'unrecognised', 'not taken for a Bukhara month')
+ends_before = [e['type'] for e in mds.month_end(PID, Y, M)]
+res = mds.add_files(PID, Y, M, [dgr, reg])
+H.check([r['status'] for r in res] == ['added', 'added'], 'both added automatically')
+H.check(mds.missing_required(PID, Y, M) == [], 'neither is required')
+H.check([e['type'] for e in mds.month_end(PID, Y, M)] == ends_before, 'month-end checklist unchanged')
+H.check(not any(g['type'] in ('customer_dgr', 'permit_register') for g in mds.coverage_grid(PID, Y, M)),
+        'not in the coverage grid')
+paths = mds.generation_paths(PID, Y, M)
+H.check(paths.get('customer_report_path', '').endswith('Customer Daily Generation Report.xlsx')
+        and paths.get('permit_register_path', '').endswith('(CPTW) Register.xlsx'),
+        'generation_paths has customer_report_path and permit_register_path')
+mds.analyse_pending(PID, Y, M)
+cf = {c['type']: c for c in mds.customer_files(PID, Y, M)}
+row = cf['customer_dgr']['coverage'].get('customer_row') or {}
+H.check(abs(row.get('rte_pct', 0) - 77.11) < 1e-6 and row.get('export_mwh') == 6483.1,
+        'DGR analysed: September row, RTE 77.11 %, export 6,483.1 MWh')
+pr = cf['permit_register']['coverage']
+H.check(pr.get('permits') == 3 and pr.get('with_block') == 2 and pr.get('unclear') == []
+        and mds.permits_for_party(pr['by_party'], 'sungrow') == 2,
+        'register analysed: 3 September permits, 2 name a block, 2 issued to Sungrow: {}'.format(pr))
+H.check(rpc.customer_file_questions(PID, Y, M) == [], 'both present and good: no question')
+
+old = make_dgr(os.path.join(H.WORK, 'DGR august only.xlsx'), [(2026, 8, 31)])
+mds.add_files(PID, Y, M, [old])
+mds.analyse_pending(PID, Y, M)
+w = rpc.customer_file_questions(PID, Y, M)
+H.check(len(w) == 1 and w[0]['severity'] == 'warn' and 'no row' in w[0]['title'],
+        'a DGR without the month row -> a warning: {}'.format([q['title'] for q in w]))
+H.check(any(q['kind'] == 'customer' and q['severity'] == 'warn' for q in rpc.run_precheck(PID, Y, M)),
+        'and run_precheck carries it')
+
+print('\n=== the Data step shows them; "Permits issued to" is saved ===')
+page._refresh_data()
+st = {k: w['status'].text() for k, w in page._cust_rows.items()}
+print('   ', st)
+H.check('no September row' in st['customer_dgr'] and page._cust_rows['customer_dgr']['button'].text() == 'Replace…',
+        'DGR row warns and offers Replace…')
+H.check(st['permit_register'].startswith('3 permits issued in September'), 'register row counts the permits')
+page.permit_issued_to.setText('Sungrow')
+page._save_permit_issued_to()
+H.check(rw.get_project_config(PID).get('permit_issued_to') == 'Sungrow', 'saved to the project')
+H.check('2 issued to Sungrow' in page._cust_rows['permit_register']['status'].text(),
+        'status: ' + page._cust_rows['permit_register']['status'].text())
+page._pid, page._year, page._month = PID, Y, M
+H.check(page._report_params().get('permit_issued_to') == 'Sungrow', 'passed to the generator when set')
+rw.save_project_config(PID, permit_issued_to='')
+H.check('permit_issued_to' not in page._report_params(), 'and left out when empty')
+
 print('\n=== the real exports on this PC ===')
+for p, key in ((os.path.join(H.SCADA_DIR, 'October', 'Raw data', 'Customer Daily Generation Report.xlsx'),
+                'customer_dgr'),
+               (os.path.join(H.SCADA_DIR, 'September', '(CPTW) Register Transition Phase (APRS BESS).xlsx'),
+                'permit_register')):
+    if os.path.isfile(p):
+        got = mds.classify(p, 'tashkent', 2026, 10)
+        H.check(got['type'] == key, 'real {} -> {} {}'.format(key, got['status'], got['type']))
+    else:
+        print('   (not on this PC: {})'.format(os.path.basename(p)))
 aug = os.path.join(H.SCADA_DIR, 'August', 'SCADA Raw data')
 if os.path.isdir(aug):
     expect = {'Alarms report.XLSX': 'alarms', 'Cycles first day of the month.xlsx': 'cycles_first_day',

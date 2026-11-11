@@ -70,6 +70,13 @@ TYPES = [
     _t('bk_battery_unit', 'Battery unit data (cycles)', 'bukhara', 'month_end', True, 'battery_unit_path'),
     # not read by the report; chosen by hand (its format is the customer's)
     _t('customer_poi', 'Customer POI file', '*', 'month_end', False, None, manual=True),
+    # Optional customer and site files (group 'customer': not in the coverage
+    # grid, not in the month-end checklist). Without them the report uses our
+    # own meter figures and section 6 lists no permits.
+    _t('customer_dgr', 'Customer Daily Generation Report', 'tashkent', 'customer', False,
+       'customer_report_path'),
+    _t('permit_register', 'Permit register (CPTW)', 'tashkent', 'customer', False,
+       'permit_register_path'),
 ]
 TYPE = {t['key']: t for t in TYPES}
 
@@ -123,7 +130,8 @@ def probe_file(path: str) -> dict:
     try:
         out['sheets'] = list(wb.sheetnames)
         wanted = [wb.sheetnames[0]] + [s for s in wb.sheetnames
-                                       if s.lower() in ('production', 'warning', 'total')]
+                                       if s.lower() in ('production', 'warning', 'total',
+                                                        'monthly summary')]
         for name in dict.fromkeys(wanted):
             rows = []
             for i, r in enumerate(wb[name].iter_rows(values_only=True)):
@@ -220,6 +228,17 @@ def recognise(probe: dict, year: int = None, month: int = None) -> List[str]:
             got.append('bk_site_kpi')
     if 'METER BESS' in H and 'AC CURRENT PHASE' in H:
         got.append('bk_meter_daily' if step is not None and step >= 12 * 60 else 'bk_meter_5min')
+    # the customer's Daily Generation Report: its "Monthly Summary" sheet
+    if 'monthly summary' in sheets:
+        ms = header(next(s for s in probe['sheets'] if s.lower() == 'monthly summary'))
+        if re.search(r'\bRTE\b', ms) and 'EXPORT ENERGY' in ms:
+            got.append('customer_dgr')
+    # the CPTW permit register: its header row is one of the first rows
+    for row in (probe['rows'].get(first) or [])[:4]:
+        cells = ' | '.join(' '.join(str(v).split()) for v in row if v is not None).upper()
+        if 'CPTW NO' in cells and 'ISSUE DATE' in cells:
+            got.append('permit_register')
+            break
     return list(dict.fromkeys(got))
 
 
@@ -481,6 +500,12 @@ def analyse_file(file_id: int) -> dict:
     try:
         if key == 'customer_poi':
             cov = {'present': True}
+        elif key == 'customer_dgr':
+            from services.tashkent_report_service import load_customer_monthly_summary
+            cov = {'present': True,
+                   'customer_row': load_customer_monthly_summary(path, f['year'], f['month']) or {}}
+        elif key == 'permit_register':
+            cov = permit_register_summary(path, f['year'], f['month'])
         elif group == 'events':
             ts = []
             for sheet in ('Production', 'Warning'):
@@ -574,6 +599,44 @@ def month_end(project_id: int, year: int, month: int) -> List[dict]:
         cov = (f or {}).get('coverage') or {}
         out.append({'type': t['key'], 'label': t['label'], 'required': t['required'],
                     'present': bool(f), 'file': f, 'first': cov.get('first')})
+    return out
+
+
+def permit_register_summary(path: str, year: int, month: int) -> dict:
+    """What the register says about the month, every party included:
+    {'present', 'permits', 'by_party': {issued to: n}, 'with_block': n,
+    'unclear': [permit no.]}."""
+    from services.tashkent_report_service import load_cptw_register, permit_blocks
+    unclear = []
+    rows = load_cptw_register(path, year, month, unclear_out=unclear)
+    by_party = {}
+    for r in rows:
+        k = r.get('issued_to') or ''
+        by_party[k] = by_party.get(k, 0) + 1
+    return {'present': True, 'permits': len(rows), 'by_party': by_party,
+            'with_block': sum(1 for r in rows if permit_blocks(r.get('area'), r.get('title'))),
+            'unclear': [u['no'] for u in unclear]}
+
+
+def permits_for_party(by_party: dict, issued_to: str) -> int:
+    """Permits whose "Issued To" contains `issued_to` (the report's filter)."""
+    s = (issued_to or '').strip().lower()
+    return sum(n for k, n in (by_party or {}).items() if not s or s in str(k).lower())
+
+
+def customer_files(project_id: int, year: int, month: int) -> List[dict]:
+    """The optional customer and site files of the month (group 'customer'),
+    present or not, in the month_end() row shape plus 'coverage'."""
+    files = active_by_type(project_id, year, month)
+    out = []
+    for t in types_for(site_type(project_id)):
+        if t['group'] != 'customer':
+            continue
+        f = files.get(t['key'])
+        cov = (f or {}).get('coverage') or {}
+        out.append({'type': t['key'], 'label': t['label'], 'required': t['required'],
+                    'present': bool(f), 'file': f, 'first': cov.get('first'),
+                    'coverage': cov})
     return out
 
 

@@ -28,6 +28,20 @@ from services.availability_service import (
     get_exclusions, add_exclusion, delete_exclusion, EXCLUSION_TYPES
 )
 
+# What each exclusion type means for the report — shown under the Type combo.
+EXCLUSION_TYPE_HINTS = {
+    "Scheduled Maintenance": "Planned stop by the O&M team. Counts in "
+                             "\"Scheduled unavailability (PM)\".",
+    "Grid Outage": "Utility-side loss of the grid.",
+    "Force Majeure": "Events outside anyone's control.",
+    "Major Fault": "Exceptional fault to be reviewed separately.",
+    "KKS work": "Planned KKS / EPC work under a permit. Excluded like any "
+                "window; not counted as PM.",
+    "Dispatch instruction": "Blocks held out of operation on the dispatcher's "
+                            "order. Excluded from availability; alarms inside "
+                            "the window still count as faults.",
+}
+
 
 # ── Background worker thread ───────────────────────────────────────────────────
 
@@ -135,6 +149,15 @@ class ExclusionDialog(QDialog):
         self.type_combo = QComboBox()
         self.type_combo.addItems(EXCLUSION_TYPES)
         form.addRow("Type *:", self.type_combo)
+        # one line saying what the selected type means for the report
+        self.type_hint = QLabel()
+        self.type_hint.setWordWrap(True)
+        self.type_hint.setStyleSheet("color:#6B7A8D;font-size:11px;")
+        form.addRow("", self.type_hint)
+        self.type_combo.currentTextChanged.connect(
+            lambda t: self.type_hint.setText(EXCLUSION_TYPE_HINTS.get(t, '')))
+        self.type_hint.setText(
+            EXCLUSION_TYPE_HINTS.get(self.type_combo.currentText(), ''))
 
         # From date + time
         from PyQt5.QtWidgets import QTimeEdit
