@@ -1015,7 +1015,12 @@ def get_unreported_faults(project_id: int, year: int = None, month: int = None,
              "duration_min >= ?",
              "id NOT IN (SELECT alarm_event_id FROM work_logs "
              "WHERE alarm_event_id IS NOT NULL)",
-             "id NOT IN (SELECT alarm_event_id FROM work_log_alarms)"]
+             "id NOT IN (SELECT alarm_event_id FROM work_log_alarms)",
+             # written up in the Work journal; a link whose record was
+             # deleted no longer answers the alarm
+             "id NOT IN (SELECT a.alarm_event_id FROM work_entry_alarms a "
+             "JOIN work_log_entries e ON e.id = a.entry_id "
+             "WHERE e.deleted_at IS NULL)"]
     params = [project_id, float(min_hours) * 60.0]
     if year is not None:
         where.append("year=?"); params.append(int(year))

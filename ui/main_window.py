@@ -735,10 +735,12 @@ class MainWindow(QMainWindow):
         self._show_launcher()
 
     def _report_from_alarm(self, event: dict):
-        """Equipment page → Work Report, pre-filled from the SCADA alarm."""
-        self._navigate(PAGE_WORK_LOG)
+        """Equipment page → a record in the Work journal, pre-filled from the
+        SCADA alarm. (It used to open the archived Work Reports form, whose
+        records cannot be edited in the journal and do not reach the phones.)"""
+        self._go("Work")
         try:
-            self.work_log_form.prefill_from_alarm(event)
+            self.work_page.record_from_alarm(event)
         except Exception as e:                       # noqa: BLE001
             self.status_bar.showMessage(f"  Could not prefill: {e}", 6000)
 

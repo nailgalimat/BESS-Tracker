@@ -132,6 +132,17 @@ win._on_sync_status_changed('❌ Sync failed: timeout')
 H.check(win.sync_chip.text() == 'Sync failed: timeout' and win.sync_chip.isVisibleTo(win),
         'and the chip is in the top bar of every page')
 
+# ── an alarm on Equipment is written up in the Work journal ─────────────
+win.equipment_page.work_report_requested.emit(
+    {'id': 987654, 'ids': [987654, 987655], 'block': 5, 'lc': 1,
+     'trigger_name': 'PCS fault', 'activated': '2026-08-03 10:00:00',
+     'deactivated': '2026-08-03 12:00:00', 'hours': 2.0, 'project_id': PID})
+H.check(win.stack.currentWidget() is win.work_page,
+        'Equipment "needs a report" opens the Work journal, not the archived form')
+H.check(win.work_page._alarm_ids == [987654, 987655]
+        and win.work_page._fields['title'].text() == 'PCS fault',
+        'with the record pre-filled and tied to every alarm of the incident')
+
 # ── the availability inputs moved out of the report ──────────────────────
 tabs = [win.monthly_page.tabs.tabText(i) for i in range(win.monthly_page.tabs.count())]
 H.check(len(tabs) == 4 and [t.split(' ')[0] for t in tabs] == ['1', '2', '3', '4'],

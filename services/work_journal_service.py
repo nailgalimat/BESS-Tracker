@@ -809,6 +809,38 @@ def delete(key: str):
     wes.delete_worklog_entry(key[2:])
 
 
+def link_alarms(key: str, alarm_event_ids) -> int:
+    """Record which SCADA alarms a journal record answers, so they leave the
+    "needs a record" list. Returns how many were linked."""
+    ids = [int(a) for a in (alarm_event_ids or []) if a]
+    if not ids or not key or not key.startswith('e:'):
+        return 0
+    from database.db_manager import get_connection
+    conn = get_connection()
+    try:
+        conn.executemany(
+            "INSERT OR IGNORE INTO work_entry_alarms (entry_id, alarm_event_id) "
+            "VALUES (?, ?)", [(key[2:], a) for a in ids])
+        conn.commit()
+        return len(ids)
+    finally:
+        conn.close()
+
+
+def alarms_of(key: str) -> List[int]:
+    """The SCADA alarms a journal record answers."""
+    if not key or not key.startswith('e:'):
+        return []
+    from database.db_manager import get_connection
+    conn = get_connection()
+    try:
+        return [r[0] for r in conn.execute(
+            "SELECT alarm_event_id FROM work_entry_alarms WHERE entry_id=? "
+            "ORDER BY alarm_event_id", (key[2:],))]
+    finally:
+        conn.close()
+
+
 def seen_before(project_id: int, row: dict, limit: int = 6) -> List[dict]:
     """The same fault on the same node before — what the engineer asks first."""
     title = (row.get('title') or '').strip().lower()

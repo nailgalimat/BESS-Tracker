@@ -545,6 +545,7 @@ class MaterialsSection(QWidget):
 
 class WorkPage(QWidget):
     record_saved = pyqtSignal(str)
+    alarm_record_saved = pyqtSignal(str)     # a record written from an alarm
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -555,6 +556,7 @@ class WorkPage(QWidget):
         self._rows = []
         self._shown = []
         self._alarms = []
+        self._alarm_ids = []     # alarms the record being written answers
         self._tab = 'all'
         self._key = None
         self._parts = None          # the open card's MaterialsSection, if any
@@ -1440,10 +1442,26 @@ class WorkPage(QWidget):
         except Exception as e:                           # noqa: BLE001
             QMessageBox.warning(self, "Not saved", str(e))
             return
+        from_alarm = bool(self._alarm_ids) and self._key is None
+        if from_alarm:
+            # the record answers these alarms: they leave "Needs a record"
+            try:
+                wj.link_alarms(key, self._alarm_ids)
+            except Exception as e:                       # noqa: BLE001
+                QMessageBox.warning(
+                    self, "Saved, but not linked",
+                    "The record is saved, but the alarm stays in the "
+                    "\"Needs a record\" list:\n" + str(e))
+        self._alarm_ids = []
         self._key = key
         self.record_saved.emit(key)
         self.refresh()
-        self._select_key(key)
+        if from_alarm:
+            # back to the queue: the next alarm is one click away
+            self._set_tab('scada')
+            self.alarm_record_saved.emit(key)
+        else:
+            self._select_key(key)
 
     def _use_suggestion(self, s):
         """Fill the node from the phone's own text; saving stays explicit."""
@@ -1536,6 +1554,7 @@ class WorkPage(QWidget):
                  'node': 'New record', 'age_days': 0}
         blank.update(prefill or {})
         self._key = None
+        self._alarm_ids = []
         # drop the highlight, or a click on the same row would not reopen it
         self.table.blockSignals(True)
         self.table.clearSelection()
@@ -1553,10 +1572,30 @@ class WorkPage(QWidget):
                           'internal_note': data['internal_note'],
                           'ptw': data['ptw'], 'lc': data['lc']})
 
+    def record_from_alarm(self, alarm: dict):
+        """Entry point for other pages (Equipment): write up this alarm
+        here, as a journal record."""
+        self._record_from_alarm(alarm)
+
     def _record_from_alarm(self, alarm):
         blk = alarm.get('block')
         self._set_tab('all')
+        # a grouped incident carries every alarm it covers
+        ids = [int(i) for i in (alarm.get('ids') or [alarm.get('id')]) if i]
+        act = str(alarm.get('activated') or '')
+        de = str(alarm.get('deactivated') or '')
+        note = ''
+        if act:
+            note = "SCADA alarm {} \u2192 {}".format(act[:16], de[:16] or 'still active')
+            if alarm.get('hours') is not None:
+                note += " ({:.2f} h)".format(float(alarm.get('hours') or 0))
+            assets = alarm.get('assets') or []
+            if len(ids) > 1 and assets:
+                note += ". {} units: {}{}".format(
+                    len(assets), ', '.join(assets[:8]),
+                    ' +{} more'.format(len(assets) - 8) if len(assets) > 8 else '')
         self._new_record({
+            'internal_note': note,
             'block': int(blk) if blk else None,
             'zone_label': wj.zone_label(self._pid, blk) if blk else '',
             'lc': f"LC{alarm['lc']}" if alarm.get('lc') else '',
@@ -1569,6 +1608,7 @@ class WorkPage(QWidget):
             'node': (f"Block {blk}" if blk else '') + (
                 f" · LC{alarm['lc']}" if alarm.get('lc') else ''),
         })
+        self._alarm_ids = ids        # after _new_record, which clears them
 
     def _select_key(self, key):
         for i, r in enumerate(self._shown):

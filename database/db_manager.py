@@ -235,6 +235,20 @@ def initialize_database():
         c.execute("CREATE INDEX IF NOT EXISTS idx_wla_alarm "
                   "ON work_log_alarms(alarm_event_id)")
 
+        # The same link for records of the Work journal (work_log_entries),
+        # which is where an alarm is written up now. Desktop-only, like the
+        # alarm history itself: nothing here is synced.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS work_entry_alarms (
+                entry_id       TEXT    NOT NULL,
+                alarm_event_id INTEGER NOT NULL,
+                created_at     TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (entry_id, alarm_event_id)
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_wea_alarm "
+                  "ON work_entry_alarms(alarm_event_id)")
+
         # ── Stamp legacy downtime rows with their report month ─────────────
         # manual_unavailability rows entered from the old Block Performance
         # page carry no year/month. The Monthly Reports page asks for one

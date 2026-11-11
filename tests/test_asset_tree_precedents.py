@@ -90,26 +90,35 @@ g = eq.gap_tbl.item(row, 0).data(Qt.UserRole)
 print('\npicked incident: {} units, {}'.format(g['units'], g['trigger_name'][:44]))
 eq._raise_report(eq.gap_tbl)
 
-f = win.work_log_form
-print('banner :', f.alarm_banner.text()[:150])
-print('fault  :', f.fault_input.toPlainText()[:110])
-print('alarms carried:', len(f._alarm_ids))
-print('precedents panel shown:', not f.prec_group.isHidden(), '|', f.prec_hint.text()[:70])
-assert len(f._alarm_ids) == g['units']
+# The alarm is written up in the Work journal now — not in the archived Work
+# Reports form, whose rows cannot be edited there and never reach the phones.
+import services.work_journal_service as wj
+wp = win.work_page
+assert win.stack.currentWidget() is wp
+print('title  :', wp._fields['title'].text()[:110])
+print('note   :', wp._fields['internal_note'].toPlainText()[:150])
+print('alarms carried:', len(wp._alarm_ids))
+assert len(wp._alarm_ids) == g['units']
+assert wp._fields['title'].text() == g['trigger_name']
 
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
-f.work_input.setPlainText('Restarted the BSC and re-established PCS comms on all affected units.')
-f.root_cause_input.setPlainText('Comms card lock-up after grid disturbance')
-f.no_materials.setChecked(True)
-f._save_entry()
+wp._fields['work_done'].setPlainText(
+    'Restarted the BSC and re-established PCS comms on all affected units.')
+saved = []
+wp.alarm_record_saved.connect(saved.append)
+c = dbm.get_connection()
+old_before = c.execute('SELECT COUNT(*) FROM work_logs').fetchone()[0]
+c.close()
+wp._save_card()
+assert len(saved) == 1 and saved[0].startswith('e:')
 
 c = dbm.get_connection()
-wl = c.execute('SELECT id, alarm_event_id FROM work_logs ORDER BY id DESC LIMIT 1').fetchone()
+old_after = c.execute('SELECT COUNT(*) FROM work_logs').fetchone()[0]
 c.close()
-linked = get_work_log_alarms(wl['id'])
-print('\nreport #{} primary alarm #{} linked alarms: {}'.format(
-    wl['id'], wl['alarm_event_id'], len(linked)))
+assert old_after == old_before, 'an old-format row was written'
+linked = wj.alarms_of(saved[0])
+print('\nrecord {} linked alarms: {}'.format(saved[0], len(linked)))
 assert sorted(linked) == sorted(g['ids'])
 
 # every alarm of the incident must leave the list, not just the primary
@@ -120,37 +129,16 @@ print('alarms: {} -> {}; still-unreported members of the incident: {}'.format(
 assert not gone
 assert len(alarms2) == len(alarms) - g['units']
 
-# navigation came back to Equipment on its own
-print('page after save:', win.stack.currentIndex(), '(equipment =', mwmod.PAGE_EQUIPMENT, ')')
-assert win.stack.currentIndex() == mwmod.PAGE_EQUIPMENT
+# the page stays on Work, on the queue of alarms still to write up
+assert win.stack.currentWidget() is wp and wp._tab == 'scada'
 
-# ── "seen before?" now finds that report ──────────────────────────────────
-prec = ats.find_precedents(pid['id'], trigger_name=g['trigger_name'])
-print('\nprecedents for the same trigger:', len(prec))
-for p in prec:
-    print('   {} [{}] {} -> {}'.format(p['date'], p['match'],
-                                       str(p['fault_description'])[:40],
-                                       str(p['work_performed'])[:44]))
-assert prec and prec[0]['match'] == 'same alarm'
-
-# a second unit hit by the same fault should surface it in the form
-other = next((a for a in alarms2 if a['trigger_name'] == g['trigger_name']), None)
-if other:
-    eq.show_asset(other['asset_code'])
-    eq.tabs.setCurrentIndex(idx)
-    for r in range(eq.gap_tbl.rowCount()):
-        gg = eq.gap_tbl.item(r, 0).data(Qt.UserRole)
-        if gg['trigger_name'] == g['trigger_name']:
-            eq.gap_tbl.selectRow(r); eq._raise_report(eq.gap_tbl); break
-    print('\nsecond occurrence — precedent panel:')
-    print('   hint:', f.prec_hint.text())
-    print('   rows:', f.prec_list.rowCount())
-    assert f.prec_list.rowCount() >= 1
-    f.prec_list.selectRow(0); f._show_precedent()
-    print('   detail:', f.prec_detail.text()[:130].replace('<br>', ' | '))
-    f._copy_precedent()
-    print('   copied fix:', f.work_input.toPlainText()[:60])
-    assert 'Restarted the BSC' in f.work_input.toPlainText()
+# ── "seen before?" finds that record on the next occurrence ───────────────
+row = wj.get(saved[0], pid['id'])
+again = wj.seen_before(pid['id'], {'key': None, 'title': g['trigger_name'],
+                                   'block': row.get('block')})
+print('\nseen before for the same fault:', len(again))
+assert again and again[0]['key'] == saved[0]
+assert 'Restarted the BSC' in again[0]['work_done']
 
 # ── tree reveal ───────────────────────────────────────────────────────────
 eq.search.setText('49.01.02'); eq._jump_to_search()

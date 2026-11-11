@@ -178,6 +178,33 @@ H.check(page._fields['title'].text() == 'DC-DC Converter Fault'
         and page._fields['block'].text() == '12'
         and page._fields['impact'].currentData() == 'none',
         'a record made from the fault is pre-filled, and does not count the stop twice')
+H.check('2026-09-11 03:10' in page._fields['internal_note'].toPlainText(),
+        'the alarm window is kept in the internal note')
+
+# saving it answers the alarm: it leaves the queue, and comes back if the
+# record is deleted
+page._fields['work_done'].setPlainText('DC/DC converter replaced')
+saved = []
+page.alarm_record_saved.connect(saved.append)
+page._save_card()
+H.check(len(saved) == 1 and saved[0].startswith('e:'),
+        'the record is written to the journal, not the old Work Report table')
+H.check(wj.alarms_of(saved[0]) == [alarms[0]['id']], 'and it is linked to the alarm')
+H.check(wj.needs_record(PID, 2026, 9) == [], 'the alarm has left "Needs a record"')
+H.check(page._tab == 'scada', 'the page returns to the queue for the next alarm')
+conn = dbm.get_connection()
+n_old = conn.execute("SELECT COUNT(*) FROM work_logs").fetchone()[0]
+conn.close()
+H.check(n_old == 1, 'no new old-format row was created ({})'.format(n_old))
+wj.delete(saved[0])
+H.check(len(wj.needs_record(PID, 2026, 9)) == 1,
+        'deleting the record puts the alarm back in the queue')
+page.refresh()
+
+# an ordinary new record is not tied to the alarm that was open before it
+page._record_from_alarm(alarms[0])
+page._new_record()
+H.check(page._alarm_ids == [], 'starting a plain new record forgets the alarm')
 
 # ── the serial follows the node; an edit keeps what the card does not show ──
 c = dbm.get_connection()
