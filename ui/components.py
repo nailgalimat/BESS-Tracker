@@ -36,7 +36,7 @@ class KPICard(QWidget):
 
     def __init__(self, label: str, value: str, unit: str = "",
                  icon: str = "", trend: str = "",
-                 trend_up: bool = True, accent_color: str = "#0071E3",
+                 trend_up: bool = True, accent_color: str = "#17212E",
                  parent=None):
         super().__init__(parent)
         self.setObjectName("KPICard")
@@ -59,7 +59,7 @@ class KPICard(QWidget):
         lbl = QLabel(label.upper())
         lbl.setObjectName("KPICardLabel")
         lbl.setStyleSheet(
-            f"font-size:10px; font-weight:bold; color:#6B7A8D; letter-spacing:0.8px;"
+            f"font-size:10px; font-weight:bold; color:#5B6776; letter-spacing:0.8px;"
         )
         top.addWidget(lbl)
         top.addStretch()
@@ -70,7 +70,7 @@ class KPICard(QWidget):
         val_lbl = QLabel(value)
         val_lbl.setObjectName("KPICardValue")
         val_lbl.setStyleSheet(
-            f"font-size:28px; font-weight:bold; color:#1A2B45;"
+            f"font-size:28px; font-weight:bold; color:#17212E;"
         )
         val_row.addWidget(val_lbl)
         self._value_label = val_lbl
@@ -78,14 +78,14 @@ class KPICard(QWidget):
         if unit:
             unit_lbl = QLabel(unit)
             unit_lbl.setObjectName("KPICardUnit")
-            unit_lbl.setStyleSheet("font-size:13px; color:#6B7A8D; padding-top:12px;")
+            unit_lbl.setStyleSheet("font-size:13px; color:#5B6776; padding-top:12px;")
             val_row.addWidget(unit_lbl)
         val_row.addStretch()
         layout.addLayout(val_row)
 
         # Trend row
         if trend:
-            trend_color = "#34C759" if trend_up else "#FF3B30"
+            trend_color = "#1E6B3A" if trend_up else "#A61B1B"
             trend_arrow = "▲" if trend_up else "▼"
             trend_lbl = QLabel(f"{trend_arrow} {trend}")
             trend_lbl.setStyleSheet(
@@ -98,7 +98,7 @@ class KPICard(QWidget):
         # Left accent border
         self.setStyleSheet(
             f"#KPICard {{ "
-            f"background:#FFFFFF; border:1px solid #E0E4EA; border-radius:8px;"
+            f"background:#FFFFFF; border:1px solid #DDE2E8; border-radius:8px;"
             f"border-left: 4px solid {accent};"
             f"}}"
         )
@@ -112,36 +112,27 @@ class KPICard(QWidget):
 
 class PageHeader(QWidget):
     """
-    Consistent top bar for every page.
-    Shows title on the left and optional action buttons on the right.
+    The strip under the shell's top bar: one line saying what the page is for
+    on the left, the page's action buttons on the right.
+
+    The page's name is not repeated here — the top bar shows it. `title` is
+    kept for callers and for anything that reads `header.title`.
     """
 
     def __init__(self, title: str, subtitle: str = "", parent=None):
         super().__init__(parent)
+        self.title = title
         self.setObjectName("PageHeader")
-        self.setFixedHeight(56)
+        self.setFixedHeight(46)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(24, 0, 16, 0)
+        layout.setContentsMargins(20, 0, 16, 0)
 
-        left = QVBoxLayout()
-        left.setSpacing(1)
-
-        title_lbl = QLabel(title)
-        title_lbl.setObjectName("PageTitle")
-        title_lbl.setStyleSheet(
-            "font-size:16px; font-weight:bold; color:#1A2B45;"
-        )
-        left.addWidget(title_lbl)
-
-        if subtitle:
-            sub_lbl = QLabel(subtitle)
-            sub_lbl.setObjectName("PageSubtitle")
-            sub_lbl.setStyleSheet("font-size:11px; color:#6B7A8D;")
-            left.addWidget(sub_lbl)
-
-        layout.addLayout(left)
+        sub_lbl = QLabel(subtitle or "")
+        sub_lbl.setObjectName("PageSubtitle")
+        sub_lbl.setStyleSheet("font-size:12px; color:#5B6776; padding:0;")
+        layout.addWidget(sub_lbl)
         layout.addStretch()
 
         # Slot for action buttons — call add_action() after construction
@@ -152,7 +143,7 @@ class PageHeader(QWidget):
         self.setStyleSheet("""
             PageHeader, #PageHeader {
                 background-color: #FFFFFF;
-                border-bottom: 1px solid #E0E4EA;
+                border-bottom: 1px solid #DDE2E8;
             }
         """)
 
@@ -290,5 +281,5 @@ def DangerButton(text: str, parent=None) -> QPushButton:
 def HSeparator() -> QFrame:
     line = QFrame()
     line.setFrameShape(QFrame.HLine)
-    line.setStyleSheet("color: #E0E4EA;")
+    line.setStyleSheet("color: #DDE2E8;")
     return line

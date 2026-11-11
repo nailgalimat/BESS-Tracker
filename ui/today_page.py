@@ -24,16 +24,16 @@ from PyQt5.QtWidgets import (
 
 import services.today_service as ts
 
-SEV_COLOR = {'crit': '#FF3B30', 'warn': '#FF9500', 'info': '#6B7A8D',
-             'ok': '#34C759', 'pend': '#AF52DE'}
+SEV_COLOR = {'crit': '#A61B1B', 'warn': '#7A5200', 'info': '#5B6776',
+             'ok': '#1E6B3A', 'pend': '#5B3A8C'}
 
-_PANEL = ("QFrame#Panel{background:#FFFFFF;border:1px solid #E0E4EA;"
+_PANEL = ("QFrame#Panel{background:#FFFFFF;border:1px solid #DDE2E8;"
           "border-radius:6px;}")
 
 
 def _chip(text, kind='info'):
     lbl = QLabel(text)
-    col = SEV_COLOR.get(kind, '#6B7A8D')
+    col = SEV_COLOR.get(kind, '#5B6776')
     lbl.setStyleSheet(
         f"color:{col};border:1px solid {col};border-radius:8px;"
         "padding:1px 7px;font-size:11px;background:transparent;")
@@ -58,15 +58,15 @@ class Panel(QFrame):
         head.addWidget(self.title_lbl)
         self.count_lbl = QLabel("")
         self.count_lbl.setStyleSheet(
-            "background:#F0F2F5;border-radius:9px;padding:0 8px;"
-            "font-weight:bold;color:#1A2B45;")
+            "background:#F4F6F8;border-radius:9px;padding:0 8px;"
+            "font-weight:bold;color:#17212E;")
         head.addWidget(self.count_lbl)
         head.addStretch()
         self.link_btn = QPushButton("")
         self.link_btn.setFlat(True)
         self.link_btn.setCursor(Qt.PointingHandCursor)
         self.link_btn.setStyleSheet(
-            "QPushButton{color:#0071E3;border:none;background:transparent;"
+            "QPushButton{color:#17212E;border:none;background:transparent;"
             "text-align:right;padding:0;}QPushButton:hover{text-decoration:underline;}")
         self.link_btn.setVisible(False)
         head.addWidget(self.link_btn)
@@ -106,7 +106,7 @@ class Panel(QFrame):
     def empty(self, text):
         """An empty block is one line, not an empty table."""
         lbl = QLabel(text)
-        lbl.setStyleSheet("color:#6B7A8D;background:transparent;")
+        lbl.setStyleSheet("color:#5B6776;background:transparent;")
         lbl.setWordWrap(True)
         self.body.addWidget(lbl)
 
@@ -122,7 +122,7 @@ class Panel(QFrame):
         line.addWidget(lbl, 1)
         if right:
             r = QLabel(right)
-            r.setStyleSheet("color:#6B7A8D;background:transparent;")
+            r.setStyleSheet("color:#5B6776;background:transparent;")
             line.addWidget(r)
         if action:
             b = QPushButton(action)
@@ -131,7 +131,7 @@ class Panel(QFrame):
             b.setStyleSheet(
                 "QPushButton{border:1px solid #C7CDD6;border-radius:4px;"
                 "padding:1px 10px;background:#FFFFFF;}"
-                "QPushButton:hover{border-color:#0071E3;color:#0071E3;}")
+                "QPushButton:hover{border-color:#17212E;color:#17212E;}")
             if action_slot:
                 b.clicked.connect(lambda _=False, s=action_slot: s())
             line.addWidget(b)
@@ -165,7 +165,7 @@ class TodayPage(QWidget):
         bar = QHBoxLayout()
         bar.setContentsMargins(20, 10, 20, 4)
         self.head_lbl = QLabel("")
-        self.head_lbl.setStyleSheet("color:#6B7A8D;background:transparent;")
+        self.head_lbl.setStyleSheet("color:#5B6776;background:transparent;")
         bar.addWidget(self.head_lbl)
         bar.addStretch()
         self.refresh_btn = QPushButton("Refresh")

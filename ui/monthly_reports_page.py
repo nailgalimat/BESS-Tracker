@@ -51,7 +51,7 @@ _WARN_STYLE = ("background:#FFF8E6;border:1px solid #F0D58C;border-radius:6px;"
 _LOCK_STYLE = ("background:#EEF3FA;border:1px solid #B9CBE3;border-radius:6px;"
                "padding:6px 8px;color:#1F3B63;font-size:11px;")
 _ERR_STYLE = "color:#B4232A;font-size:11px;"
-_HINT_STYLE = "color:#6B7A8D;font-size:11px;"
+_HINT_STYLE = "color:#5B6776;font-size:11px;"
 _COV_COLORS = {'full': '#3FA56B', 'partial': '#E8B64C', 'none': '#DCE2EA', 'future': '#F4F6F9'}
 _SEV_LABEL = {'crit': '⛔', 'warn': '⚠', 'info': 'ℹ'}
 
@@ -446,33 +446,36 @@ class MonthlyReportsPage(QWidget):
     def _build_ui(self):
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(PageHeader("Monthly Reports",
-                                  "Pick a project and month · 1 Data · 2 Check · 3 Customer text · 4 Release"))
+                                  "1 Data · 2 Check · 3 Customer text · 4 Release"))
 
         # ── Selector bar ────────────────────────────────────────────────
-        bar = QHBoxLayout(); bar.setContentsMargins(16, 6, 16, 6)
-        bar.addWidget(QLabel("Project:"))
-        self.proj_combo = QComboBox(); self.proj_combo.setMinimumWidth(200)
+        # The project and the month are chosen once, in the top bar. These
+        # three controls still hold them for the page, but are not shown.
+        bar = QHBoxLayout(); bar.setContentsMargins(16, 8, 16, 6)
+        self.proj_combo = QComboBox(self)
         self.proj_combo.currentIndexChanged.connect(self._on_project)
-        bar.addWidget(self.proj_combo)
-        bar.addWidget(QLabel("Year:"))
-        self.year_spin = QSpinBox(); self.year_spin.setRange(2020, 2100)
+        self.year_spin = QSpinBox(self); self.year_spin.setRange(2020, 2100)
         self.year_spin.setValue(QDate.currentDate().year())
-        bar.addWidget(self.year_spin)
-        bar.addWidget(QLabel("Month:"))
-        self.month_combo = QComboBox(); self.month_combo.addItems(MONTHS_EN[1:])
+        self.month_combo = QComboBox(self); self.month_combo.addItems(MONTHS_EN[1:])
         self.month_combo.setCurrentIndex(QDate.currentDate().month() - 1)
-        bar.addWidget(self.month_combo)
-        load_btn = PrimaryButton("📂  Open month")
+        for hidden in (self.proj_combo, self.year_spin, self.month_combo):
+            hidden.setVisible(False)
+        self.open_btn = load_btn = PrimaryButton("Open month")
+        load_btn.setToolTip("Open the month shown in the top bar. Opening "
+                            "creates the month's record.")
         load_btn.clicked.connect(self._open_month)
         bar.addWidget(load_btn)
+        self.year_spin.valueChanged.connect(self._name_open_button)
+        self.month_combo.currentIndexChanged.connect(self._name_open_button)
+        self._name_open_button()
         # The month's inputs (waiting phone events, PM, manual downtime,
         # windows) are a page of their own now — one click away, not a tab.
-        avail_btn = SecondaryButton("⚖  Availability inputs")
+        avail_btn = SecondaryButton("Availability inputs")
         avail_btn.setToolTip("Phone events, PM records, manual downtime and "
                              "exclusion windows — on the Availability page")
         avail_btn.clicked.connect(lambda: self.open_availability.emit())
         bar.addWidget(avail_btn)
-        self.month_lbl = QLabel(""); self.month_lbl.setStyleSheet("color:#6B7A8D;font-style:italic;")
+        self.month_lbl = QLabel(""); self.month_lbl.setStyleSheet("color:#5B6776;font-style:italic;")
         bar.addWidget(self.month_lbl)
         bar.addStretch()
         root.addLayout(bar)
@@ -526,12 +529,12 @@ class MonthlyReportsPage(QWidget):
         g = QGroupBox("Preventive maintenance — one record per block per day")
         gl = QVBoxLayout(g)
         br = QHBoxLayout()
-        b1 = PrimaryButton("➕  Add PM"); b1.clicked.connect(self._add_pm); br.addWidget(b1)
-        b2 = SecondaryButton("✏️  Edit"); b2.clicked.connect(self._edit_pm); br.addWidget(b2)
-        b3 = SecondaryButton("🗑  Delete"); b3.clicked.connect(self._del_pm); br.addWidget(b3)
+        b1 = PrimaryButton("Add PM"); b1.clicked.connect(self._add_pm); br.addWidget(b1)
+        b2 = SecondaryButton("Edit"); b2.clicked.connect(self._edit_pm); br.addWidget(b2)
+        b3 = SecondaryButton("Delete"); b3.clicked.connect(self._del_pm); br.addWidget(b3)
         self._editing(b1, b2, b3)
         br.addStretch()
-        self.pm_summary = QLabel(""); self.pm_summary.setStyleSheet("color:#6B7A8D;font-style:italic;")
+        self.pm_summary = QLabel(""); self.pm_summary.setStyleSheet("color:#5B6776;font-style:italic;")
         br.addWidget(self.pm_summary)
         gl.addLayout(br)
         self.pm_table = _table(["ID", "Date", "Block", "Hours", "Source", "Description", "Check"],
@@ -549,7 +552,7 @@ class MonthlyReportsPage(QWidget):
         mg = QGroupBox("Manual unavailability — downtime SCADA does not show")
         ml = QVBoxLayout(mg)
         mr = QHBoxLayout()
-        for txt, fn in [("➕  Add", self._add_man), ("✏️  Edit", self._edit_man), ("🗑  Delete", self._del_man)]:
+        for txt, fn in [("Add", self._add_man), ("Edit", self._edit_man), ("Delete", self._del_man)]:
             b = (PrimaryButton if txt.startswith("➕") else SecondaryButton)(txt); b.clicked.connect(fn)
             mr.addWidget(b); self._editing(b)
         mr.addStretch(); ml.addLayout(mr)
@@ -566,7 +569,7 @@ class MonthlyReportsPage(QWidget):
         # Exclusions
         eg = QGroupBox("Availability Exclusions"); el = QVBoxLayout(eg)
         er = QHBoxLayout()
-        for txt, fn in [("➕  Add", self._add_excl), ("✏️  Edit", self._edit_excl), ("🗑  Delete", self._del_excl)]:
+        for txt, fn in [("Add", self._add_excl), ("Edit", self._edit_excl), ("Delete", self._del_excl)]:
             b = (PrimaryButton if txt.startswith("➕") else SecondaryButton)(txt); b.clicked.connect(fn); er.addWidget(b)
             self._editing(b)
         er.addStretch(); el.addLayout(er)
@@ -577,7 +580,7 @@ class MonthlyReportsPage(QWidget):
         # Balancing
         bg = QGroupBox("Cycle-Balancing / Rested Blocks"); bl = QVBoxLayout(bg)
         brow = QHBoxLayout()
-        for txt, fn in [("➕  Add", self._add_bal), ("✏️  Edit", self._edit_bal), ("🗑  Delete", self._del_bal)]:
+        for txt, fn in [("Add", self._add_bal), ("Edit", self._edit_bal), ("Delete", self._del_bal)]:
             b = (PrimaryButton if txt.startswith("➕") else SecondaryButton)(txt); b.clicked.connect(fn); brow.addWidget(b)
             self._editing(b)
         brow.addStretch(); bl.addLayout(brow)
@@ -614,8 +617,8 @@ class MonthlyReportsPage(QWidget):
                      "recognised from the column headers; files are copied into the month and "
                      "never picked again.")
         txt.setWordWrap(True); top.addWidget(txt, 1)
-        self.add_files_btn = PrimaryButton("➕  Add files…"); self.add_files_btn.clicked.connect(self._add_files)
-        self.add_folder_btn = SecondaryButton("📁  Add folder…"); self.add_folder_btn.clicked.connect(self._add_folder)
+        self.add_files_btn = PrimaryButton("Add files…"); self.add_files_btn.clicked.connect(self._add_files)
+        self.add_folder_btn = SecondaryButton("Add folder…"); self.add_folder_btn.clicked.connect(self._add_folder)
         top.addWidget(self.add_files_btn); top.addWidget(self.add_folder_btn)
         self._editing(self.add_files_btn, self.add_folder_btn)
         l.addLayout(top)
@@ -631,10 +634,10 @@ class MonthlyReportsPage(QWidget):
         fr = QHBoxLayout()
         self.data_status = QLabel(""); self.data_status.setStyleSheet(_HINT_STYLE)
         fr.addWidget(self.data_status, 1)
-        self.remove_file_btn = SecondaryButton("🗑  Remove from month")
+        self.remove_file_btn = SecondaryButton("Remove from month")
         self.remove_file_btn.clicked.connect(self._remove_file)
         self._editing(self.remove_file_btn)
-        b = SecondaryButton("📂  Open folder"); b.clicked.connect(self._open_month_folder)
+        b = SecondaryButton("Open folder"); b.clicked.connect(self._open_month_folder)
         fr.addWidget(self.remove_file_btn); fr.addWidget(b)
         fl.addLayout(fr)
         self.files_table = _table(["ID", "Type", "File", "Data", "Added", "SHA-256"],
@@ -720,7 +723,7 @@ class MonthlyReportsPage(QWidget):
     def _build_check_tab(self):
         w = QWidget(); l = QVBoxLayout(w)
         top = QHBoxLayout()
-        self.run_check_btn = PrimaryButton("🔎  Run the check"); self.run_check_btn.clicked.connect(self._run_check)
+        self.run_check_btn = PrimaryButton("Run the check"); self.run_check_btn.clicked.connect(self._run_check)
         top.addWidget(self.run_check_btn)
         hint = QLabel("Questions before generating. The check never changes an input — each "
                       "question opens the place where it is fixed.")
@@ -779,7 +782,7 @@ class MonthlyReportsPage(QWidget):
                        "the recommendations and planned activities above follow them.")
         concl.setStyleSheet(_HINT_STYLE); concl.setWordWrap(True)
         f.addRow("Conclusions:", concl)
-        save = PrimaryButton("💾  Save customer text"); save.clicked.connect(self._save_narrative)
+        save = PrimaryButton("Save customer text"); save.clicked.connect(self._save_narrative)
         self._editing(save)
         r = QHBoxLayout(); r.addStretch(); r.addWidget(save); f.addRow("", _wrap(r))
         l.addWidget(ng)
@@ -794,13 +797,13 @@ class MonthlyReportsPage(QWidget):
         hdr.addWidget(self.cm_include)
         hdr.addStretch()
         self.wr_count_lbl = QLabel("—")
-        self.wr_count_lbl.setStyleSheet("color:#6B7A8D;font-style:italic;")
+        self.wr_count_lbl.setStyleSheet("color:#5B6776;font-style:italic;")
         self.wr_count_lbl.setWordWrap(True)
         hdr.addWidget(self.wr_count_lbl)
         wrl.addLayout(hdr)
         act = QHBoxLayout()
-        b = SecondaryButton("✏️  Edit record…"); b.clicked.connect(self._edit_corrective); act.addWidget(b)
-        b = SecondaryButton("⚖  Resolve conflict…"); b.clicked.connect(self._resolve_corrective); act.addWidget(b)
+        b = SecondaryButton("Edit record…"); b.clicked.connect(self._edit_corrective); act.addWidget(b)
+        b = SecondaryButton("Resolve conflict…"); b.clicked.connect(self._resolve_corrective); act.addWidget(b)
         act.addStretch()
         refresh_wr = SecondaryButton("⟲  Refresh")
         refresh_wr.clicked.connect(self._refresh_work_reports)
@@ -811,7 +814,7 @@ class MonthlyReportsPage(QWidget):
             [0, 90, 50, 190, 190, 70, 60], max_height=260)
         self.wr_table.doubleClicked.connect(lambda *_: self._edit_corrective())
         wrl.addWidget(self.wr_table)
-        wr_hint = QLabel("🖥 desktop Work Reports + 📱 mobile Field Log entries "
+        wr_hint = QLabel("desktop Work Reports + 📱 mobile Field Log entries "
                          "(fault / repair / maintenance) for this month. A line reaches "
                          "section 3.2 only when it is finished, has a plant block, is not "
                          "PM and is not in a sync conflict — “Edit record…” sets the block "
@@ -836,7 +839,7 @@ class MonthlyReportsPage(QWidget):
         self.cm_text.setPlaceholderText("Extra corrective actions not captured as Work Reports…")
         self.cm_text.textChanged.connect(self._refresh_cm_preview)
         cml.addWidget(self.cm_text)
-        save = SecondaryButton("💾  Save notes"); save.clicked.connect(self._save_narrative)
+        save = SecondaryButton("Save notes"); save.clicked.connect(self._save_narrative)
         self._editing(save)
         r = QHBoxLayout(); r.addStretch(); r.addWidget(save); cml.addLayout(r)
         l.addWidget(cmg)
@@ -864,9 +867,9 @@ class MonthlyReportsPage(QWidget):
         r = QHBoxLayout()
         self.gen_btn = PrimaryButton("⚡  Generate v1"); self.gen_btn.setMinimumWidth(180)
         self.gen_btn.clicked.connect(self._generate); r.addWidget(self.gen_btn)
-        b = SecondaryButton("📄  Open DOCX"); b.clicked.connect(self._open_docx); r.addWidget(b)
-        b = SecondaryButton("🧾  Open manifest"); b.clicked.connect(self._open_manifest); r.addWidget(b)
-        b = SecondaryButton("📂  Open folder"); b.clicked.connect(self._open_month_folder); r.addWidget(b)
+        b = SecondaryButton("Open DOCX"); b.clicked.connect(self._open_docx); r.addWidget(b)
+        b = SecondaryButton("Open manifest"); b.clicked.connect(self._open_manifest); r.addWidget(b)
+        b = SecondaryButton("Open folder"); b.clicked.connect(self._open_month_folder); r.addWidget(b)
         r.addStretch()
         vl.addLayout(r)
         self.versions_table = _table(
@@ -882,7 +885,7 @@ class MonthlyReportsPage(QWidget):
         self.progress = QProgressBar(); self.progress.setRange(0, 0); self.progress.setVisible(False)
         self.progress.setFixedHeight(6); vl.addWidget(self.progress)
         self.log = QTextEdit(); self.log.setReadOnly(True); self.log.setMaximumHeight(150)
-        self.log.setStyleSheet("QTextEdit{background:#1A2B45;color:#8FA3BE;font-family:Consolas,monospace;font-size:11px;border-radius:4px;padding:6px;}")
+        self.log.setStyleSheet("QTextEdit{background:#17212E;color:#8FA3BE;font-family:Consolas,monospace;font-size:11px;border-radius:4px;padding:6px;}")
         vl.addWidget(self.log)
         l.addWidget(vg)
 
@@ -890,10 +893,10 @@ class MonthlyReportsPage(QWidget):
         self.sent_lbl = QLabel("No version marked as sent."); self.sent_lbl.setWordWrap(True)
         sl.addWidget(self.sent_lbl)
         sr = QHBoxLayout()
-        self.mark_sent_btn = PrimaryButton("✉  Mark final DOCX as sent…")
+        self.mark_sent_btn = PrimaryButton("Mark final DOCX as sent…")
         self.mark_sent_btn.clicked.connect(self._mark_sent)
-        self.unlock_btn = SecondaryButton("🔓  Unlock month…"); self.unlock_btn.clicked.connect(self._unlock_month)
-        self.relock_btn = SecondaryButton("🔒  Lock again"); self.relock_btn.clicked.connect(self._relock_month)
+        self.unlock_btn = SecondaryButton("Unlock month…"); self.unlock_btn.clicked.connect(self._unlock_month)
+        self.relock_btn = SecondaryButton("Lock again"); self.relock_btn.clicked.connect(self._relock_month)
         for b in (self.mark_sent_btn, self.unlock_btn, self.relock_btn):
             sr.addWidget(b)
         sr.addStretch(); sl.addLayout(sr)
@@ -951,6 +954,14 @@ class MonthlyReportsPage(QWidget):
     def _on_project(self, *_):
         pass  # month is opened explicitly via the button
 
+    def _name_open_button(self, *_):
+        """The button says which month it opens, and whether it is open."""
+        y, m = self.year_spin.value(), self.month_combo.currentIndex() + 1
+        is_open = (self._pid is not None
+                   and (self._year, self._month) == (y, m))
+        self.open_btn.setText(("Reload {} {}" if is_open else "Open {} {}")
+                              .format(MONTHS_EN[m], y))
+
     def _blocks_list(self):
         proj = rw.get_project(self._pid) or {}
         n = int(proj.get('num_blocks') or 15)
@@ -977,6 +988,7 @@ class MonthlyReportsPage(QWidget):
         self._al_last = None
         self.tabs.setEnabled(True)
         self.month_lbl.setText(f"{self.proj_combo.currentText()} — {MONTHS_EN[self._month]} {self._year} · type: {self._site_type}")
+        self._name_open_button()
         self._load_all()
 
     def _load_all(self):
@@ -1018,7 +1030,7 @@ class MonthlyReportsPage(QWidget):
         """Mirror the service's lock: edit buttons off, text read-only, banners."""
         locked = bool(self._pid and rw.month_locked_at(self._pid, self._year, self._month))
         sent = rvs.latest_sent(self._pid, self._year, self._month) if locked else None
-        txt = (f"🔒  {MONTHS_EN[self._month]} {self._year} is locked — the report was marked as sent"
+        txt = (f"{MONTHS_EN[self._month]} {self._year} is locked — the report was marked as sent"
                + (f" (v{sent['version']}, {sent['sent_original_name']})" if sent else "")
                + ". Its inputs, data set and customer text are read-only. "
                  "Unlock it on 4 · Release, with a reason, to change them.") if locked else ""
@@ -1042,7 +1054,7 @@ class MonthlyReportsPage(QWidget):
         self._inputs = data
 
         self.pend_table.setRowCount(0)
-        kinds = {'pm': '🧰 PM', 'counts': '⛔ Downtime — counts', 'excluded': '➖ Excluded'}
+        kinds = {'pm': 'PM', 'counts': '⛔ Downtime — counts', 'excluded': 'Excluded'}
         reasons = {'confirm': 'needs times and blocks confirmed',
                    'duplicate': 'a PM record already exists', 'invalid': 'cannot be applied as sent',
                    'locked': 'the month was locked (report sent)'}

@@ -75,17 +75,17 @@ def _wrap_row(layout):
 class _Stat(QFrame):
     """A small labelled figure in the asset header strip."""
 
-    def __init__(self, caption, value, accent='#1A2B45', parent=None):
+    def __init__(self, caption, value, accent='#17212E', parent=None):
         super().__init__(parent)
         self.setObjectName('EqStat')
         self.setStyleSheet(
-            '#EqStat{background:#FFFFFF;border:1px solid #E0E4EA;'
+            '#EqStat{background:#FFFFFF;border:1px solid #DDE2E8;'
             'border-radius:8px;}')
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 10, 14, 10)
         lay.setSpacing(2)
         cap = QLabel(caption.upper())
-        cap.setStyleSheet('font-size:9px;font-weight:bold;color:#6B7A8D;'
+        cap.setStyleSheet('font-size:9px;font-weight:bold;color:#5B6776;'
                           'letter-spacing:1px;background:transparent;')
         lay.addWidget(cap)
         self.val = QLabel(str(value))
@@ -112,7 +112,7 @@ class _ImportDialog(QDialog):
             'the equipment history. Re-importing a month you already have '
             'changes nothing, so this is always safe to run.')
         intro.setWordWrap(True)
-        intro.setStyleSheet('color:#6B7A8D;')
+        intro.setStyleSheet('color:#5B6776;')
         lay.addWidget(intro)
 
         self.mode = QComboBox()
@@ -132,7 +132,7 @@ class _ImportDialog(QDialog):
 
         self.found_lbl = QLabel('')
         self.found_lbl.setWordWrap(True)
-        self.found_lbl.setStyleSheet('color:#33465E;font-size:11px;')
+        self.found_lbl.setStyleSheet('color:#3A4757;font-size:11px;')
         self.found_lbl.setVisible(False)
         lay.addWidget(self.found_lbl)
 
@@ -158,7 +158,7 @@ class _ImportDialog(QDialog):
             'Availability exclusions recorded for a month are applied to it, so '
             'grid outages and PM are not charged to the equipment.')
         note.setWordWrap(True)
-        note.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        note.setStyleSheet('color:#5B6776;font-size:11px;')
         lay.addWidget(note)
 
         box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -230,7 +230,7 @@ class _SuggestDialog(QDialog):
             'trip to last recovery, which is usually a little wider than what '
             'gets written down by hand.')
         intro.setWordWrap(True)
-        intro.setStyleSheet('color:#6B7A8D;')
+        intro.setStyleSheet('color:#5B6776;')
         lay.addWidget(intro)
 
         self.tbl = QTableWidget(0, 7)
@@ -274,7 +274,7 @@ class _SuggestDialog(QDialog):
             'against the equipment. Untick anything that really was an '
             'equipment failure.')
         note.setWordWrap(True)
-        note.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        note.setStyleSheet('color:#5B6776;font-size:11px;')
         lay.addWidget(note)
 
         box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -414,15 +414,14 @@ class EquipmentPage(QWidget):
 
         # Project picker + freshness banner
         bar = QWidget()
-        bar.setStyleSheet('background:#FFFFFF;border-bottom:1px solid #E0E4EA;')
+        bar.setStyleSheet('background:#FFFFFF;border-bottom:1px solid #DDE2E8;')
         bl = QHBoxLayout(bar)
         bl.setContentsMargins(24, 10, 24, 10)
         bl.setSpacing(10)
-        bl.addWidget(QLabel('Project:'))
-        self.project_combo = QComboBox()
-        self.project_combo.setMinimumWidth(240)
+        # the project is chosen once, in the top bar; held here, not shown
+        self.project_combo = QComboBox(bar)
         self.project_combo.currentIndexChanged.connect(self._on_project_changed)
-        bl.addWidget(self.project_combo)
+        self.project_combo.setVisible(False)
         bl.addStretch()
         self.fresh_lbl = QLabel('')
         self.fresh_lbl.setStyleSheet(
@@ -430,13 +429,13 @@ class EquipmentPage(QWidget):
             'border-radius:6px;padding:5px 12px;font-size:11px;')
         bl.addWidget(self.fresh_lbl)
         self.import_status = QLabel('')
-        self.import_status.setStyleSheet('color:#0071E3;font-size:11px;')
+        self.import_status.setStyleSheet('color:#17212E;font-size:11px;')
         self.import_status.setVisible(False)
         bl.addWidget(self.import_status)
         root.addWidget(bar)
 
         split = QSplitter(Qt.Horizontal)
-        split.setStyleSheet('QSplitter::handle{background:#E0E4EA;width:1px;}')
+        split.setStyleSheet('QSplitter::handle{background:#DDE2E8;width:1px;}')
 
         # ── left: tree ────────────────────────────────────────────────────
         left = QWidget()
@@ -467,7 +466,7 @@ class EquipmentPage(QWidget):
         ll.addWidget(self.tree, 1)
 
         self.tree_hint = QLabel('')
-        self.tree_hint.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        self.tree_hint.setStyleSheet('color:#5B6776;font-size:11px;')
         ll.addWidget(self.tree_hint)
         split.addWidget(left)
 
@@ -479,11 +478,11 @@ class EquipmentPage(QWidget):
 
         self.asset_title = QLabel('Select an asset')
         self.asset_title.setStyleSheet(
-            'font-size:19px;font-weight:bold;color:#1A2B45;')
+            'font-size:19px;font-weight:bold;color:#17212E;')
         rl.addWidget(self.asset_title)
 
         self.asset_sub = QLabel('')
-        self.asset_sub.setStyleSheet('color:#6B7A8D;font-size:12px;')
+        self.asset_sub.setStyleSheet('color:#5B6776;font-size:12px;')
         rl.addWidget(self.asset_sub)
 
         stats = QHBoxLayout()
@@ -492,18 +491,18 @@ class EquipmentPage(QWidget):
         self.st_events.setToolTip(
             'Alarms raised by this equipment, excluding those that fell inside '
             'a grid-outage or PM window. Matches the tree on the left.')
-        self.st_hours = _Stat('Own fault hours', '—', '#FF3B30')
+        self.st_hours = _Stat('Own fault hours', '—', '#A61B1B')
         self.st_hours.setToolTip(
             'Summed alarm duration, excluding alarms that fell inside a grid-'
             'outage or PM window. Equipment-hours, not wall-clock hours: '
             'faults on several units at once add up.')
-        self.st_excl = _Stat('In excluded windows', '—', '#6B7A8D')
+        self.st_excl = _Stat('In excluded windows', '—', '#5B6776')
         self.st_excl.val.setStyleSheet(
-            'font-size:15px;font-weight:bold;color:#6B7A8D;background:transparent;')
+            'font-size:15px;font-weight:bold;color:#5B6776;background:transparent;')
         self.st_excl.setToolTip(
             'Hours the equipment spent in alarm during grid outages or planned '
             'maintenance — not counted against availability.')
-        self.st_reports = _Stat('Work reports', '—', '#0071E3')
+        self.st_reports = _Stat('Work reports', '—', '#17212E')
         for s in (self.st_events, self.st_hours, self.st_excl, self.st_reports):
             stats.addWidget(s)
         stats.addStretch()
@@ -547,7 +546,7 @@ class EquipmentPage(QWidget):
         row.addWidget(self._caption('Same fault elsewhere in the plant'))
         row.addStretch()
         self.similar_hint = QLabel('select a fault above')
-        self.similar_hint.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        self.similar_hint.setStyleSheet('color:#5B6776;font-size:11px;')
         row.addWidget(self.similar_hint)
         lay.addLayout(row)
         self.similar_tbl = make_table(
@@ -571,7 +570,7 @@ class EquipmentPage(QWidget):
         row.addWidget(self._caption('How we deal with this fault — our notes'))
         row.addStretch()
         self.note_state = QLabel('')
-        self.note_state.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        self.note_state.setStyleSheet('color:#5B6776;font-size:11px;')
         row.addWidget(self.note_state)
         self.umb_chk = QCheckBox('general alarm')
         self.umb_chk.setToolTip(
@@ -610,7 +609,7 @@ class EquipmentPage(QWidget):
         lay.setSpacing(8)
         cap = QLabel('Most recent 40 alarm events. Greyed rows fell inside an '
                      'availability exclusion window (grid outage / PM).')
-        cap.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        cap.setStyleSheet('color:#5B6776;font-size:11px;')
         cap.setWordWrap(True)
         lay.addWidget(cap)
         self.alarm_tbl = make_table(
@@ -625,7 +624,7 @@ class EquipmentPage(QWidget):
 
         row = QHBoxLayout()
         row.addStretch()
-        btn = PrimaryButton('🔧  Raise work report from this alarm')
+        btn = PrimaryButton('Raise work report from this alarm')
         btn.setToolTip('Opens the Work Report form already filled in from the '
                        'selected alarm (double-click a row does the same).')
         btn.clicked.connect(lambda: self._raise_report(self.alarm_tbl))
@@ -644,7 +643,7 @@ class EquipmentPage(QWidget):
             'them. This is the list the customer asks about at month end — '
             'alarms inside grid-outage or PM windows are left out, because '
             'those are not ours to explain.')
-        cap.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        cap.setStyleSheet('color:#5B6776;font-size:11px;')
         cap.setWordWrap(True)
         lay.addWidget(cap)
 
@@ -688,7 +687,7 @@ class EquipmentPage(QWidget):
         grid_btn.clicked.connect(self._suggest_exclusions)
         row.addWidget(grid_btn)
         row.addStretch()
-        btn = PrimaryButton('🔧  Raise work report from this alarm')
+        btn = PrimaryButton('Raise work report from this alarm')
         btn.clicked.connect(lambda: self._raise_report(self.gap_tbl))
         row.addWidget(btn)
         lay.addLayout(row)
@@ -730,7 +729,7 @@ class EquipmentPage(QWidget):
             row = QHBoxLayout()
             lbl = QLabel(label)
             lbl.setFixedWidth(130)
-            lbl.setStyleSheet('color:#6B7A8D;')
+            lbl.setStyleSheet('color:#5B6776;')
             row.addWidget(lbl)
             edit = QLineEdit()
             edit.setPlaceholderText(ph)
@@ -751,7 +750,7 @@ class EquipmentPage(QWidget):
             'are not edited here. DC/DC and CMU modules get their own record '
             'only once one is actually replaced.')
         note.setWordWrap(True)
-        note.setStyleSheet('color:#6B7A8D;font-size:11px;')
+        note.setStyleSheet('color:#5B6776;font-size:11px;')
         lay.addWidget(note)
         lay.addStretch()
         return w
@@ -759,7 +758,7 @@ class EquipmentPage(QWidget):
     @staticmethod
     def _caption(text):
         lbl = QLabel(text.upper())
-        lbl.setStyleSheet('font-size:10px;font-weight:bold;color:#6B7A8D;'
+        lbl.setStyleSheet('font-size:10px;font-weight:bold;color:#5B6776;'
                           'letter-spacing:1px;')
         return lbl
 
@@ -838,9 +837,9 @@ class EquipmentPage(QWidget):
         item.setTextAlignment(2, Qt.AlignRight | Qt.AlignVCenter)
         hours = float(s.get('hours') or 0)
         if hours >= 24:
-            item.setForeground(2, QColor('#FF3B30'))
+            item.setForeground(2, QColor('#A61B1B'))
         elif hours >= 4:
-            item.setForeground(2, QColor('#FF9500'))
+            item.setForeground(2, QColor('#7A5200'))
         if row['level'] != 'module':
             # lazy child marker — real children are loaded on expand
             item.addChild(QTreeWidgetItem(['…']))

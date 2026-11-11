@@ -69,16 +69,16 @@ class StockPage(QWidget):
         layout.addWidget(self.tabs)
 
         self.stock_tab = StockViewTab()
-        self.tabs.addTab(self.stock_tab, "📦  Stock Levels")
+        self.tabs.addTab(self.stock_tab, "Stock Levels")
 
         self.tx_tab = TransactionTab()
         self.tabs.addTab(self.tx_tab, "↕  Record Transaction")
 
         self.hist_tab = StockHistoryTab()
-        self.tabs.addTab(self.hist_tab, "📋  History")
+        self.tabs.addTab(self.hist_tab, "History")
 
         self.cons_tab = ConsumptionHistoryTab()
-        self.tabs.addTab(self.cons_tab, "🗂  Consumption history")
+        self.tabs.addTab(self.cons_tab, "Consumption history")
 
         self.tabs.currentChanged.connect(self._on_tab)
 
@@ -126,12 +126,12 @@ class StockViewTab(QWidget):
         self.wh_combo.currentIndexChanged.connect(self._load_stock)
         top_row.addWidget(self.wh_combo)
 
-        new_wh_btn = SecondaryButton("➕  New")
+        new_wh_btn = SecondaryButton("New")
         new_wh_btn.setToolTip("Create a warehouse (for a project or general)")
         new_wh_btn.clicked.connect(self._new_warehouse)
         top_row.addWidget(new_wh_btn)
 
-        rename_wh_btn = SecondaryButton("✏️  Rename")
+        rename_wh_btn = SecondaryButton("Rename")
         rename_wh_btn.clicked.connect(self._rename_warehouse)
         top_row.addWidget(rename_wh_btn)
         top_row.addStretch()
@@ -144,18 +144,18 @@ class StockViewTab(QWidget):
         refresh_btn.clicked.connect(self.refresh)
         top_row.addWidget(refresh_btn)
 
-        tpl_btn = SecondaryButton("📋  Download Template")
+        tpl_btn = SecondaryButton("Download Template")
         tpl_btn.setToolTip("Blank Excel sheet for a stock count")
         tpl_btn.clicked.connect(self._download_template)
         top_row.addWidget(tpl_btn)
 
-        import_btn = SecondaryButton("📂  Import from Excel")
+        import_btn = SecondaryButton("Import from Excel")
         import_btn.setToolTip("Read a SAP stock export or a filled-in template "
                               "into the selected warehouse (shows a preview first)")
         import_btn.clicked.connect(self._import_excel)
         top_row.addWidget(import_btn)
 
-        export_btn = SecondaryButton("📥  Export All")
+        export_btn = SecondaryButton("Export All")
         export_btn.clicked.connect(self._export)
         top_row.addWidget(export_btn)
         layout.addLayout(top_row)
@@ -163,13 +163,13 @@ class StockViewTab(QWidget):
         # Typing a count in by hand — one row at a time, through the same
         # service call the Excel import uses.
         edit_row = QHBoxLayout()
-        add_btn = PrimaryButton("➕  Add material")
+        add_btn = PrimaryButton("Add material")
         add_btn.setToolTip("Put a material on this warehouse's shelf, with its "
                            "description and unit")
         add_btn.clicked.connect(self._add_item)
         edit_row.addWidget(add_btn)
 
-        self.edit_btn = SecondaryButton("✏️  Edit")
+        self.edit_btn = SecondaryButton("Edit")
         self.edit_btn.setToolTip("Correct the selected row — quantity, "
                                  "description, unit or low-stock threshold")
         self.edit_btn.clicked.connect(self._edit_item)
@@ -177,7 +177,7 @@ class StockViewTab(QWidget):
 
         hint = QLabel("Double-click a row to edit it. A quantity change is "
                       "recorded in the History tab as IN or OUT.")
-        hint.setStyleSheet("color:#6B7A8D;")
+        hint.setStyleSheet("color:#5B6776;")
         edit_row.addWidget(hint)
         edit_row.addStretch()
         layout.addLayout(edit_row)
@@ -198,7 +198,7 @@ class StockViewTab(QWidget):
         self.wh_combo.blockSignals(True)
         self.wh_combo.clear()
         for w in warehouses:
-            label = ("🏭  " if w["is_main"] else "📦  ") + w["name"]
+            label = ("" if w["is_main"] else "") + w["name"]
             self.wh_combo.addItem(label, userData=w["id"])
         if want is not None:
             i = self.wh_combo.findData(want)
@@ -380,12 +380,12 @@ class StockViewTab(QWidget):
             self, "Import Result",
             f"Imported into {self._warehouse_label()}:\n"
             f"  ✅  {counts['created']} new material(s) added\n"
-            f"  🔄  {counts['updated']} row(s) updated\n"
-            f"  ⏭  {counts['unchanged']} already matched\n"
-            f"  📋  {counts['transactions']} stock transaction(s) recorded\n"
+            f"{counts['updated']} row(s) updated\n"
+            f"{counts['unchanged']} already matched\n"
+            f"{counts['transactions']} stock transaction(s) recorded\n"
             f"        (+{counts['quantity_in']:g} IN / -{counts['quantity_out']:g} OUT)\n"
             + thresholds +
-            f"  📖  {counts['materials_created']} catalogue entry(ies) created, "
+            f"{counts['materials_created']} catalogue entry(ies) created, "
             f"{counts['materials_updated']} updated")
 
     def _new_warehouse(self):
@@ -642,14 +642,14 @@ class StockItemDialog(QDialog):
         elif known:
             text = ("Already {:g} on the shelf — the quantity stays as it is."
                     .format(before))
-            colour = "#6B7A8D"
+            colour = "#5B6776"
         elif after:
             text = ("New row: recorded as IN {:g} in the History tab."
                     .format(after))
             colour = "#2E7D32"
         else:
             text = "New row with nothing on the shelf yet."
-            colour = "#6B7A8D"
+            colour = "#5B6776"
         if known and not self._editing:
             text = "⚠️  This material is already stocked here.  " + text
         self.effect.setText(text)
@@ -705,7 +705,7 @@ class StockImportDialog(QDialog):
     """
 
     STATUS_COLORS = {"new": "#E8F5E9", "changed": "#FFF8E1", "unchanged": "#FFFFFF"}
-    STATUS_LABELS = {"new": "➕ New", "changed": "🔄 Changed", "unchanged": "= Unchanged"}
+    STATUS_LABELS = {"new": "New", "changed": "Changed", "unchanged": "= Unchanged"}
 
     def __init__(self, warehouse_label: str, parsed: dict, plan_rows: list,
                  parent=None):
@@ -968,7 +968,7 @@ class TransactionTab(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        clear_btn = SecondaryButton("🔄  Clear")
+        clear_btn = SecondaryButton("Clear")
         clear_btn.clicked.connect(self._clear)
         btn_row.addWidget(clear_btn)
         save_btn = PrimaryButton("✅  Record Transaction")
@@ -982,7 +982,7 @@ class TransactionTab(QWidget):
         for combo in [self.wh_combo, self.dest_wh_combo]:
             combo.clear()
             for w in warehouses:
-                label = ("🏭 " if w["is_main"] else "📦 ") + w["name"]
+                label = ("" if w["is_main"] else "") + w["name"]
                 combo.addItem(label, userData=w["id"])
         self.mat_combo.clear()
         for mat in get_material_numbers():
@@ -1058,7 +1058,7 @@ class StockHistoryTab(QWidget):
         self.wh_filter.setMinimumWidth(200)
         top.addWidget(self.wh_filter)
         top.addStretch()
-        load_btn = PrimaryButton("🔍  Load")
+        load_btn = PrimaryButton("Load")
         load_btn.clicked.connect(self.refresh)
         top.addWidget(load_btn)
         layout.addLayout(top)
@@ -1147,7 +1147,7 @@ class ConsumptionHistoryTab(QWidget):
         self.search.setMinimumWidth(200)
         top.addWidget(self.search)
         top.addStretch()
-        load_btn = PrimaryButton("🔍  Load")
+        load_btn = PrimaryButton("Load")
         load_btn.clicked.connect(self._load)
         top.addWidget(load_btn)
         layout.addLayout(top)
@@ -1156,7 +1156,7 @@ class ConsumptionHistoryTab(QWidget):
         layout.addWidget(self.cons_table)
 
         self.foot = QLabel("")
-        self.foot.setStyleSheet("color:#6B7A8D;")
+        self.foot.setStyleSheet("color:#5B6776;")
         layout.addWidget(self.foot)
 
         self.search.returnPressed.connect(self._load)

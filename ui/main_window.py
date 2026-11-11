@@ -135,7 +135,7 @@ NAV = [
 ]
 
 # Pages that follow the header's month.
-MONTH_PAGES = ("Availability", "Monthly report", "Analysis")
+MONTH_PAGES = ("Today", "Work", "Plan", "Availability", "Monthly report")
 
 # ── The archive ─────────────────────────────────────────────────────────────
 # Left the menu in the redesign; nothing deleted, all still reachable from
@@ -228,7 +228,7 @@ class MainWindow(QMainWindow):
         logo.setObjectName("SidebarLogo")
         # painted explicitly: the global QWidget rule would otherwise leave the
         # brand white on white, which is exactly how it looked before
-        logo.setStyleSheet("#SidebarLogo{background-color:#142038;}")
+        logo.setStyleSheet("#SidebarLogo{background-color:#141C27;}")
         ll = QVBoxLayout(logo)
         ll.setContentsMargins(16, 16, 16, 10)
         ll.setSpacing(2)
@@ -237,7 +237,7 @@ class MainWindow(QMainWindow):
                           "background-color:transparent;")
         ll.addWidget(lbl)
         sub = QLabel("O&M workspace")
-        sub.setStyleSheet("font-size:10px;color:#8FA3BE;background-color:transparent;")
+        sub.setStyleSheet("font-size:10px;color:#8E9AAB;background-color:transparent;")
         ll.addWidget(sub)
         sl.addWidget(logo)
 
@@ -245,12 +245,12 @@ class MainWindow(QMainWindow):
         self.proj_header = QWidget()
         self.proj_header.setObjectName("ProjHeader")
         self.proj_header.setStyleSheet(
-            "#ProjHeader{background:#142038;border-bottom:1px solid #0F1E30;}")
+            "#ProjHeader{background:#141C27;border-bottom:1px solid #141C27;}")
         phl = QVBoxLayout(self.proj_header)
         phl.setContentsMargins(16, 12, 12, 12)
         phl.setSpacing(4)
         cap = QLabel("CURRENT PROJECT")
-        cap.setStyleSheet("color:#4A6080;font-size:9px;font-weight:bold;"
+        cap.setStyleSheet("color:#8E9AAB;font-size:9px;font-weight:bold;"
                           "letter-spacing:1px;background:transparent;")
         phl.addWidget(cap)
         self.current_proj_lbl = QLabel("—")
@@ -258,20 +258,20 @@ class MainWindow(QMainWindow):
         self.current_proj_lbl.setStyleSheet(
             "color:#FFFFFF;font-size:13px;font-weight:bold;background:transparent;")
         phl.addWidget(self.current_proj_lbl)
-        switch_btn = QPushButton("⇄  Switch project")
+        switch_btn = QPushButton("Switch project")
         switch_btn.setObjectName("SwitchBtn")
         switch_btn.setCursor(Qt.PointingHandCursor)
         switch_btn.setStyleSheet(
-            "#SwitchBtn{background:#1E3A5F;color:#8FA3BE;border:none;border-radius:4px;"
+            "#SwitchBtn{background:#2A3646;color:#8E9AAB;border:none;border-radius:4px;"
             "padding:5px 8px;font-size:11px;text-align:left;}"
-            "#SwitchBtn:hover{background:#243D5C;color:#FFFFFF;}")
+            "#SwitchBtn:hover{background:#2A3646;color:#FFFFFF;}")
         switch_btn.clicked.connect(self._switch_project)
         phl.addWidget(switch_btn)
         sl.addWidget(self.proj_header)
 
         # ── Module navigation, grouped by intent (hidden until project) ────
         self.module_nav = QWidget()
-        self.module_nav.setStyleSheet("background:#1A2B45;")
+        self.module_nav.setStyleSheet("background:#1C2633;")
         mn = QVBoxLayout(self.module_nav)
         mn.setContentsMargins(0, 0, 0, 0)
         mn.setSpacing(0)
@@ -294,9 +294,9 @@ class MainWindow(QMainWindow):
         self.nav_scroll.setFrameShape(QFrame.NoFrame)
         self.nav_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.nav_scroll.setStyleSheet(
-            "QScrollArea{border:none;background:#1A2B45;}"
-            "QScrollBar:vertical{background:#1A2B45;width:8px;margin:0;}"
-            "QScrollBar::handle:vertical{background:#3A4E6E;border-radius:4px;min-height:28px;}"
+            "QScrollArea{border:none;background:#1C2633;}"
+            "QScrollBar:vertical{background:#1C2633;width:8px;margin:0;}"
+            "QScrollBar::handle:vertical{background:#3A4757;border-radius:4px;min-height:28px;}"
             "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
         )
         self.nav_scroll.setWidget(self.module_nav)
@@ -305,33 +305,31 @@ class MainWindow(QMainWindow):
         self.proj_header.setVisible(False)
         self.module_nav.setVisible(False)
 
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color:#243D5C;margin:0 12px;")
-        sl.addWidget(sep)
 
         # New / Edit project, Serials, Sync and Users used to sit here as five
         # buttons on every screen (~230 px). They are now in Project.
         self.proj_count_lbl = QLabel("")
         self.proj_count_lbl.setAlignment(Qt.AlignCenter)
         self.proj_count_lbl.setStyleSheet(
-            "color:#4A6080;font-size:10px;padding:8px;background:transparent;"
+            "color:#8E9AAB;font-size:10px;padding:8px;background:transparent;"
         )
         sl.addWidget(self.proj_count_lbl)
+        self.proj_count_lbl.setVisible(False)    # the status bar says it
 
         # Sync status (bottom of sidebar). It is the only place an error is
         # ever shown, so it opens the settings that explain it instead of
         # leaving the user to hunt for them under Project.
-        self.sync_lbl = QPushButton("  🔄 Sync: off")
+        self.sync_lbl = QPushButton("  Sync: off")
         self.sync_lbl.setCursor(Qt.PointingHandCursor)
         self.sync_lbl.setToolTip("Server, login and what is waiting from the phones")
         self.sync_lbl.setStyleSheet(
-            "QPushButton{color:#4A6080;font-size:10px;padding:4px 12px 8px;"
+            "QPushButton{color:#8E9AAB;font-size:10px;padding:4px 12px 8px;"
             "background:transparent;border:none;text-align:left;}"
             "QPushButton:hover{color:#FFFFFF;}"
         )
         self.sync_lbl.clicked.connect(self._open_sync_settings)
         sl.addWidget(self.sync_lbl)
+        self.sync_lbl.setVisible(False)          # the top bar's chip says it
 
         root.addWidget(sidebar)
 
@@ -427,52 +425,81 @@ class MainWindow(QMainWindow):
 
         self.status_bar = QStatusBar()
         self.status_bar.setStyleSheet(
-            "QStatusBar{background:#FFFFFF;color:#6B7A8D;"
-            "border-top:1px solid #E0E4EA;font-size:11px;}"
+            "QStatusBar{background:#FFFFFF;color:#5B6776;"
+            "border-top:1px solid #DDE2E8;font-size:11px;}"
         )
         self.setStatusBar(self.status_bar)
 
     # ── Context header ───────────────────────────────────────────────────
     def _build_topbar(self):
-        """Project · page · shared month · sync — the application's context,
-        not a form field of the page below it."""
+        """Page · project · month · sync — the application's context, in one
+        place on every page, not a form field of the page below it."""
         bar = QWidget()
         bar.setObjectName("TopBar")
         bar.setFixedHeight(48)
-        bar.setStyleSheet("#TopBar{background-color:#FFFFFF;"
-                          "border-bottom:1px solid #E0E4EA;}")
+        bar.setStyleSheet(
+            "#TopBar{background-color:#FFFFFF;border-bottom:1px solid #DDE2E8;}"
+            "#CtxBtn{background:#FFFFFF;color:#17212E;border:1px solid #C3CBD5;"
+            "border-radius:4px;padding:0 10px;font-size:12px;}"
+            "#CtxBtn:hover{background:#EEF1F4;}"
+            "#StepBtn{background:#FFFFFF;color:#17212E;border:1px solid #C3CBD5;"
+            "border-radius:4px;font-size:14px;}"
+            "#StepBtn:hover{background:#EEF1F4;}")
         l = QHBoxLayout(bar)
         l.setContentsMargins(20, 0, 16, 0)
         l.setSpacing(10)
 
         self.page_title_lbl = QLabel("")
         self.page_title_lbl.setStyleSheet(
-            "font-size:16px;font-weight:bold;color:#1A2B45;background:transparent;")
+            "font-size:16px;font-weight:bold;color:#17212E;background:transparent;")
         l.addWidget(self.page_title_lbl)
 
+        # where the page sits when it is not a menu item (the archive)
         self.top_project_lbl = QLabel("")
         self.top_project_lbl.setStyleSheet(
-            "color:#6B7A8D;font-size:12px;background:transparent;")
+            "color:#5B6776;font-size:12px;background:transparent;")
         l.addWidget(self.top_project_lbl)
 
-        l.addSpacing(8)
+        l.addStretch()
+
+        # the project: always visible, one click to switch
+        self.project_btn = QPushButton("")
+        self.project_btn.setObjectName("CtxBtn")
+        self.project_btn.setFixedHeight(30)
+        self.project_btn.setCursor(Qt.PointingHandCursor)
+        self.project_btn.setToolTip("Switch project")
+        self.project_btn.clicked.connect(self._switch_project)
+        self.project_btn.setVisible(False)
+        l.addWidget(self.project_btn)
+
+        # the month: one for the whole application
         self.month_box = QWidget()
         self.month_box.setStyleSheet("background:transparent;")
         mb = QHBoxLayout(self.month_box)
         mb.setContentsMargins(0, 0, 0, 0)
-        mb.setSpacing(6)
-        cap = QLabel("Month:")
-        cap.setStyleSheet("color:#6B7A8D;background:transparent;")
-        mb.addWidget(cap)
+        mb.setSpacing(4)
+        prev_btn = QPushButton("\u2039")
+        nxt_btn = QPushButton("\u203A")
+        for btn, tip, step in ((prev_btn, "Previous month", -1),
+                               (nxt_btn, "Next month", 1)):
+            btn.setObjectName("StepBtn")
+            btn.setFixedSize(28, 30)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda _=False, d=step: self._step_month(d))
+        mb.addWidget(prev_btn)
         self.month_combo = QComboBox()
         self.month_combo.addItems(["January", "February", "March", "April", "May",
                                    "June", "July", "August", "September",
                                    "October", "November", "December"])
         self.month_combo.setMinimumWidth(110)
+        self.month_combo.setFixedHeight(30)
         mb.addWidget(self.month_combo)
         self.year_spin = QSpinBox()
         self.year_spin.setRange(2020, 2100)
+        self.year_spin.setFixedHeight(30)
         mb.addWidget(self.year_spin)
+        mb.addWidget(nxt_btn)
         # default: the month people are actually reporting on
         today = QDate.currentDate()
         y, m = today.year(), today.month()
@@ -486,12 +513,64 @@ class MainWindow(QMainWindow):
         l.addWidget(self.month_box)
         self.month_box.setVisible(False)
 
-        l.addStretch()
-        self.top_sync_lbl = QLabel("")
-        self.top_sync_lbl.setStyleSheet(
-            "color:#6B7A8D;font-size:11px;background:transparent;")
-        l.addWidget(self.top_sync_lbl)
+        # sync: a word and a colour, and the way to the settings behind it
+        self.sync_chip = QPushButton("Sync off")
+        self.sync_chip.setFixedHeight(26)
+        self.sync_chip.setCursor(Qt.PointingHandCursor)
+        self.sync_chip.setToolTip("Server, login and what is waiting from the phones")
+        self.sync_chip.clicked.connect(self._open_sync_settings)
+        l.addWidget(self.sync_chip)
+        self._set_sync_state("off", "Sync off")
         return bar
+
+    # (text, background, border) of the sync chip per state
+    _SYNC_LOOK = {
+        "off":  ("#5B6776", "#EEF1F4", "#DDE2E8"),
+        "busy": ("#3A4757", "#EEF1F4", "#DDE2E8"),
+        "ok":   ("#1E6B3A", "#E8F4EC", "#B9DCC5"),
+        "warn": ("#7A5200", "#FFF5DC", "#EDD49A"),
+        "crit": ("#A61B1B", "#FDECEC", "#F1C2C2"),
+    }
+
+    def _set_sync_state(self, state: str, text: str):
+        fg, bg, bd = self._SYNC_LOOK.get(state, self._SYNC_LOOK["off"])
+        self.sync_chip.setText(text)
+        self.sync_chip.setStyleSheet(
+            "QPushButton{{color:{};background:{};border:1px solid {};"
+            "border-radius:13px;padding:0 12px;font-size:12px;font-weight:600;}}"
+            .format(fg, bg, bd))
+
+    @staticmethod
+    def _sync_state_of(msg: str):
+        """(state, plain text) of a sync worker message. The worker marks its
+        messages with a leading symbol; the chip says it with a word."""
+        text = (msg or "").strip()
+        mark = text[:1]
+        plain = text.lstrip("\U0001F504\u2705\u274C\u26A0 ").strip()
+        if mark == "\u274C":
+            return "crit", (plain if plain.lower().startswith("sync")
+                            else "Sync failed: " + plain)[:70]
+        if mark == "\u26A0":
+            return "warn", plain
+        if mark == "\u2705":
+            return "ok", plain
+        if mark == "\U0001F504":
+            return "busy", plain
+        return "off", plain
+
+    def _step_month(self, delta: int):
+        y, m = self.current_year, self.current_month + delta
+        if m < 1:
+            y, m = y - 1, 12
+        elif m > 12:
+            y, m = y + 1, 1
+        self.year_spin.blockSignals(True)
+        self.year_spin.setValue(y)
+        self.year_spin.blockSignals(False)
+        self.month_combo.blockSignals(True)
+        self.month_combo.setCurrentIndex(m - 1)
+        self.month_combo.blockSignals(False)
+        self._on_month_changed()
 
     def _on_month_changed(self, *_):
         self.current_year = self.year_spin.value()
@@ -500,20 +579,22 @@ class MainWindow(QMainWindow):
 
     def _push_month(self):
         """Availability, Monthly report and Analysis share one month."""
-        for attr in ("today_page", "work_page", "monthly_page",
+        for attr in ("today_page", "work_page", "planner_page", "monthly_page",
                      "availability_page", "analytics_view", "kpi_page",
                      "block_report_page"):
             page = getattr(self, attr, None)
             if page is not None and hasattr(page, "set_month"):
                 try:
                     page.set_month(self.current_year, self.current_month)
-                except Exception:                        # noqa: BLE001
-                    pass
+                except Exception as ex:                  # noqa: BLE001
+                    # a page left on another month is how a wrong report starts
+                    self.status_bar.showMessage(
+                        "  {} did not follow the month: {}".format(attr, ex), 10000)
 
     def _add_section(self, layout, text):
         lbl = QLabel(text)
         lbl.setStyleSheet(
-            "color:#8296B3;font-size:10px;font-weight:bold;"
+            "color:#8E9AAB;font-size:10px;font-weight:bold;"
             "padding:14px 16px 6px 20px;background:transparent;letter-spacing:1.5px;"
         )
         layout.addWidget(lbl)
@@ -532,12 +613,12 @@ class MainWindow(QMainWindow):
         header.setObjectName("NavToggle")
         header.setCursor(Qt.PointingHandCursor)
         header.setStyleSheet(
-            "#NavToggle{color:#8296B3;font-size:10px;font-weight:bold;letter-spacing:1.5px;"
+            "#NavToggle{color:#8E9AAB;font-size:10px;font-weight:bold;letter-spacing:1.5px;"
             "background:transparent;border:none;text-align:left;padding:14px 16px 6px 20px;}"
             "#NavToggle:hover{color:#FFFFFF;}"
         )
         body = QWidget()
-        body.setStyleSheet("background:#1A2B45;")
+        body.setStyleSheet("background:#1C2633;")
         bl = QVBoxLayout(body)
         bl.setContentsMargins(0, 0, 0, 0)
         bl.setSpacing(0)
@@ -575,9 +656,7 @@ class MainWindow(QMainWindow):
         self.page_title_lbl.setText(title)
         in_archive = nav_label is None
         self.top_project_lbl.setText(
-            ("· " + (self.current_project_name or "")
-             + ("  ·  Archive of old pages" if in_archive else ""))
-            if self.current_project_name else "")
+            "·  Archive of old pages" if in_archive else "")
         self.month_box.setVisible(title in MONTH_PAGES)
         if page_idx == PAGE_TODAY:
             self.today_page.refresh()
@@ -630,6 +709,7 @@ class MainWindow(QMainWindow):
             btn.set_active(False)
         self.page_title_lbl.setText("Select a project")
         self.top_project_lbl.setText("")
+        self.project_btn.setVisible(False)
         self.month_box.setVisible(False)
         self.launcher.reload()
         self.stack.setCurrentIndex(PAGE_LAUNCHER)
@@ -641,7 +721,11 @@ class MainWindow(QMainWindow):
         self.current_project_id = pid
         self.current_project_name = name
         self.current_proj_lbl.setText(name or "—")
-        self.proj_header.setVisible(True)
+        self.project_btn.setText((name or "—") + "   \u25BE")
+        self.project_btn.setVisible(True)
+        # the project is named in the top bar; the sidebar block stays built
+        # (other code sets its label) but is no longer shown
+        self.proj_header.setVisible(False)
         self.module_nav.setVisible(True)
         self._push_current_project()
         self._push_month()
@@ -689,8 +773,10 @@ class MainWindow(QMainWindow):
                     except TypeError:
                         page.set_current_project(pid)
                 self._select_project_in_combo(page, pid)
-            except Exception:                            # noqa: BLE001
-                pass
+            except Exception as ex:                      # noqa: BLE001
+                # a page left on another project shows another plant's data
+                self.status_bar.showMessage(
+                    "  {} did not follow the project: {}".format(attr, ex), 10000)
 
     @staticmethod
     def _select_project_in_combo(page, pid):
@@ -767,12 +853,14 @@ class MainWindow(QMainWindow):
             lambda msg: self._on_sync_status_changed(f"❌ {msg[:60]}")
         )
         self.sync_worker.start()
-        self.sync_lbl.setText(f"  ✅ Sync: {sync_config.username}@server")
+        self.sync_lbl.setText(f"  Sync: {sync_config.username}@server")
+        self._set_sync_state("ok", "Sync on")
 
     def _on_sync_status_changed(self, msg: str):
-        self.sync_lbl.setText(f"  {msg}")
-        self.top_sync_lbl.setText(msg)
-        self.status_bar.showMessage(f"  {msg}")
+        state, text = self._sync_state_of(msg)
+        self.sync_lbl.setText(f"  {text}")
+        self._set_sync_state(state, text)
+        self.status_bar.showMessage(f"  {text}")
 
     def _on_sync_done(self, result: dict):
         # Refresh the Field Log records timeline if it's currently visible
@@ -789,12 +877,14 @@ class MainWindow(QMainWindow):
             else:
                 # Already running — trigger immediate sync to reflect new login
                 self.sync_worker.trigger_now()
-            self.sync_lbl.setText(f"  ✅ Sync: {sync_config.username}@server")
+            self.sync_lbl.setText(f"  Sync: {sync_config.username}@server")
+            self._set_sync_state("ok", "Sync on")
         else:
             if self.sync_worker and self.sync_worker.isRunning():
                 self.sync_worker.stop()
                 self.sync_worker = None
-            self.sync_lbl.setText("  🔄 Sync: off")
+            self.sync_lbl.setText("  Sync: off")
+            self._set_sync_state("off", "Sync off")
 
     def _open_user_mgmt(self):
         dlg = UserManagementDialog(self)

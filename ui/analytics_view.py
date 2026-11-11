@@ -62,7 +62,7 @@ class AnalyticsView(QWidget):
         layout.setSpacing(10)
 
         # Title
-        title = QLabel("📈  Analytics Dashboard")
+        title = QLabel("Analytics Dashboard")
         title.setFont(QFont("Segoe UI", 14, QFont.Bold))
         layout.addWidget(title)
 
@@ -81,7 +81,7 @@ class AnalyticsView(QWidget):
         self.top_n_spin.setToolTip("How many rows to show per table")
         ctrl.addWidget(self.top_n_spin)
 
-        refresh_btn = QPushButton("🔄  Refresh")
+        refresh_btn = QPushButton("Refresh")
         refresh_btn.setStyleSheet(
             "QPushButton { background:#1976D2; color:white; border-radius:4px; padding:4px 14px; }"
             "QPushButton:hover { background:#0D47A1; }"
@@ -91,7 +91,7 @@ class AnalyticsView(QWidget):
 
         ctrl.addStretch()
 
-        export_btn = QPushButton("📥  Export All to Excel")
+        export_btn = QPushButton("Export All to Excel")
         export_btn.setStyleSheet(
             "QPushButton { background:#388E3C; color:white; border-radius:4px; padding:4px 14px; }"
             "QPushButton:hover { background:#1B5E20; }"
@@ -107,7 +107,7 @@ class AnalyticsView(QWidget):
 
         # Tab A: Materials
         self.materials_tab = QWidget()
-        self.inner_tabs.addTab(self.materials_tab, "📦  Materials")
+        self.inner_tabs.addTab(self.materials_tab, "Materials")
         self._build_table_tab(
             self.materials_tab,
             "Most frequently used materials",
@@ -116,7 +116,7 @@ class AnalyticsView(QWidget):
 
         # Tab B: Containers
         self.containers_tab = QWidget()
-        self.inner_tabs.addTab(self.containers_tab, "🔋  Containers")
+        self.inner_tabs.addTab(self.containers_tab, "Containers")
         self._build_table_tab(
             self.containers_tab,
             "Most serviced containers",
@@ -125,7 +125,7 @@ class AnalyticsView(QWidget):
 
         # Tab C: Blocks
         self.blocks_tab = QWidget()
-        self.inner_tabs.addTab(self.blocks_tab, "🏗️  Blocks")
+        self.inner_tabs.addTab(self.blocks_tab, "Blocks")
         self._build_table_tab(
             self.blocks_tab,
             "Most active blocks",
@@ -135,7 +135,7 @@ class AnalyticsView(QWidget):
         # Tab D: Chart (only if matplotlib available)
         if MATPLOTLIB_AVAILABLE:
             self.chart_tab = QWidget()
-            self.inner_tabs.addTab(self.chart_tab, "📊  Activity Chart")
+            self.inner_tabs.addTab(self.chart_tab, "Activity Chart")
             self._build_chart_tab()
         else:
             # Show a friendly "install matplotlib" hint
@@ -143,14 +143,14 @@ class AnalyticsView(QWidget):
             hint_layout = QVBoxLayout(hint_tab)
             hint_layout.addStretch()
             hint = QLabel(
-                "📊  Charts are available if you install matplotlib.\n\n"
+                "Charts are available if you install matplotlib.\n\n"
                 "Run:  pip install matplotlib"
             )
             hint.setAlignment(Qt.AlignCenter)
             hint.setStyleSheet("color: #777; font-size: 13px;")
             hint_layout.addWidget(hint)
             hint_layout.addStretch()
-            self.inner_tabs.addTab(hint_tab, "📊  Activity Chart")
+            self.inner_tabs.addTab(hint_tab, "Activity Chart")
 
     def _build_table_tab(self, parent: QWidget, description: str, attr_name: str):
         """Builds a tab with a description label + QTableWidget."""

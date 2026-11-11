@@ -283,7 +283,7 @@ H.check('sent v2' in page.tabs.tabText(page.tabs.indexOf(page._release_tab)) and
             page.tabs.tabText(page.tabs.indexOf(page._release_tab))))
 H.check(page.unlock_btn.isEnabled() and not page.relock_btn.isEnabled()
         and not page.add_files_btn.isEnabled() and page.recommendations.isReadOnly()
-        and page._lock_banners[0].text().startswith('🔒'),
+        and 'is locked' in page._lock_banners[0].text(),
         'locked: Unlock on, adding files off, narrative read-only, banner shown')
 
 print(chr(10) + '=== generating from the Release step (page, worker, dialogs) ===')

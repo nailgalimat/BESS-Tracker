@@ -212,15 +212,15 @@ class MaterialsSection(QWidget):
             note = QLabel(f'Reported used: “{phone_note}”')
             note.setTextFormat(Qt.PlainText)
             note.setWordWrap(True)
-            note.setStyleSheet("color:#1A2B45;background:#F7F8FA;"
-                               "border:1px solid #E0E4EA;border-radius:4px;"
+            note.setStyleSheet("color:#17212E;background:#F7F8FA;"
+                               "border:1px solid #DDE2E8;border-radius:4px;"
                                "padding:6px;")
             note.setToolTip("What the field wrote on the phone. The office "
                             "books the materials below against it.")
             lay.addWidget(note)
 
         self.wh_lbl = QLabel("")
-        self.wh_lbl.setStyleSheet("color:#6B7A8D;")
+        self.wh_lbl.setStyleSheet("color:#5B6776;")
         self.wh_lbl.setWordWrap(True)
         lay.addWidget(self.wh_lbl)
 
@@ -240,7 +240,7 @@ class MaterialsSection(QWidget):
         lay.addWidget(self.table)
 
         self.empty_lbl = QLabel("No materials on this record yet — pick one below.")
-        self.empty_lbl.setStyleSheet("color:#6B7A8D;")
+        self.empty_lbl.setStyleSheet("color:#5B6776;")
         self.empty_lbl.setWordWrap(True)
         lay.addWidget(self.empty_lbl)
 
@@ -269,7 +269,7 @@ class MaterialsSection(QWidget):
         # what the warehouse holds of the material being picked, before it is
         # added — the moment to notice you are booking 5 against a stock of 1
         self.avail_lbl = QLabel("")
-        self.avail_lbl.setStyleSheet("color:#6B7A8D;")
+        self.avail_lbl.setStyleSheet("color:#5B6776;")
         self.avail_lbl.setWordWrap(True)
         lay.addWidget(self.avail_lbl)
         self.mat_cb.currentIndexChanged.connect(self._show_available)
@@ -308,7 +308,7 @@ class MaterialsSection(QWidget):
                       "stock”. Each write-off is an OUT transaction referenced "
                       f"LOG-{self._entry_id[:8]}; undoing one books it back in.")
         hint.setWordWrap(True)
-        hint.setStyleSheet("color:#6B7A8D;font-size:11px;")
+        hint.setStyleSheet("color:#5B6776;font-size:11px;")
         lay.addWidget(hint)
 
     # ── read ─────────────────────────────────────────────────────────────
@@ -587,9 +587,9 @@ class WorkPage(QWidget):
             b.setCursor(Qt.PointingHandCursor)
             b.setStyleSheet(
                 "QPushButton{border:1px solid #D6DBE3;border-radius:14px;"
-                "padding:4px 12px;background:#FFFFFF;color:#1A2B45;}"
-                "QPushButton:checked{background:#0071E3;color:#FFFFFF;"
-                "border-color:#0071E3;font-weight:bold;}")
+                "padding:4px 12px;background:#FFFFFF;color:#17212E;}"
+                "QPushButton:checked{background:#17212E;color:#FFFFFF;"
+                "border-color:#17212E;font-weight:bold;}")
             b.clicked.connect(lambda _=False, k=key: self._set_tab(k))
             tabrow.addWidget(b)
             self._tab_buttons[key] = b
@@ -652,8 +652,8 @@ class WorkPage(QWidget):
         self.table.verticalHeader().setVisible(False)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(2, QHeaderView.Stretch)      # the work, not the note
-        for col, w in ((0, 96), (1, 190), (3, 96), (4, 110), (5, 110), (6, 104),
-                       (7, 92)):
+        for col, w in ((0, 90), (1, 170), (3, 84), (4, 88), (5, 100), (6, 90),
+                       (7, 64)):
             self.table.setColumnWidth(col, w)
         self.table.itemSelectionChanged.connect(self._on_select)
         split.addWidget(self.table)
@@ -669,11 +669,11 @@ class WorkPage(QWidget):
         split.addWidget(self.card_area)
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 2)
-        split.setSizes([760, 520])
+        split.setSizes([860, 400])
         root.addWidget(split, 1)
 
         self.foot = QLabel("")
-        self.foot.setStyleSheet("color:#6B7A8D;padding:4px 16px 8px;")
+        self.foot.setStyleSheet("color:#5B6776;padding:4px 16px 8px;")
         root.addWidget(self.foot)
         self._set_tab('all', reload=False)
 
@@ -883,8 +883,8 @@ class WorkPage(QWidget):
         self.card_l.addLayout(row)
 
     def _banner(self, text, kind='warn'):
-        col = {'warn': ('#FF9500', '#FFF6E6'), 'crit': ('#FF3B30', '#FFECEB'),
-               'info': ('#0071E3', '#EAF3FF')}[kind]
+        col = {'warn': ('#7A5200', '#FFF6E6'), 'crit': ('#A61B1B', '#FFECEB'),
+               'info': ('#17212E', '#EAF3FF')}[kind]
         lbl = QLabel(text)
         lbl.setWordWrap(True)
         lbl.setStyleSheet(f"color:{col[0]};background:{col[1]};border:1px solid {col[0]};"
@@ -899,13 +899,13 @@ class WorkPage(QWidget):
             hint = QLabel("Select a record on the left, or press "
                           "<b>New record</b>.")
             hint.setWordWrap(True)
-            hint.setStyleSheet("color:#6B7A8D;")
+            hint.setStyleSheet("color:#5B6776;")
             self.card_l.addWidget(hint)
             self.card_l.addStretch()
             return
 
         head = QLabel(f"<span style='font-size:16px;font-weight:bold'>{row['node']}</span>"
-                      f"   <span style='color:#6B7A8D'>{row['kind']} · {row['date']}</span>")
+                      f"   <span style='color:#5B6776'>{row['kind']} · {row['date']}</span>")
         head.setWordWrap(True)
         self.card_l.addWidget(head)
 
@@ -986,7 +986,7 @@ class WorkPage(QWidget):
         if not team.users():
             note.append("sync once to list the technicians")
         lbl = QLabel(' · '.join(note))
-        lbl.setStyleSheet("color:#6B7A8D;")
+        lbl.setStyleSheet("color:#5B6776;")
         who_row.addWidget(lbl)
         who_row.addStretch()
         holder = QWidget()
@@ -1005,7 +1005,7 @@ class WorkPage(QWidget):
         blk_row = QHBoxLayout()
         blk_row.addWidget(self._fields['block'])
         zl = QLabel(row['zone_label'])
-        zl.setStyleSheet("color:#6B7A8D;")
+        zl.setStyleSheet("color:#5B6776;")
         blk_row.addWidget(zl)
         self._fields['lc'] = QComboBox()
         self._fields['lc'].addItems(['', 'LC1', 'LC2', 'Whole block'])
@@ -1034,7 +1034,7 @@ class WorkPage(QWidget):
         if row.get('location') and not row['block']:
             loc_row = QHBoxLayout()
             loc = QLabel(f"“{row['location']}”")
-            loc.setStyleSheet("color:#6B7A8D;")
+            loc.setStyleSheet("color:#5B6776;")
             loc_row.addWidget(loc)
             if suggestion:
                 zl_s = wj.zone_label(self._pid, suggestion['block'])
@@ -1148,7 +1148,7 @@ class WorkPage(QWidget):
                 for p in prev:
                     lbl = QLabel(f"{p['date']} · {p['status']} · "
                                  f"{p['work_done'][:60] or '—'}")
-                    lbl.setStyleSheet("color:#6B7A8D;")
+                    lbl.setStyleSheet("color:#5B6776;")
                     lbl.setWordWrap(True)
                     self.card_l.addWidget(lbl)
             g = wj.guidance(self._pid, row['title'])
@@ -1156,8 +1156,8 @@ class WorkPage(QWidget):
                 self._label("How we deal with it", internal())
                 txt = QLabel((g['note'] + "\n\n" + g['vendor']).strip())
                 txt.setWordWrap(True)
-                txt.setStyleSheet("color:#1A2B45;background:#F7F8FA;"
-                                  "border:1px solid #E0E4EA;border-radius:4px;padding:6px;")
+                txt.setStyleSheet("color:#17212E;background:#F7F8FA;"
+                                  "border:1px solid #DDE2E8;border-radius:4px;padding:6px;")
                 self.card_l.addWidget(txt)
         self.card_l.addStretch()
 
@@ -1240,7 +1240,7 @@ class WorkPage(QWidget):
             if vid:
                 lab = QLabel(cap or 'video')
                 lab.setAlignment(Qt.AlignHCenter)
-                lab.setStyleSheet("color:#6B7A8D;font-size:10px;")
+                lab.setStyleSheet("color:#5B6776;font-size:10px;")
                 tile.addWidget(lab)
             holder_tile = QWidget()
             holder_tile.setLayout(tile)
@@ -1278,14 +1278,14 @@ class WorkPage(QWidget):
             hint = QLabel("Save the record first — materials and their write-off "
                           "hang on the saved record.")
             hint.setWordWrap(True)
-            hint.setStyleSheet("color:#6B7A8D;")
+            hint.setStyleSheet("color:#5B6776;")
             self.card_l.addWidget(hint)
             if row.get('parts'):
                 note = QLabel(f'Reported used: “{row["parts"]}”')
                 note.setTextFormat(Qt.PlainText)
                 note.setWordWrap(True)
-                note.setStyleSheet("color:#1A2B45;background:#F7F8FA;"
-                                   "border:1px solid #E0E4EA;border-radius:4px;"
+                note.setStyleSheet("color:#17212E;background:#F7F8FA;"
+                                   "border:1px solid #DDE2E8;border-radius:4px;"
                                    "padding:6px;")
                 self.card_l.addWidget(note)
             return
@@ -1373,7 +1373,7 @@ class WorkPage(QWidget):
         blk = alarm.get('block')
         head = QLabel(f"<span style='font-size:16px;font-weight:bold'>"
                       f"{('Block %s' % blk) if blk else (alarm.get('asset_code') or '')}"
-                      f"</span>   <span style='color:#6B7A8D'>SCADA fault</span>")
+                      f"</span>   <span style='color:#5B6776'>SCADA fault</span>")
         self.card_l.addWidget(head)
         for k, v in (("Fault", alarm.get('trigger_name')),
                      ("From", alarm.get('activated')),

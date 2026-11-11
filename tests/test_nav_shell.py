@@ -93,13 +93,44 @@ H.check(win.block_report_page.radio_tashkent.isChecked(),
 win._go('Monthly report')
 H.check(win.month_box.isVisibleTo(win), 'the month selector shows on Monthly report')
 win._go('Work')
-H.check(not win.month_box.isVisibleTo(win), 'and not on Work')
+H.check(win.month_box.isVisibleTo(win), "and on Work, which follows it")
+win._go("Spare parts")
+H.check(not win.month_box.isVisibleTo(win), "and not on Spare parts")
+win._go("Work")
 win.month_combo.setCurrentIndex(7)          # August
 win.year_spin.setValue(2026)
 H.check((win.current_year, win.current_month) == (2026, 8), 'header month is August 2026')
 H.check(win.monthly_page.year_spin.value() == 2026
         and win.monthly_page.month_combo.currentIndex() == 7,
         'Monthly report follows the header month')
+H.check(win.planner_page.year.value() == 2026
+        and win.planner_page.month.currentData() == 8,
+        'Plan follows the header month')
+win._step_month(1)
+H.check((win.current_year, win.current_month) == (2026, 9)
+        and win.monthly_page.month_combo.currentIndex() == 8,
+        'the month stepper moves the whole application one month')
+win._step_month(-1)
+
+# ── one place for the project, the month and the sync state ─────────────
+for page, attr in ((win.monthly_page, 'proj_combo'), (win.monthly_page, 'month_combo'),
+                   (win.planner_page, 'project_combo'), (win.planner_page, 'month'),
+                   (win.equipment_page, 'project_combo')):
+    win.stack.setCurrentWidget(page)
+    H.check(not getattr(page, attr).isVisibleTo(win),
+            '{}.{} is not shown — the top bar owns it'.format(type(page).__name__, attr))
+win._go('Work')
+H.check(win.project_btn.isVisibleTo(win) and 'TK Shell' in win.project_btn.text(),
+        'the top bar names the open project')
+H.check(win._sync_state_of('❌ Sync failed: timeout') == ('crit', 'Sync failed: timeout'),
+        'a failed sync is a red chip that says so')
+H.check(win._sync_state_of('✅ Up to date  2026-11-11T10:00')[0] == 'ok',
+        'a good sync is a green chip')
+H.check(win._sync_state_of('⚠ 2 conflict(s)') == ('warn', '2 conflict(s)'),
+        'conflicts are an amber chip')
+win._on_sync_status_changed('❌ Sync failed: timeout')
+H.check(win.sync_chip.text() == 'Sync failed: timeout' and win.sync_chip.isVisibleTo(win),
+        'and the chip is in the top bar of every page')
 
 # ── the availability inputs moved out of the report ──────────────────────
 tabs = [win.monthly_page.tabs.tabText(i) for i in range(win.monthly_page.tabs.count())]

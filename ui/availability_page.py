@@ -39,19 +39,19 @@ class _Kpi(QFrame):
     def __init__(self, label, parent=None):
         super().__init__(parent)
         self.setObjectName("Kpi")
-        self.setStyleSheet("QFrame#Kpi{background:#FFFFFF;border:1px solid #E0E4EA;"
+        self.setStyleSheet("QFrame#Kpi{background:#FFFFFF;border:1px solid #DDE2E8;"
                            "border-radius:6px;}")
         l = QVBoxLayout(self)
         l.setContentsMargins(12, 8, 12, 10)
         l.setSpacing(2)
         cap = QLabel(label)
-        cap.setStyleSheet("color:#6B7A8D;font-size:11px;background:transparent;")
+        cap.setStyleSheet("color:#5B6776;font-size:11px;background:transparent;")
         l.addWidget(cap)
         self.value = QLabel("—")
         self.value.setStyleSheet("font-size:20px;font-weight:bold;background:transparent;")
         l.addWidget(self.value)
         self.sub = QLabel("")
-        self.sub.setStyleSheet("color:#6B7A8D;font-size:11px;background:transparent;")
+        self.sub.setStyleSheet("color:#5B6776;font-size:11px;background:transparent;")
         self.sub.setWordWrap(True)
         l.addWidget(self.sub)
 
@@ -101,13 +101,13 @@ class AvailabilityPage(QWidget):
 
         self.note = QLabel("")
         self.note.setWordWrap(True)
-        self.note.setStyleSheet("color:#6B7A8D;padding:0 18px 4px;")
+        self.note.setStyleSheet("color:#5B6776;padding:0 18px 4px;")
         root.addWidget(self.note)
 
         # what SCADA saw around each waiting event
         self.sugg = QFrame()
         self.sugg.setStyleSheet(
-            "QFrame{background:#F6F0FF;border:1px solid #AF52DE;border-radius:6px;}")
+            "QFrame{background:#F6F0FF;border:1px solid #5B3A8C;border-radius:6px;}")
         sl = QVBoxLayout(self.sugg)
         sl.setContentsMargins(12, 8, 12, 10)
         sl.setSpacing(4)
@@ -133,7 +133,7 @@ class AvailabilityPage(QWidget):
 
         self.placeholder = QLabel(
             "Open a project to see the month's availability inputs.")
-        self.placeholder.setStyleSheet("color:#6B7A8D;padding:20px;")
+        self.placeholder.setStyleSheet("color:#5B6776;padding:20px;")
         self.placeholder.setAlignment(Qt.AlignTop)
         self.host.addWidget(self.placeholder)
 

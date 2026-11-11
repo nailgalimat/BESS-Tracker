@@ -225,7 +225,7 @@ H.check(len(oct_rows) == 2 and all(r['assignee'] == 'u-tech1' for r in oct_rows)
         'and they are on tech1\'s list')
 plan._reload()
 marks = [plan.tbl.item(i, 4).text() for i in range(plan.tbl.rowCount())]
-H.check(sum(1 for m in marks if m.startswith('📱')) == 5,
+H.check(sum(1 for m in marks if m.startswith('Sent')) == 5,
         'the schedule marks what has been sent: {}'.format(marks))
 
 # ── the app must not say "sent" when the server dropped the assignment ──
