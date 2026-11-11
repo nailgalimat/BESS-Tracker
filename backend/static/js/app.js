@@ -3530,7 +3530,7 @@ function _renderCard(entry) {
   // Delete button then appeared on a job it cannot delete.
   const del = entry.assigned_to
     ? `<span class="hint">From ${_esc(entry.assigned_by || 'the office')}</span>`
-    : `<button class="del-btn danger-link" data-id="${entry.id}">Delete</button>`;
+    : '';
 
   return `
     <div class="log-card" data-id="${entry.id}">
@@ -3544,10 +3544,10 @@ function _renderCard(entry) {
       ${bits.length ? `<div class="card-bits">${bits.join(' · ')}</div>` : ''}
       ${proj}
       ${err}
-      <div class="card-actions">
+      ${(retry || del) ? `<div class="card-actions">
         ${retry}
         ${del}
-      </div>
+      </div>` : ''}
     </div>`;
 }
 

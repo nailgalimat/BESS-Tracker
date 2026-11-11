@@ -365,8 +365,10 @@ function sandbox(server, entries) {
   const noName = { ...JOB, assigned_by: '' };
   check(!renderCard(noName).includes('>Delete<'),
         'a job from an office account with no username still cannot be deleted');
-  check(renderCard(MINE).includes('>Delete<'),
-        "while the technician's own record still can be");
+  // Delete left the card (a small link beside the tap area, pressed by
+  // mistake with gloves): a record is deleted from its own screen
+  check(!renderCard(MINE).includes('>Delete<'),
+        "the technician's own card carries no Delete either - it is on the record screen");
 
   console.log(failures ? 'RESULT FAIL (' + failures + ' check(s))' : 'RESULT PASS');
   process.exit(0);
