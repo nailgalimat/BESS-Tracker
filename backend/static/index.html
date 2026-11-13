@@ -10,7 +10,7 @@
   <title>BESS Field Log</title>
   <link rel="manifest" href="/app/manifest.json" />
   <link rel="apple-touch-icon" href="/app/icons/icon-192.png" />
-  <link rel="stylesheet" href="/app/css/app.css?v=26" />
+  <link rel="stylesheet" href="/app/css/app.css?v=27" />
 </head>
 <body>
 
@@ -375,7 +375,8 @@
     <span class="topbar-title" id="detail-title">Record</span>
     <button id="detail-edit" class="topbar-save" style="display:none"
             onclick="App.editEntry()">Edit</button>
-    <button class="icon-btn danger" onclick="App.deleteEntry()" title="Delete">🗑</button>
+    <button id="detail-delete" class="icon-btn danger" onclick="App.deleteEntry()"
+            title="Delete" style="display:none">Delete</button>
   </header>
   <div id="detail-body" class="screen-body"></div>
 </div>
@@ -753,10 +754,10 @@
   <button class="tab" data-tab="more" onclick="App.goSettings()"><span>More</span></button>
 </nav>
 
-<script>window.APP_VERSION = 'v26';</script>
-<script src="/app/js/db.js?v=26"></script>
-<script src="/app/js/api.js?v=26"></script>
-<script src="/app/js/app.js?v=26"></script>
+<script>window.APP_VERSION = 'v27';</script>
+<script src="/app/js/db.js?v=27"></script>
+<script src="/app/js/api.js?v=27"></script>
+<script src="/app/js/app.js?v=27"></script>
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/app/sw.js').then(reg => {

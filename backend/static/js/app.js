@@ -65,6 +65,23 @@ const App = {
     // for a LAN IP address was the first thing the old login did.
     const urlEl = document.getElementById('login-url');
     if (urlEl && !urlEl.value) urlEl.value = server || window.location.origin;
+    // While a field is being typed into, the fixed Save / Send bar would sit
+    // on top of the keyboard and cover the field; a glove tap just above the
+    // keys would send the record. The bar comes back when the field is left.
+    document.addEventListener('focusin', e => {
+      if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)
+          && e.target.type !== 'checkbox' && e.target.type !== 'radio') {
+        document.body.classList.add('typing');
+      }
+    });
+    document.addEventListener('focusout', () => {
+      setTimeout(() => {
+        const a = document.activeElement;
+        if (!a || !/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) {
+          document.body.classList.remove('typing');
+        }
+      }, 50);
+    });
     if (token && server) {
       await this.goTasks();
       // Background sync on startup
@@ -1657,6 +1674,10 @@ const App = {
     const lockWarn = await this._editWarning(entry);
     const editBtn = document.getElementById('detail-edit');
     if (editBtn) editBtn.style.display = canEdit ? '' : 'none';
+    // a job the office handed out is the office's record: the server would
+    // refuse the delete, and the job would vanish here while staying live
+    const delBtn = document.getElementById('detail-delete');
+    if (delBtn) delBtn.style.display = canEdit ? '' : 'none';
 
     document.getElementById('detail-body').innerHTML = `
       ${this._clashPanel(entry)}
@@ -1717,6 +1738,11 @@ const App = {
 
   async deleteEntry() {
     if (!this._currentEntryId) return;
+    const cur = await DB.getEntry(this._currentEntryId);
+    if (!this._canEdit(cur)) {
+      alert('This job was handed out by the office. It cannot be deleted from the phone.');
+      return;
+    }
     if (!confirm('Delete this entry?')) return;
     await this._deleteById(this._currentEntryId);
     this._currentEntryId = null;

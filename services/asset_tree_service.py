@@ -520,7 +520,10 @@ def get_asset_history(project_id: int, code: str, months: int = 12) -> dict:
                      (SELECT w.id FROM work_logs w
                        WHERE w.alarm_event_id = a.id LIMIT 1),
                      (SELECT la.work_log_id FROM work_log_alarms la
-                       WHERE la.alarm_event_id = a.id LIMIT 1)
+                       WHERE la.alarm_event_id = a.id LIMIT 1),
+                     (SELECT -1 FROM work_entry_alarms wa
+                       JOIN work_log_entries e ON e.id = wa.entry_id
+                       WHERE wa.alarm_event_id = a.id AND e.deleted_at IS NULL LIMIT 1)
                    ) AS work_log_id
             FROM alarm_events a WHERE a.project_id=? AND {where}
             ORDER BY a.activated DESC LIMIT 40
@@ -986,7 +989,12 @@ def get_reported_alarm_ids(project_id: int) -> set:
             "SELECT alarm_event_id FROM work_logs "
             " WHERE project_id=? AND alarm_event_id IS NOT NULL "
             "UNION "
-            "SELECT alarm_event_id FROM work_log_alarms", (project_id,))}
+            "SELECT alarm_event_id FROM work_log_alarms "
+            "UNION "
+            # written up in the Work journal
+            "SELECT a.alarm_event_id FROM work_entry_alarms a "
+            "  JOIN work_log_entries e ON e.id = a.entry_id "
+            " WHERE e.deleted_at IS NULL", (project_id,))}
     finally:
         conn.close()
 

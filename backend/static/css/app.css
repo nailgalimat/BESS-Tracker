@@ -87,7 +87,7 @@ html, body {
   line-height: 1;
 }
 .icon-btn:active { background: rgba(255,255,255,.15); }
-.icon-btn.danger { color: #FCA5A5; }
+.icon-btn.danger { color: #FCA5A5; width: auto; padding: 0 10px; font-size: 14px; font-weight: 600; }
 .topbar-actions { display: flex; gap: 4px; }
 .topbar-save {
   /* written in the title bar's markup, shown as a bottom bar: the top-right
@@ -109,8 +109,14 @@ html, body {
   box-shadow: 0 2px 10px rgba(23,33,46,.25);
 }
 .topbar-save:disabled { opacity: .6; }
-/* room for the bar under the last field */
-.screen:has(.topbar-save) .screen-body { padding-bottom: 164px; }
+/* hidden while a field is being typed into (see App.init) */
+body.typing .topbar-save { display: none; }
+/* room for the bar under the last field; the screens that carry a bar are
+   listed by id too, for WebViews without :has() */
+.screen:has(.topbar-save) .screen-body,
+#screen-create .screen-body, #screen-detail .screen-body, #screen-task .screen-body,
+#screen-action .screen-body, #screen-event .screen-body,
+#screen-checklist .screen-body { padding-bottom: 164px; }
 .topbar-save:active { background: var(--accent2); }
 
 /* ── Sync bar ─────────────────────────────────────────────────────────────── */

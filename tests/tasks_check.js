@@ -369,6 +369,17 @@ function sandbox(server, entries) {
   // mistake with gloves): a record is deleted from its own screen
   check(!renderCard(MINE).includes('>Delete<'),
         "the technician's own card carries no Delete either - it is on the record screen");
+  // ...and that screen refuses to delete an office job
+  const dd = sandbox(refuse, [JOB]);
+  dd._currentEntryId = 'job-1';
+  dd.App._currentEntryId = 'job-1';
+  await dd.App.deleteEntry();
+  check(!dd._store.entries['job-1'].deleted_at,
+        'Delete on the record screen does nothing to a job from the office');
+  check(dd._els['detail-delete'] === undefined
+        || dd._els['detail-delete'].style.display === 'none'
+        || !dd._els['detail-delete'].style.display,
+        'and the button is hidden for it when the screen is drawn');
 
   console.log(failures ? 'RESULT FAIL (' + failures + ' check(s))' : 'RESULT PASS');
   process.exit(0);
