@@ -432,6 +432,7 @@ class MonthlyReportsPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._pid = None; self._year = None; self._month = None
+        self._shell_pid = None          # the project the shell says is open
         self._site_type = 'tashkent'
         self._worker = None         # generation
         self._an_worker = None      # data set analysis
@@ -937,9 +938,21 @@ class MonthlyReportsPage(QWidget):
         pre-selects it here (the month is still opened explicitly)."""
         if pid is None:
             return
+        self._shell_pid = pid
         i = self.proj_combo.findData(pid)
+        if i < 0:                       # a project created since the list was built
+            self._reload_projects()
+            i = self.proj_combo.findData(pid)
         if i >= 0:
             self.proj_combo.setCurrentIndex(i)
+        if self._pid is not None and pid != self._pid:
+            # another plant's month was open: close it, or every PM row and
+            # every line of customer text typed now would go to that plant
+            self._pid = self._year = self._month = None
+            self._questions = []
+            self.tabs.setEnabled(False)
+            self.month_lbl.setText("")
+            self._name_open_button()
 
     def set_month(self, year: int, month: int):
         """The shell's header owns the month; Availability, Monthly report and
@@ -958,7 +971,7 @@ class MonthlyReportsPage(QWidget):
     def _name_open_button(self, *_):
         """The button says which month it opens, and whether it is open."""
         y, m = self.year_spin.value(), self.month_combo.currentIndex() + 1
-        is_open = (self._pid is not None
+        is_open = (self._pid is not None and self._pid == self.proj_combo.currentData()
                    and (self._year, self._month) == (y, m))
         self.open_btn.setText(("Reload {} {}" if is_open else "Open {} {}")
                               .format(MONTHS_EN[m], y))
@@ -977,6 +990,10 @@ class MonthlyReportsPage(QWidget):
 
     def _open_month(self):
         pid = self.proj_combo.currentData()
+        if pid is not None and self._shell_pid not in (None, pid):
+            # the shell's project is not the combo's: never open another
+            # plant's month under this plant's name
+            pid = None
         if pid is None:
             QMessageBox.information(self, "No project", "Create a project first (Projects page)."); return
         self._pid = pid

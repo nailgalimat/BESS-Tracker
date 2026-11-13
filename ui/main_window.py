@@ -385,6 +385,10 @@ class MainWindow(QMainWindow):
         # to the list afterwards so the next one is one tap away too.
         self.equipment_page.work_report_requested.connect(self._report_from_alarm)
         self.work_log_form.alarm_report_saved.connect(self._back_to_equipment)
+        # the journal answered an alarm: Equipment's "needs a report" list
+        # must drop it, or the next visit raises a second record for it
+        self.work_page.alarm_record_saved.connect(
+            lambda _k: self.equipment_page.refresh_after_report())
         self.launcher.project_selected.connect(self._open_project)
         self.launcher.new_project_requested.connect(self._new_project)
         # New entries → refresh the records timeline so it's current when opened
@@ -564,6 +568,8 @@ class MainWindow(QMainWindow):
             y, m = y - 1, 12
         elif m > 12:
             y, m = y + 1, 1
+        if not (self.year_spin.minimum() <= y <= self.year_spin.maximum()):
+            return
         self.year_spin.blockSignals(True)
         self.year_spin.setValue(y)
         self.year_spin.blockSignals(False)
@@ -802,6 +808,12 @@ class MainWindow(QMainWindow):
         dlg = EditProjectDialog(self)
         if dlg.exec_() == EditProjectDialog.Accepted:
             self._refresh_all()
+            if self.current_project_id is not None:
+                for p in get_all_projects():
+                    if p.id == self.current_project_id and p.name != self.current_project_name:
+                        self.current_project_name = p.name
+                        self.current_proj_lbl.setText(p.name)
+                        self.project_btn.setText(p.name + "   \u25BE")
 
     def _edit_serials(self):
         dlg = EditSerialsDialog(self)

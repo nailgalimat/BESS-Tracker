@@ -163,4 +163,43 @@ H.check(win.availability_page.k_pm.value.text() != '—',
         'and the page summarises what the month charges ({})'.format(
             win.availability_page.k_pm.value.text()))
 
+# ── switching the project closes the other plant's month ────────────────
+c = dbm.get_connection()
+c.execute("INSERT INTO projects (name, num_zones, num_blocks, num_containers, project_type) "
+          "VALUES ('Other plant', 1, 4, 4, 'BESS')")
+OTHER = c.execute("SELECT id FROM projects WHERE name='Other plant'").fetchone()[0]
+c.commit(); c.close()
+win._refresh_all()
+win._open_project(OTHER, 'Other plant')
+win._go('Monthly report')
+# Availability reopens the month for the new plant; what must never happen is
+# the page still holding the FIRST plant's month under the new plant's name
+H.check(win.monthly_page._pid == OTHER,
+        'after a project switch the open month belongs to the new plant, not the first one')
+H.check(win.monthly_page.proj_combo.currentData() == win.monthly_page._pid,
+        'the hidden project combo and the open month agree')
+# and with no Availability refresh in between, the first plant's month is closed
+win.monthly_page._pid = PID
+win.monthly_page.set_current_project(OTHER)
+H.check(win.monthly_page._pid is None and not win.monthly_page.tabs.isEnabled()
+        and win.monthly_page.open_btn.text().startswith('Open '),
+        'switching the project alone closes the other plant\'s month: {}'.format(
+            win.monthly_page.open_btn.text()))
+win._open_project(OTHER, 'Other plant')
+
+# a serial typed into a block of zone 2 stays with that zone when zone 1 grows
+from ui.project_dialog import ProjectDialog
+dlg = ProjectDialog()
+dlg.zones_spin.setValue(2)
+dlg.all_blocks_spin.setValue(2)
+dlg.apply_all_btn.click()
+dlg._generate_bess_table()
+r = next(x for x in dlg._container_rows if x['zone'] == 2 and x['block'] == 1 and x['idx'] == 1)
+dlg.container_table.item(r['table_row'], 4).setText('SN-Z2B1')
+dlg._zone_spins[0][0].setValue(3)
+dlg._generate_bess_table()
+r = next(x for x in dlg._container_rows if x['zone'] == 2 and x['block'] == 1 and x['idx'] == 1)
+H.check(dlg.container_table.item(r['table_row'], 4).text() == 'SN-Z2B1',
+        'a serial follows its zone and block when an earlier zone changes size')
+
 H.finish()

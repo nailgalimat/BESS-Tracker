@@ -625,7 +625,7 @@ class EquipmentPage(QWidget):
         row = QHBoxLayout()
         row.addStretch()
         btn = PrimaryButton('Raise work report from this alarm')
-        btn.setToolTip('Opens the Work Report form already filled in from the '
+        btn.setToolTip('Opens a record in the Work journal already filled in from the '
                        'selected alarm (double-click a row does the same).')
         btn.clicked.connect(lambda: self._raise_report(self.alarm_tbl))
         row.addWidget(btn)
@@ -1190,10 +1190,11 @@ class EquipmentPage(QWidget):
         if not ev:
             return
         if ev.get('work_log_id'):
+            where = ("a record in the Work journal" if ev['work_log_id'] == -1
+                     else f"work report #{ev['work_log_id']}")
             ok = QMessageBox.question(
                 self, 'Already reported',
-                f"Alarm #{ev['id']} already has work report "
-                f"#{ev['work_log_id']}.\nRaise another one anyway?",
+                f"Alarm #{ev['id']} already has {where}.\nRaise another one anyway?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if ok != QMessageBox.Yes:
                 return

@@ -193,6 +193,7 @@ class ProjectDialog(QDialog):
         self.zone_scroll.setWidget(self.zone_inner)
         outer.addWidget(self.zone_scroll)
         # the cards follow the zone count by themselves — no separate Apply
+        self.zones_spin.setKeyboardTracking(False)   # "12" typed is not 1, then 12
         self.zones_spin.valueChanged.connect(self._apply_zone_count)
 
         # What every block holds besides its battery containers. Plants
@@ -455,7 +456,7 @@ class ProjectDialog(QDialog):
             s_i = self.container_table.item(row, 4)
             # BESS rows are remembered by what they are ("Battery 1"), so a
             # serial follows its unit when an option shifts the places
-            saved[(r.get("zone_block", r["block"]), r.get("label", r["idx"]))] = {
+            saved[(r.get("zone", 1), r["block"], r.get("label", r["idx"]))] = {
                 "type":   t_w.currentText() if t_w else "",
                 "serial": s_i.text().strip() if s_i else "",
                 # what this place in the block was generated as (BESS)
@@ -545,7 +546,7 @@ class ProjectDialog(QDialog):
                     # place still holds the same kind of equipment. After an
                     # option is ticked or unticked the places shift, and a
                     # transformer's serial must not land on a battery.
-                    was = saved.get((block_num, label), {})
+                    was = saved.get((z, b, label), {})
                     row = self.container_table.rowCount()
                     self.container_table.insertRow(row)
                     self._fill_bess_row(
