@@ -236,11 +236,16 @@ H.check('1' in page._parts.avail_lbl.text()
         'picking a material shows what is on hand before it is booked: "{}"'
         .format(page._parts.avail_lbl.text()))
 page._parts.mat_cb.setCurrentIndex(0)
-col = wp.COLUMNS.index('Materials')
-H.check(page.table.columnCount() == len(wp.COLUMNS)
-        and page.table.item(0, col).text() == '2 pending',
+# Materials left the list for the card; the Status cell carries the
+# "unfinished" part in words
+col = wp.COLUMNS.index('Status')
+H.check('Materials' not in wp.COLUMNS
+        and page.table.columnCount() == len(wp.COLUMNS)
+        and page.table.item(0, col).text().endswith('2 parts pending'),
         'the list shows the office it is unfinished: "{}"'.format(
             page.table.item(0, col).text()))
+H.check('2 pending' in page._parts.head_lbl.text(),
+        'and the card says the same: "{}"'.format(page._parts.head_lbl.text()))
 H.check(qty('FUSE-63A') == START,
         'opening the card wrote nothing to stock ({})'.format(qty('FUSE-63A')))
 
@@ -255,9 +260,12 @@ H.check(any(wh['name'] in t and 'LOG-' in t for _title, t in shown),
         'the confirmation says what leaves which warehouse, and the reference')
 H.check(qty('FUSE-63A') == START - 3,
         'confirmed, the write-off happens: {} → {}'.format(START, qty('FUSE-63A')))
-H.check(page.table.item(0, col).text() == '2 written off',
+H.check('pending' not in page.table.item(0, col).text(),
         'and the list follows without reloading: "{}"'.format(
             page.table.item(0, col).text()))
+H.check('all written off' in page._parts.head_lbl.text(),
+        'and the card says they are written off: "{}"'.format(
+            page._parts.head_lbl.text()))
 
 page._parts.table.selectRow(0)
 H.check(not page._parts.edit_btn.isEnabled()

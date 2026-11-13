@@ -9,19 +9,31 @@ NEW: Blocks can now be removed.
                                      (history must be preserved)
 
 Colour coding in the table:
-  🔵 Blue  = existing container (already in DB)
-  🟢 Green = new container (will be inserted on Save)
-  🔴 Red   = marked for deletion (empty blocks only)
+  grey shading  = existing container (already in DB)
+  green shading = new container (will be inserted on Save; zone says "new")
+  red shading   = marked for deletion (empty blocks only; row shows "Undo")
 """
 
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout,
-    QLabel, QSpinBox, QPushButton,
+    QLabel, QSpinBox,
     QTableWidget, QTableWidgetItem, QComboBox, QMessageBox,
     QGroupBox, QScrollArea, QWidget, QFrame, QTextEdit, QLineEdit
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
+from ui.style import TOKENS as T
+from ui.components import PrimaryButton, SecondaryButton
+
+
+def _cell_btn(text, width=None):
+    """A compact secondary button for a table cell."""
+    b = SecondaryButton(text)
+    b.setFixedHeight(24)
+    b.setStyleSheet("padding:1px 8px;")
+    if width:
+        b.setFixedWidth(width)
+    return b
 
 from models.models import Container, CONTAINER_TYPES, default_container_type
 from services.project_service import (
@@ -90,11 +102,7 @@ class EditProjectDialog(QDialog):
         self.proj_combo = QComboBox()
         self.proj_combo.setMinimumWidth(260)
         sel_row.addWidget(self.proj_combo)
-        load_btn = QPushButton("📂  Load")
-        load_btn.setStyleSheet(
-            "QPushButton{background:#1976D2;color:white;border-radius:4px;padding:4px 14px;}"
-            "QPushButton:hover{background:#0D47A1;}"
-        )
+        load_btn = SecondaryButton("Load")
         load_btn.clicked.connect(self._load_project)
         sel_row.addWidget(load_btn)
         sel_row.addStretch()
@@ -103,7 +111,7 @@ class EditProjectDialog(QDialog):
 
         # Zone / block controls
         self.adjust_group = QGroupBox(
-            "Structure  —  adjust blocks per zone, then click ⚙ Regenerate"
+            "Structure  —  adjust blocks per zone, then click Regenerate table"
         )
         self.adjust_group.setEnabled(False)
         adj_outer = QVBoxLayout()
@@ -115,13 +123,7 @@ class EditProjectDialog(QDialog):
         self.zones_spin.setFixedWidth(65)
         zone_row.addWidget(self.zones_spin)
 
-        regen_btn = QPushButton("⚙  Regenerate Table")
-        regen_btn.setFixedHeight(34)
-        regen_btn.setStyleSheet(
-            "QPushButton{background:#F57F17;color:white;font-weight:bold;"
-            "border-radius:4px;padding:0 14px;}"
-            "QPushButton:hover{background:#E65100;}"
-        )
+        regen_btn = SecondaryButton("Regenerate table")
         regen_btn.clicked.connect(self._regenerate)
         zone_row.addWidget(regen_btn)
         zone_row.addStretch()
@@ -145,13 +147,13 @@ class EditProjectDialog(QDialog):
 
         # Info / status label
         self.info_label = QLabel("Load a project to begin editing.")
-        self.info_label.setStyleSheet("color:#555; font-style:italic;")
+        self.info_label.setStyleSheet(f"color:{T['muted']}; font-style:italic;")
         layout.addWidget(self.info_label)
 
         # Container table
         table_group = QGroupBox(
             "Containers   "
-            "[ 🔵 Existing  |  🟢 New (added on Save)  |  🔴 Marked for deletion ]"
+            "(grey: existing · green: new, added on Save · red: marked for deletion)"
         )
         tl = QVBoxLayout()
 
@@ -175,16 +177,10 @@ class EditProjectDialog(QDialog):
         # Bottom buttons
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        cancel_btn = QPushButton("Cancel")
+        cancel_btn = SecondaryButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(cancel_btn)
-        save_btn = QPushButton("💾  Save Changes")
-        save_btn.setFixedHeight(40)
-        save_btn.setStyleSheet(
-            "QPushButton{background:#4CAF50;color:white;font-weight:bold;"
-            "border-radius:4px;padding:0 20px;}"
-            "QPushButton:hover{background:#388E3C;}"
-        )
+        save_btn = PrimaryButton("Save changes")
         save_btn.clicked.connect(self._save_changes)
         btn_row.addWidget(save_btn)
         layout.addLayout(btn_row)
@@ -221,7 +217,7 @@ class EditProjectDialog(QDialog):
         total = len(self._existing)
         self.info_label.setText(
             f"Loaded {total} container{'s' if total != 1 else ''}. "
-            "Edit Type/Serial directly. Use ⚙ Regenerate after changing block counts."
+            "Edit Type/Serial directly. Use Regenerate table after changing block counts."
         )
 
     def _rebuild_zone_spins(self, num_zones: int):
@@ -241,8 +237,8 @@ class EditProjectDialog(QDialog):
             frame = QFrame()
             frame.setFrameShape(QFrame.Box)
             frame.setStyleSheet(
-                "QFrame{border:1px solid #90CAF9;border-radius:4px;"
-                "padding:2px;background:#E3F2FD;}"
+                f"QFrame{{border:1px solid {T['line2']};border-radius:4px;"
+                f"padding:2px;background:{T['sunken']};}}"
             )
             col_layout = QVBoxLayout(frame)
             col_layout.setSpacing(1)
@@ -250,14 +246,14 @@ class EditProjectDialog(QDialog):
             lbl = QLabel(f"Zone {z}")
             lbl.setAlignment(Qt.AlignCenter)
             lbl.setStyleSheet(
-                "font-weight:bold;font-size:11px;border:none;background:transparent;"
+                "font-weight:bold;font-size:12px;border:none;background:transparent;"
             )
             col_layout.addWidget(lbl)
 
             sub = QLabel("Blocks:")
             sub.setAlignment(Qt.AlignCenter)
             sub.setStyleSheet(
-                "font-size:10px;color:#555;border:none;background:transparent;"
+                f"font-size:12px;color:{T['muted']};border:none;background:transparent;"
             )
             col_layout.addWidget(sub)
 
@@ -307,7 +303,7 @@ class EditProjectDialog(QDialog):
                 })
 
     def _fill_existing_row(self, row, c, show_count, show_delete_btn=False):
-        blue = QColor("#E3F2FD")
+        blue = QColor(T['sunken'])
 
         for col, val in enumerate([str(c.zone_number), str(c.block_number)]):
             item = QTableWidgetItem(val)
@@ -344,12 +340,7 @@ class EditProjectDialog(QDialog):
 
         # Action column — Delete button on first row of each block
         if show_delete_btn:
-            del_btn = QPushButton("🗑  Delete Block")
-            del_btn.setStyleSheet(
-                "QPushButton{background:#EF9A9A;color:#B71C1C;border-radius:3px;"
-                "font-size:11px;padding:2px 6px;}"
-                "QPushButton:hover{background:#EF5350;color:white;}"
-            )
+            del_btn = _cell_btn("Delete block")
             del_btn.setToolTip(
                 "Delete this entire block.\n"
                 "Only possible if the block has NO log entries."
@@ -381,7 +372,7 @@ class EditProjectDialog(QDialog):
         """Adds a green new-container row."""
         row = self.container_table.rowCount()
         self.container_table.insertRow(row)
-        green = QColor("#E8F5E9")
+        green = QColor(T['okBg'])
 
         for col, val in enumerate([str(zone), str(block)]):
             item = QTableWidgetItem(val)
@@ -439,26 +430,16 @@ class EditProjectDialog(QDialog):
         layout.setContentsMargins(2, 1, 2, 1)
         layout.setSpacing(3)
 
-        add_btn = QPushButton("+")
-        add_btn.setFixedSize(26, 22)
+        add_btn = _cell_btn("Add", 44)
         add_btn.setToolTip("Add one container to this block")
-        add_btn.setStyleSheet(
-            "QPushButton{background:#4CAF50;color:white;font-weight:bold;"
-            "border-radius:3px;font-size:14px;padding:0;}"
-            "QPushButton:hover{background:#388E3C;}"
-        )
+
         add_btn.clicked.connect(
             lambda _, z=zone, b=block: self._add_container_to_new_block(z, b)
         )
 
-        rem_btn = QPushButton("−")
-        rem_btn.setFixedSize(26, 22)
+        rem_btn = _cell_btn("Remove", 64)
         rem_btn.setToolTip("Remove last container from this block")
-        rem_btn.setStyleSheet(
-            "QPushButton{background:#EF5350;color:white;font-weight:bold;"
-            "border-radius:3px;font-size:14px;padding:0;}"
-            "QPushButton:hover{background:#C62828;}"
-        )
+
         rem_btn.clicked.connect(
             lambda _, z=zone, b=block: self._remove_container_from_new_block(z, b)
         )
@@ -537,7 +518,7 @@ class EditProjectDialog(QDialog):
 
         # Mark rows red in the table
         self._blocks_to_delete.add((zone, block))
-        red = QColor("#FFCDD2")
+        red = QColor(T['critBg'])
 
         for r in self._all_rows:
             if r["zone"] == zone and r["block"] == block:
@@ -547,12 +528,7 @@ class EditProjectDialog(QDialog):
                     if item:
                         item.setBackground(red)
                 # Replace delete button with undo button
-                undo_btn = QPushButton("↩  Undo")
-                undo_btn.setStyleSheet(
-                    "QPushButton{background:#FFE0B2;color:#E65100;border-radius:3px;"
-                    "font-size:11px;padding:2px 6px;}"
-                    "QPushButton:hover{background:#FF9800;color:white;}"
-                )
+                undo_btn = _cell_btn("Undo delete")
                 undo_btn.clicked.connect(
                     lambda _, z=zone, b=block: self._undo_delete_block(z, b)
                 )
@@ -566,13 +542,13 @@ class EditProjectDialog(QDialog):
 
         self.info_label.setText(
             f"Zone {zone} / Block {block} marked for deletion. "
-            "Click Save to apply, or ↩ Undo to cancel."
+            "Click Save changes to apply, or Undo delete to cancel."
         )
 
     def _undo_delete_block(self, zone: int, block: int):
         """Removes the deletion mark and restores blue colour."""
         self._blocks_to_delete.discard((zone, block))
-        blue = QColor("#E3F2FD")
+        blue = QColor(T['sunken'])
 
         for r in self._all_rows:
             if r["zone"] == zone and r["block"] == block:
@@ -587,12 +563,7 @@ class EditProjectDialog(QDialog):
             r["table_row"] for r in self._all_rows
             if r["zone"] == zone and r["block"] == block
         )
-        del_btn = QPushButton("🗑  Delete Block")
-        del_btn.setStyleSheet(
-            "QPushButton{background:#EF9A9A;color:#B71C1C;border-radius:3px;"
-            "font-size:11px;padding:2px 6px;}"
-            "QPushButton:hover{background:#EF5350;color:white;}"
-        )
+        del_btn = _cell_btn("Delete block")
         del_btn.clicked.connect(
             lambda _, z=zone, b=block: self._request_delete_block(z, b)
         )
@@ -615,21 +586,21 @@ class EditProjectDialog(QDialog):
             frame = QFrame()
             frame.setFrameShape(QFrame.Box)
             frame.setStyleSheet(
-                "QFrame{border:1px solid #A5D6A7;border-radius:4px;"
-                "padding:2px;background:#E8F5E9;}"
+                f"QFrame{{border:1px solid {T['okBd']};border-radius:4px;"
+                f"padding:2px;background:{T['okBg']};}}"
             )
             col_layout = QVBoxLayout(frame)
             col_layout.setSpacing(1)
-            lbl = QLabel(f"Zone {z} 🆕")
+            lbl = QLabel(f"Zone {z} · new")
             lbl.setAlignment(Qt.AlignCenter)
             lbl.setStyleSheet(
-                "font-weight:bold;font-size:11px;border:none;background:transparent;"
+                "font-weight:bold;font-size:12px;border:none;background:transparent;"
             )
             col_layout.addWidget(lbl)
             sub = QLabel("Blocks:")
             sub.setAlignment(Qt.AlignCenter)
             sub.setStyleSheet(
-                "font-size:10px;color:#555;border:none;background:transparent;"
+                f"font-size:12px;color:{T['muted']};border:none;background:transparent;"
             )
             col_layout.addWidget(sub)
             spin = QSpinBox()

@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
+from ui.style import TOKENS as T
 
 from models.models import (
     Project, Container, PROJECT_TYPES, PROJECT_TYPE_ICONS,
@@ -122,6 +123,7 @@ class ProjectDialog(QDialog):
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         cancel_btn = QPushButton("Cancel")
+        cancel_btn.setObjectName("SecondaryButton")
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(cancel_btn)
         save_btn = QPushButton("Save project")
@@ -177,7 +179,7 @@ class ProjectDialog(QDialog):
         row.addStretch()
         outer.addLayout(row)
         hint = QLabel("A zone that differs from the rest can be changed on its own card below.")
-        hint.setStyleSheet("color:#5B6776;font-size:11px;")
+        hint.setStyleSheet(f"color:{T['muted']};font-size:12px;")
         outer.addWidget(hint)
 
         self.zone_scroll = QScrollArea()
@@ -228,7 +230,7 @@ class ProjectDialog(QDialog):
         gen_btn.clicked.connect(self._generate_bess_table)
         gen_row.addWidget(gen_btn)
         self.bess_summary = QLabel("")
-        self.bess_summary.setStyleSheet("color:#5B6776;")
+        self.bess_summary.setStyleSheet(f"color:{T['muted']};")
         gen_row.addWidget(self.bess_summary)
         gen_row.addStretch()
         outer.addLayout(gen_row)
@@ -263,7 +265,7 @@ class ProjectDialog(QDialog):
         # Optional equipment
         from PyQt5.QtWidgets import QCheckBox
         opt_label = QLabel("Optional per block:")
-        opt_label.setStyleSheet("font-size:11px;color:#555;")
+        opt_label.setStyleSheet(f"font-size:12px;color:{T['muted']};")
         form.addRow("", opt_label)
 
         opt_row = QHBoxLayout()
@@ -283,7 +285,7 @@ class ProjectDialog(QDialog):
             "Block order: Transformer → RMU → Logger → MVS → String Inverters\n"
             "All items get individual serial number fields."
         )
-        hint.setStyleSheet("color:#555;font-size:11px;font-style:italic;")
+        hint.setStyleSheet(f"color:{T['muted']};font-size:12px;font-style:italic;")
         form.addRow("", hint)
 
         gen_btn = QPushButton("Generate table")
@@ -333,7 +335,7 @@ class ProjectDialog(QDialog):
         # Optional extra equipment checkboxes
         from PyQt5.QtWidgets import QCheckBox
         extras_label = QLabel("Optional equipment per block:")
-        extras_label.setStyleSheet("font-size:11px;color:#555;")
+        extras_label.setStyleSheet(f"font-size:12px;color:{T['muted']};")
         form.addRow("", extras_label)
 
         extra_row1 = QHBoxLayout()
@@ -361,7 +363,7 @@ class ProjectDialog(QDialog):
             "serial number field — fill in as many or as few as needed.\n"
             "Combiner boxes have no serial numbers."
         )
-        hint.setStyleSheet("color:#555;font-size:11px;font-style:italic;")
+        hint.setStyleSheet(f"color:{T['muted']};font-size:12px;font-style:italic;")
         form.addRow("", hint)
 
         gen_btn = QPushButton("Generate table")
@@ -407,8 +409,8 @@ class ProjectDialog(QDialog):
             frame = QFrame()
             frame.setFrameShape(QFrame.Box)
             frame.setStyleSheet(
-                "QFrame{border:1px solid #DDE2E8;border-radius:6px;"
-                "background:#EEF1F4;padding:4px;}"
+                f"QFrame{{border:1px solid {T['line']};border-radius:4px;"
+                f"background:{T['sunken']};padding:4px;}}"
             )
             col = QVBoxLayout(frame)
             col.setSpacing(4)
@@ -416,14 +418,14 @@ class ProjectDialog(QDialog):
             lbl = QLabel(f"Zone {z}")
             lbl.setAlignment(Qt.AlignCenter)
             lbl.setStyleSheet(
-                "font-weight:bold;font-size:12px;color:#17212E;"
+                f"font-weight:bold;font-size:12px;color:{T['ink']};"
                 "border:none;background:transparent;"
             )
             col.addWidget(lbl)
             for sub_lbl, spin_val in [("Blocks:", pb), ("Batteries:", pc)]:
                 r = QHBoxLayout()
                 sl = QLabel(sub_lbl)
-                sl.setStyleSheet("font-size:11px;color:#5B6776;border:none;background:transparent;")
+                sl.setStyleSheet(f"font-size:12px;color:{T['muted']};border:none;background:transparent;")
                 sl.setFixedWidth(58)
                 sp = QSpinBox()
                 if "Blocks" in sub_lbl:
@@ -496,7 +498,7 @@ class ProjectDialog(QDialog):
         serial_item = QTableWidgetItem(serial)
         if not serial_editable:
             serial_item.setFlags(serial_item.flags() & ~Qt.ItemIsEditable)
-            serial_item.setBackground(QColor("#F5F7FA"))
+            serial_item.setBackground(QColor(T['sunken']))
         elif bg:
             serial_item.setBackground(bg)
         self.container_table.setItem(row, 4, serial_item)
@@ -550,7 +552,7 @@ class ProjectDialog(QDialog):
                         row, block_num, idx, z, b, label,
                         was.get("type", "") or eq_type,
                         was.get("serial", ""),
-                        "#FFF5DC" if eq_type in fixed else None)
+                        T['warnBg'] if eq_type in fixed else None)
                     self._container_rows.append({
                         "zone": z, "block": b, "zone_block": block_num,
                         "idx": idx, "table_row": row, "gen": eq_type, "label": label,
@@ -623,7 +625,7 @@ class ProjectDialog(QDialog):
                 self._add_row(b, idx, "Transformer",
                               f"Block {b} — Transformer",
                               saved.get(key, {}).get("serial", ""),
-                              serial_editable=True, bg_color="#FFF3E0")
+                              serial_editable=True, bg_color=T['warnBg'])
                 idx += 1
 
             if has_rmu:
@@ -631,7 +633,7 @@ class ProjectDialog(QDialog):
                 self._add_row(b, idx, "RMU",
                               f"Block {b} — RMU",
                               saved.get(key, {}).get("serial", ""),
-                              serial_editable=True, bg_color="#FFF3E0")
+                              serial_editable=True, bg_color=T['warnBg'])
                 idx += 1
 
             if has_logger:
@@ -639,7 +641,7 @@ class ProjectDialog(QDialog):
                 self._add_row(b, idx, "Logger",
                               f"Block {b} — Logger",
                               saved.get(key, {}).get("serial", ""),
-                              serial_editable=True, bg_color="#E8EAF6")
+                              serial_editable=True, bg_color=T['sunken'])
                 idx += 1
 
             # MVS (always present)
@@ -647,7 +649,7 @@ class ProjectDialog(QDialog):
             self._add_row(b, idx, "MVS",
                           f"Block {b} — MVS",
                           saved.get(key, {}).get("serial", ""),
-                          serial_editable=True, bg_color="#E3F2FD")
+                          serial_editable=True, bg_color=T['sunken'])
             idx += 1
 
             # String Inverters
@@ -686,7 +688,7 @@ class ProjectDialog(QDialog):
                 self._add_row(b, idx, "Transformer",
                               f"Block {b} — Transformer",
                               saved.get(key, {}).get("serial", ""),
-                              serial_editable=True, bg_color="#FFF3E0")
+                              serial_editable=True, bg_color=T['warnBg'])
                 idx += 1
 
             if has_rmu:
@@ -694,7 +696,7 @@ class ProjectDialog(QDialog):
                 self._add_row(b, idx, "RMU",
                               f"Block {b} — RMU",
                               saved.get(key, {}).get("serial", ""),
-                              serial_editable=True, bg_color="#FFF3E0")
+                              serial_editable=True, bg_color=T['warnBg'])
                 idx += 1
 
             if has_scu_master:
@@ -702,7 +704,7 @@ class ProjectDialog(QDialog):
                 self._add_row(b, idx, "SCU Master",
                               f"Block {b} — SCU Master",
                               saved.get(key, {}).get("serial", ""),
-                              serial_editable=True, bg_color="#E8F5E9")
+                              serial_editable=True, bg_color=T['okBg'])
                 idx += 1
 
             if has_scu_slave:
@@ -710,7 +712,7 @@ class ProjectDialog(QDialog):
                 self._add_row(b, idx, "SCU Slave",
                               f"Block {b} — SCU Slave",
                               saved.get(key, {}).get("serial", ""),
-                              serial_editable=True, bg_color="#E8F5E9")
+                              serial_editable=True, bg_color=T['okBg'])
                 idx += 1
 
             for m in range(1, masters + 1):
@@ -718,7 +720,7 @@ class ProjectDialog(QDialog):
                 self._add_row(b, idx, "Master Unit",
                               f"Block {b} — Master Unit {m}",
                               saved.get(key, {}).get("serial", ""),
-                              serial_editable=True, bg_color="#E3F2FD")
+                              serial_editable=True, bg_color=T['sunken'])
                 idx += 1
 
             for s in range(1, slaves + 1):
@@ -726,7 +728,7 @@ class ProjectDialog(QDialog):
                 self._add_row(b, idx, "Slave Unit",
                               f"Block {b} — Slave Unit {s}",
                               saved.get(key, {}).get("serial", ""),
-                              serial_editable=True, bg_color="#F3E5F5")
+                              serial_editable=True, bg_color=T['waitBg'])
                 idx += 1
 
             cb_total = total_units * cb_per_unit
@@ -735,7 +737,7 @@ class ProjectDialog(QDialog):
                 cb_in_unit = ((cb - 1) %  cb_per_unit) + 1
                 self._add_row(b, idx, "Combiner Box",
                               f"Block {b} — Unit {unit_num} CB{cb_in_unit}",
-                              "", serial_editable=False, bg_color="#FFF9C4")
+                              "", serial_editable=False, bg_color=T['warnBg'])
                 idx += 1
 
     # ── Save ──────────────────────────────────────────────────────────────

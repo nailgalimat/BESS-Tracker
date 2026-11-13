@@ -257,11 +257,14 @@ H.check(page.act_tbl.rowCount() == len(als.items(PID, include_done=False)),
 # page reads the real calendar, so a fixture date that was in the future when
 # this was written becomes overdue a week later and the number moves on its own.
 overdue_now = [i for i in als.items(PID, include_done=False) if i['overdue']]
+from ui.style import TOKENS as _T
 red = [r for r in range(page.act_tbl.rowCount())
-       if page.act_tbl.item(r, 1).foreground().color().name() == '#b4232a']
+       if page.act_tbl.item(r, 1).foreground().color().name() == _T['crit'].lower()]
 H.check(overdue_now and len(red) == len(overdue_now),
         'the overdue items are red: {} red for {} overdue'.format(
             len(red), len(overdue_now)))
+H.check(all(page.act_tbl.item(r, 5).text().endswith('Overdue') for r in red),
+        'and say so in words, not by colour alone')
 
 # a multi-line "to do" is one line in the table, whole in the tooltip
 multi = [r for r in range(page.act_tbl.rowCount())

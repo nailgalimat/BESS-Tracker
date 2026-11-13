@@ -18,15 +18,12 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal
 
 import services.report_workflow_service as rw
+from ui.style import TOKENS as T
 
 
-# Project-type → badge colour (background, text)
-_BADGE = {
-    'BESS':          ("#EEF1F4", "#17212E"),
-    'PV':            ("#FFF3E0", "#B26A00"),
-    'PV+BESS':       ("#EAF7EE", "#1A7A3A"),
-    'Commissioning': ("#FFF3E0", "#B26A00"),
-}
+# Project-type badge: a label, not a state — so neutral for every type (state
+# colours are kept for ok / warning / fault)
+_BADGE = {'BESS': (T['sunken'], T['ink'])}
 
 
 class LauncherCard(QFrame):
@@ -50,7 +47,7 @@ class LauncherCard(QFrame):
         # ── top row: name + type badge ──────────────────────────────────
         top = QHBoxLayout(); top.setSpacing(8)
         name = QLabel(proj.get('name', '—'))
-        name.setStyleSheet("font-size:16px;font-weight:bold;color:#17212E;background:transparent;")
+        name.setStyleSheet(f"font-size:15px;font-weight:bold;color:{T['ink']};background:transparent;")
         name.setWordWrap(True)
         top.addWidget(name, 1)
 
@@ -58,8 +55,8 @@ class LauncherCard(QFrame):
         bg, fg = _BADGE.get(ptype, _BADGE['BESS'])
         badge = QLabel(ptype)
         badge.setStyleSheet(
-            f"background:{bg};color:{fg};border-radius:9px;padding:2px 10px;"
-            f"font-size:10px;font-weight:bold;")
+            f"background:{bg};color:{fg};border-radius:8px;padding:2px 10px;"
+            f"font-size:12px;font-weight:bold;")
         badge.setAlignment(Qt.AlignCenter)
         top.addWidget(badge, 0, Qt.AlignTop)
         lay.addLayout(top)
@@ -70,7 +67,7 @@ class LauncherCard(QFrame):
         if not cap:
             cap = f"{nblk} block{'s' if nblk != 1 else ''}" if nblk else "—"
         cap_lbl = QLabel(cap)
-        cap_lbl.setStyleSheet("font-size:13px;color:#3C4B56;background:transparent;")
+        cap_lbl.setStyleSheet(f"font-size:13px;color:{T['ink2']};background:transparent;")
         lay.addWidget(cap_lbl)
 
         lay.addStretch()
@@ -80,12 +77,12 @@ class LauncherCard(QFrame):
         tmpl = (cfg.get('site_type') or '').strip()
         tmpl_txt = f"{tmpl.capitalize()} report" if tmpl else "Not configured"
         meta = QLabel(tmpl_txt)
-        meta.setStyleSheet("font-size:11px;color:#5B6776;background:transparent;")
+        meta.setStyleSheet(f"font-size:12px;color:{T['muted']};background:transparent;")
         foot.addWidget(meta)
         foot.addStretch()
         openhint = QLabel("Open  →")
         openhint.setObjectName("OpenHint")
-        openhint.setStyleSheet("font-size:12px;color:#17212E;font-weight:bold;background:transparent;")
+        openhint.setStyleSheet(f"font-size:12px;color:{T['ink']};font-weight:bold;background:transparent;")
         foot.addWidget(openhint)
         lay.addLayout(foot)
 
@@ -120,11 +117,9 @@ class NewProjectCard(QFrame):
         self.setMinimumHeight(128)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         lay = QVBoxLayout(self); lay.setAlignment(Qt.AlignCenter)
-        plus = QLabel("＋"); plus.setAlignment(Qt.AlignCenter)
-        plus.setStyleSheet("font-size:26px;color:#17212E;background:transparent;")
         txt = QLabel("New project"); txt.setAlignment(Qt.AlignCenter)
-        txt.setStyleSheet("font-size:13px;color:#17212E;font-weight:bold;background:transparent;")
-        lay.addWidget(plus); lay.addWidget(txt)
+        txt.setStyleSheet(f"font-size:13px;color:{T['ink']};font-weight:bold;background:transparent;")
+        lay.addWidget(txt)
         for ch in self.findChildren(QLabel):
             ch.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
@@ -146,17 +141,17 @@ class ProjectLauncher(QWidget):
         self.reload()
 
     def _build_ui(self):
-        self.setStyleSheet("""
-            #LauncherCard {
-                background:#FFFFFF; border:1px solid #DDE2E8; border-radius:10px;
-            }
-            #LauncherCard[hover="true"] {
-                border:1px solid #17212E; background:#FBFDFF;
-            }
-            #NewCard {
-                background:transparent; border:2px dashed #C3CBD5; border-radius:10px;
-            }
-            #NewCard:hover { border-color:#17212E; }
+        self.setStyleSheet(f"""
+            #LauncherCard {{
+                background:{T['surface']}; border:1px solid {T['line']}; border-radius:8px;
+            }}
+            #LauncherCard[hover="true"] {{
+                border:1px solid {T['ink']}; background:{T['surface']};
+            }}
+            #NewCard {{
+                background:transparent; border:2px dashed {T['line2']}; border-radius:8px;
+            }}
+            #NewCard:hover {{ border-color:{T['ink']}; }}
         """)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -165,20 +160,20 @@ class ProjectLauncher(QWidget):
         # ── header band ─────────────────────────────────────────────────
         head = QWidget(); head.setObjectName("LauncherHead")
         head.setStyleSheet(
-            "#LauncherHead{background:#FFFFFF;border-bottom:1px solid #DDE2E8;}")
+            f"#LauncherHead{{background:{T['surface']};border-bottom:1px solid {T['line']};}}")
         hl = QVBoxLayout(head); hl.setContentsMargins(28, 20, 28, 18); hl.setSpacing(2)
         t = QLabel("Select a project")
-        t.setStyleSheet("font-size:22px;font-weight:bold;color:#17212E;background:transparent;")
+        t.setStyleSheet(f"font-size:22px;font-weight:bold;color:{T['ink']};background:transparent;")
         hl.addWidget(t)
         s = QLabel("Everything you do — daily logs, work reports, PM, unavailability, the monthly report — lives inside the project you pick.")
-        s.setStyleSheet("font-size:12px;color:#5B6776;background:transparent;")
+        s.setStyleSheet(f"font-size:12px;color:{T['muted']};background:transparent;")
         s.setWordWrap(True)
         hl.addWidget(s)
         root.addWidget(head)
 
         # ── scrollable grid ─────────────────────────────────────────────
         scroll = QScrollArea(); scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea{border:none;background:#F4F6F8;}")
+        scroll.setStyleSheet(f"QScrollArea{{border:none;background:{T['canvas']};}}")
         self._content = QWidget()
         self._grid = QGridLayout(self._content)
         self._grid.setContentsMargins(28, 24, 28, 28)
@@ -193,7 +188,7 @@ class ProjectLauncher(QWidget):
         self._empty = QLabel(
             "No projects yet — click “New project” to create your first one.")
         self._empty.setAlignment(Qt.AlignCenter)
-        self._empty.setStyleSheet("color:#5B6776;font-size:13px;background:transparent;")
+        self._empty.setStyleSheet(f"color:{T['muted']};font-size:13px;background:transparent;")
 
     # ── data ────────────────────────────────────────────────────────────
     def reload(self):

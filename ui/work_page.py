@@ -34,17 +34,19 @@ from PyQt5.QtWidgets import (
 import services.team_service as team
 import services.work_journal_service as wj
 import services.worklog_parts_service as wparts
-from ui.components import PageHeader, PrimaryButton, SecondaryButton
+from ui.components import PageHeader, PrimaryButton, SecondaryButton, DangerButton
+from ui.style import TOKENS as T
 
 TABS = [('all', 'All'), ('open', 'Open'), ('scada', 'Needs a record (SCADA)'),
         ('noblock', 'No block'), ('conflict', 'Conflicts')]
 
 # "Assigned to" is a column, not a detail: the office's first question in the
-# morning is what is with whom. "Materials" is the second one: a record with
-# parts still waiting to leave stock is office work nobody has finished.
-COLUMNS = ["Date", "Node", "Work", "Status", "PTW No.", "Assigned to",
-           "Materials", "Source"]
-ALARM_COLUMNS = ["Start", "Node", "Fault", "Hours", "Class", "", "", "Source"]
+# morning is what is with whom. Materials and Source live on the record card so
+# the Work column can take the width; a record with parts still waiting to
+# leave stock says so in its Status cell ("Done · 2 parts pending"), because
+# that is office work nobody has finished.
+COLUMNS = ["Date", "Node", "Work", "Status", "PTW No.", "Assigned to"]
+ALARM_COLUMNS = ["Start", "Node", "Fault", "Hours", "Class", "Source"]
 
 STATUSES = ['Needs visit', 'Open', 'In progress', 'Done']
 IMPACTS = [('none', 'None'), ('counts', 'Counts'), ('excluded', 'Excluded')]
@@ -52,7 +54,7 @@ IMPACTS = [('none', 'None'), ('counts', 'Counts'), ('excluded', 'Excluded')]
 DEVICES = ['', 'PCS 1', 'PCS 2', 'PCS 3', 'PCS 4', 'BESS 1', 'BESS 2', 'BESS 3',
            'BESS 4', 'LC cabinet', 'MV station']
 
-_CHIP = ("QLabel{border-radius:8px;padding:1px 8px;font-size:11px;}")
+_CHIP = ("QLabel{border-radius:8px;padding:1px 8px;font-size:12px;}")
 
 
 def _tag(text, fg, bg):
@@ -63,11 +65,11 @@ def _tag(text, fg, bg):
 
 
 def in_report():
-    return _tag("In report", "#1565C0", "#E3F2FD")
+    return _tag("In report", T['ok'], T['okBg'])
 
 
 def internal():
-    return _tag("Internal", "#6B4E00", "#FFF4D6")
+    return _tag("Internal", T['warn'], T['warnBg'])
 
 
 def _file_size_text(n) -> str:
@@ -85,13 +87,18 @@ def _file_size_text(n) -> str:
     return '{:.0f} B'.format(n)
 
 
-def parts_badge(count: dict) -> str:
-    """The Materials cell for one record: what the office still has to do."""
-    if not count or not count.get('total'):
-        return ''
-    if count.get('pending'):
-        return f"{count['pending']} pending"
-    return f"{count['deducted']} written off"
+def status_text(row: dict, count: dict = None) -> str:
+    """The list's Status cell: the status, then whatever else the office has
+    to notice — a conflict, an old-format row, parts not yet written off. In
+    words, so the row's colour is never the only signal."""
+    parts = [row.get('status') or '']
+    if row.get('sync') == 'conflict':
+        parts.append('Conflict')
+    elif row.get('old_format'):
+        parts.append(wj.SOURCE_LABELS.get(row.get('source'), 'Old format'))
+    if count and count.get('pending'):
+        parts.append(f"{count['pending']} parts pending")
+    return ' · '.join(p for p in parts if p)
 
 
 def _materials_combo(current: str = '') -> QComboBox:
@@ -212,15 +219,15 @@ class MaterialsSection(QWidget):
             note = QLabel(f'Reported used: “{phone_note}”')
             note.setTextFormat(Qt.PlainText)
             note.setWordWrap(True)
-            note.setStyleSheet("color:#17212E;background:#F7F8FA;"
-                               "border:1px solid #DDE2E8;border-radius:4px;"
+            note.setStyleSheet(f"color:{T['ink']};background:{T['sunken']};"
+                               f"border:1px solid {T['line']};border-radius:4px;"
                                "padding:6px;")
             note.setToolTip("What the field wrote on the phone. The office "
                             "books the materials below against it.")
             lay.addWidget(note)
 
         self.wh_lbl = QLabel("")
-        self.wh_lbl.setStyleSheet("color:#5B6776;")
+        self.wh_lbl.setStyleSheet(f"color:{T['muted']};")
         self.wh_lbl.setWordWrap(True)
         lay.addWidget(self.wh_lbl)
 
@@ -240,7 +247,7 @@ class MaterialsSection(QWidget):
         lay.addWidget(self.table)
 
         self.empty_lbl = QLabel("No materials on this record yet — pick one below.")
-        self.empty_lbl.setStyleSheet("color:#5B6776;")
+        self.empty_lbl.setStyleSheet(f"color:{T['muted']};")
         self.empty_lbl.setWordWrap(True)
         lay.addWidget(self.empty_lbl)
 
@@ -269,7 +276,7 @@ class MaterialsSection(QWidget):
         # what the warehouse holds of the material being picked, before it is
         # added — the moment to notice you are booking 5 against a stock of 1
         self.avail_lbl = QLabel("")
-        self.avail_lbl.setStyleSheet("color:#5B6776;")
+        self.avail_lbl.setStyleSheet(f"color:{T['muted']};")
         self.avail_lbl.setWordWrap(True)
         lay.addWidget(self.avail_lbl)
         self.mat_cb.currentIndexChanged.connect(self._show_available)
@@ -278,7 +285,7 @@ class MaterialsSection(QWidget):
         self.catalogue_lbl = QLabel(
             "The material catalogue is empty — add the materials on the "
             "Spare parts page first, or type a material number here.")
-        self.catalogue_lbl.setStyleSheet("color:#B26B00;")
+        self.catalogue_lbl.setStyleSheet(f"color:{T['warn']};")
         self.catalogue_lbl.setWordWrap(True)
         self.catalogue_lbl.setVisible(self.mat_cb.count() <= 1)
         lay.addWidget(self.catalogue_lbl)
@@ -308,7 +315,7 @@ class MaterialsSection(QWidget):
                       "stock”. Each write-off is an OUT transaction referenced "
                       f"LOG-{self._entry_id[:8]}; undoing one books it back in.")
         hint.setWordWrap(True)
-        hint.setStyleSheet("color:#5B6776;font-size:11px;")
+        hint.setStyleSheet(f"color:{T['muted']};font-size:12px;")
         lay.addWidget(hint)
 
     # ── read ─────────────────────────────────────────────────────────────
@@ -332,14 +339,14 @@ class MaterialsSection(QWidget):
             if p['deducted']:
                 st = QTableWidgetItem("Written off · "
                                       + (p.get('warehouse_name') or 'stock'))
-                st.setForeground(QColor('#2E7D32'))
+                st.setForeground(QColor(T['ok']))
             else:
                 avail = float(p.get('available') or 0)
                 short = avail < float(p['quantity'])
                 st = QTableWidgetItem(
                     f"Pending · in stock {avail:g}"
                     + (f" — short {float(p['quantity']) - avail:g}" if short else ""))
-                st.setForeground(QColor('#C62828') if short else QColor('#B26B00'))
+                st.setForeground(QColor(T['crit']) if short else QColor(T['warn']))
                 pending += 1
             self.table.setItem(r, 4, st)
 
@@ -588,10 +595,10 @@ class WorkPage(QWidget):
             b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
             b.setStyleSheet(
-                "QPushButton{border:1px solid #D6DBE3;border-radius:14px;"
-                "padding:4px 12px;background:#FFFFFF;color:#17212E;}"
-                "QPushButton:checked{background:#17212E;color:#FFFFFF;"
-                "border-color:#17212E;font-weight:bold;}")
+                f"QPushButton{{border:1px solid {T['line']};border-radius:8px;"
+                f"padding:4px 12px;background:{T['surface']};color:{T['ink']};}}"
+                f"QPushButton:checked{{background:{T['ink']};color:{T['surface']};"
+                f"border-color:{T['ink']};font-weight:bold;}}")
             b.clicked.connect(lambda _=False, k=key: self._set_tab(k))
             tabrow.addWidget(b)
             self._tab_buttons[key] = b
@@ -654,8 +661,7 @@ class WorkPage(QWidget):
         self.table.verticalHeader().setVisible(False)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(2, QHeaderView.Stretch)      # the work, not the note
-        for col, w in ((0, 90), (1, 170), (3, 84), (4, 88), (5, 100), (6, 90),
-                       (7, 64)):
+        for col, w in ((0, 90), (1, 170), (3, 130), (4, 88), (5, 100)):
             self.table.setColumnWidth(col, w)
         self.table.itemSelectionChanged.connect(self._on_select)
         split.addWidget(self.table)
@@ -675,7 +681,7 @@ class WorkPage(QWidget):
         root.addWidget(split, 1)
 
         self.foot = QLabel("")
-        self.foot.setStyleSheet("color:#5B6776;padding:4px 16px 8px;")
+        self.foot.setStyleSheet(f"color:{T['muted']};padding:4px 16px 8px;")
         root.addWidget(self.foot)
         self._set_tab('all', reload=False)
 
@@ -778,6 +784,7 @@ class WorkPage(QWidget):
 
     def _fill(self, rows):
         self._shown = rows
+        self.table.setColumnCount(len(COLUMNS))
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.setRowCount(0)
         counts = self._parts_counts(rows)
@@ -791,19 +798,17 @@ class WorkPage(QWidget):
                 # a Daily Log row is "this material, and what happened": the
                 # title alone would be a bare part number in every cell
                 work = ' · '.join(x for x in (r['title'], r['work_done']) if x)
-            src = wj.SOURCE_LABELS.get(r['source'], r['source'])
-            if r['sync'] == 'conflict':
-                src = 'Conflict'
             who = r.get('assignee_name') or (
                 team.name_for(r.get('assignee')) if r.get('assignee') else '')
-            cells = [r['date'], r['node'], work, r['status'], r['ptw'], who,
-                     parts_badge(counts.get(str(r['ref']))), src]
+            cells = [r['date'], r['node'], work,
+                     status_text(r, counts.get(str(r['ref']))), r['ptw'], who]
             for c, v in enumerate(cells):
                 it = QTableWidgetItem(str(v or ''))
+                # the Status cell says why in words (status_text)
                 if r['sync'] == 'conflict':
-                    it.setForeground(Qt.red)
+                    it.setForeground(QColor(T['crit']))
                 elif r['old_format']:
-                    it.setForeground(Qt.gray)
+                    it.setForeground(QColor(T['muted']))
                 self.table.setItem(i, c, it)
         if rows:
             self.foot.setText(
@@ -831,6 +836,7 @@ class WorkPage(QWidget):
         """Needs a record (SCADA): alarms nobody has written up yet."""
         self._shown = []
         self.table.setRowCount(0)
+        self.table.setColumnCount(len(ALARM_COLUMNS))
         self.table.setHorizontalHeaderLabels(ALARM_COLUMNS)
         for a in self._alarms:
             i = self.table.rowCount()
@@ -842,7 +848,7 @@ class WorkPage(QWidget):
             for c, v in enumerate([str(a.get('activated') or '')[:16], node,
                                    a.get('trigger_name') or '',
                                    f"{a.get('hours') or 0:g}",
-                                   a.get('cls_reason') or '', '', '', 'SCADA']):
+                                   a.get('cls_reason') or '', 'SCADA']):
                 self.table.setItem(i, c, QTableWidgetItem(str(v)))
         self.foot.setText(f"{len(self._alarms)} SCADA fault(s) with no work "
                           "record · select one to write it up")
@@ -885,8 +891,8 @@ class WorkPage(QWidget):
         self.card_l.addLayout(row)
 
     def _banner(self, text, kind='warn'):
-        col = {'warn': ('#7A5200', '#FFF6E6'), 'crit': ('#A61B1B', '#FFECEB'),
-               'info': ('#17212E', '#EAF3FF')}[kind]
+        col = {'warn': (T['warn'], T['warnBg']), 'crit': (T['crit'], T['critBg']),
+               'info': (T['ink'], T['sunken'])}[kind]
         lbl = QLabel(text)
         lbl.setWordWrap(True)
         lbl.setStyleSheet(f"color:{col[0]};background:{col[1]};border:1px solid {col[0]};"
@@ -901,13 +907,13 @@ class WorkPage(QWidget):
             hint = QLabel("Select a record on the left, or press "
                           "<b>New record</b>.")
             hint.setWordWrap(True)
-            hint.setStyleSheet("color:#5B6776;")
+            hint.setStyleSheet(f"color:{T['muted']};")
             self.card_l.addWidget(hint)
             self.card_l.addStretch()
             return
 
-        head = QLabel(f"<span style='font-size:16px;font-weight:bold'>{row['node']}</span>"
-                      f"   <span style='color:#5B6776'>{row['kind']} · {row['date']}</span>")
+        head = QLabel(f"<span style='font-size:15px;font-weight:bold'>{row['node']}</span>"
+                      f"   <span style='color:{T['muted']}'>{row['kind']} · {row['date']}</span>")
         head.setWordWrap(True)
         self.card_l.addWidget(head)
 
@@ -988,7 +994,7 @@ class WorkPage(QWidget):
         if not team.users():
             note.append("sync once to list the technicians")
         lbl = QLabel(' · '.join(note))
-        lbl.setStyleSheet("color:#5B6776;")
+        lbl.setStyleSheet(f"color:{T['muted']};")
         who_row.addWidget(lbl)
         who_row.addStretch()
         holder = QWidget()
@@ -1002,12 +1008,19 @@ class WorkPage(QWidget):
         self._fields['date'].setDate(d if d.isValid() else QDate.currentDate())
         add("Date", self._fields['date'])
 
+        # read-only: where the record came from (it left the list's columns)
+        src = wj.SOURCE_LABELS.get(row.get('source'), row.get('source') or '')
+        if row.get('sync') == 'conflict':
+            src = (src + ' · ' if src else '') + 'Conflict'
+        self.src_lbl = QLabel(src or '—')
+        add("Source", self.src_lbl)
+
         self._fields['block'] = QLineEdit(str(row['block'] or ''))
         self._fields['block'].setPlaceholderText("plant block, e.g. 57")
         blk_row = QHBoxLayout()
         blk_row.addWidget(self._fields['block'])
         zl = QLabel(row['zone_label'])
-        zl.setStyleSheet("color:#5B6776;")
+        zl.setStyleSheet(f"color:{T['muted']};")
         blk_row.addWidget(zl)
         self._fields['lc'] = QComboBox()
         self._fields['lc'].addItems(['', 'LC1', 'LC2', 'Whole block'])
@@ -1036,7 +1049,7 @@ class WorkPage(QWidget):
         if row.get('location') and not row['block']:
             loc_row = QHBoxLayout()
             loc = QLabel(f"“{row['location']}”")
-            loc.setStyleSheet("color:#5B6776;")
+            loc.setStyleSheet(f"color:{T['muted']};")
             loc_row.addWidget(loc)
             if suggestion:
                 zl_s = wj.zone_label(self._pid, suggestion['block'])
@@ -1130,8 +1143,7 @@ class WorkPage(QWidget):
         done.clicked.connect(lambda: self._quick_status('Done'))
         done.setEnabled(not ro)
         btns.addWidget(done)
-        dele = SecondaryButton("Delete")
-        dele.setStyleSheet("color:#C62828;")
+        dele = DangerButton("Delete")
         dele.clicked.connect(self._delete_card)
         dele.setEnabled(not ro and row.get('key') is not None)
         btns.addWidget(dele)
@@ -1150,7 +1162,7 @@ class WorkPage(QWidget):
                 for p in prev:
                     lbl = QLabel(f"{p['date']} · {p['status']} · "
                                  f"{p['work_done'][:60] or '—'}")
-                    lbl.setStyleSheet("color:#5B6776;")
+                    lbl.setStyleSheet(f"color:{T['muted']};")
                     lbl.setWordWrap(True)
                     self.card_l.addWidget(lbl)
             g = wj.guidance(self._pid, row['title'])
@@ -1158,8 +1170,8 @@ class WorkPage(QWidget):
                 self._label("How we deal with it", internal())
                 txt = QLabel((g['note'] + "\n\n" + g['vendor']).strip())
                 txt.setWordWrap(True)
-                txt.setStyleSheet("color:#17212E;background:#F7F8FA;"
-                                  "border:1px solid #DDE2E8;border-radius:4px;padding:6px;")
+                txt.setStyleSheet(f"color:{T['ink']};background:{T['sunken']};"
+                                  f"border:1px solid {T['line']};border-radius:4px;padding:6px;")
                 self.card_l.addWidget(txt)
         self.card_l.addStretch()
 
@@ -1242,7 +1254,7 @@ class WorkPage(QWidget):
             if vid:
                 lab = QLabel(cap or 'video')
                 lab.setAlignment(Qt.AlignHCenter)
-                lab.setStyleSheet("color:#5B6776;font-size:10px;")
+                lab.setStyleSheet(f"color:{T['muted']};font-size:12px;")
                 tile.addWidget(lab)
             holder_tile = QWidget()
             holder_tile.setLayout(tile)
@@ -1280,14 +1292,14 @@ class WorkPage(QWidget):
             hint = QLabel("Save the record first — materials and their write-off "
                           "hang on the saved record.")
             hint.setWordWrap(True)
-            hint.setStyleSheet("color:#5B6776;")
+            hint.setStyleSheet(f"color:{T['muted']};")
             self.card_l.addWidget(hint)
             if row.get('parts'):
                 note = QLabel(f'Reported used: “{row["parts"]}”')
                 note.setTextFormat(Qt.PlainText)
                 note.setWordWrap(True)
-                note.setStyleSheet("color:#17212E;background:#F7F8FA;"
-                                   "border:1px solid #DDE2E8;border-radius:4px;"
+                note.setStyleSheet(f"color:{T['ink']};background:{T['sunken']};"
+                                   f"border:1px solid {T['line']};border-radius:4px;"
                                    "padding:6px;")
                 self.card_l.addWidget(note)
             return
@@ -1296,22 +1308,23 @@ class WorkPage(QWidget):
         self.card_l.addWidget(self._parts)
 
     def _parts_changed(self):
-        """Keep the list's Materials cell in step with the card. Only that one
-        cell: reloading the list would throw the open card away, and with it
-        whatever the user has typed into it but not saved."""
+        """Keep the list's Status cell (its "parts pending" part) in step with
+        the card. Only that one cell: reloading the list would throw the open
+        card away, and with it whatever the user has typed into it but not
+        saved."""
         if self._key is None:
             return
         i, row = next(((i, r) for i, r in enumerate(self._shown)
                        if r['key'] == self._key), (None, None))
         if row is None:
             return
-        col = COLUMNS.index("Materials")
+        col = COLUMNS.index("Status")
         count = wparts.get_parts_count(str(row['ref']))
         item = self.table.item(i, col)
         if item is None:
             item = QTableWidgetItem('')
             self.table.setItem(i, col, item)
-        item.setText(parts_badge(count))
+        item.setText(status_text(row, count))
 
     def _open_photo(self, row, img):
         import os
@@ -1373,9 +1386,9 @@ class WorkPage(QWidget):
         self._fields = {}
         self._parts = None
         blk = alarm.get('block')
-        head = QLabel(f"<span style='font-size:16px;font-weight:bold'>"
+        head = QLabel(f"<span style='font-size:15px;font-weight:bold'>"
                       f"{('Block %s' % blk) if blk else (alarm.get('asset_code') or '')}"
-                      f"</span>   <span style='color:#5B6776'>SCADA fault</span>")
+                      f"</span>   <span style='color:{T['muted']}'>SCADA fault</span>")
         self.card_l.addWidget(head)
         for k, v in (("Fault", alarm.get('trigger_name')),
                      ("From", alarm.get('activated')),

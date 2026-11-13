@@ -37,6 +37,7 @@ from PyQt5.QtCore import Qt, QDate
 from PyQt5.QtGui import QColor
 
 from ui.components import PageHeader, PrimaryButton, SecondaryButton, make_table
+from ui.style import TOKENS as T
 from services import stock_excel_service as stock_excel
 from services.stock_service import (
     get_all_warehouses, get_main_warehouse,
@@ -72,7 +73,7 @@ class StockPage(QWidget):
         self.tabs.addTab(self.stock_tab, "Stock Levels")
 
         self.tx_tab = TransactionTab()
-        self.tabs.addTab(self.tx_tab, "↕  Record Transaction")
+        self.tabs.addTab(self.tx_tab, "Record transaction")
 
         self.hist_tab = StockHistoryTab()
         self.tabs.addTab(self.hist_tab, "History")
@@ -137,10 +138,10 @@ class StockViewTab(QWidget):
         top_row.addStretch()
 
         self.alert_label = QLabel("")
-        self.alert_label.setStyleSheet("color:#C62828;font-weight:bold;")
+        self.alert_label.setStyleSheet(f"color:{T['crit']};font-weight:bold;")
         top_row.addWidget(self.alert_label)
 
-        refresh_btn = SecondaryButton("↻  Refresh")
+        refresh_btn = SecondaryButton("Refresh")
         refresh_btn.clicked.connect(self.refresh)
         top_row.addWidget(refresh_btn)
 
@@ -177,7 +178,7 @@ class StockViewTab(QWidget):
 
         hint = QLabel("Double-click a row to edit it. A quantity change is "
                       "recorded in the History tab as IN or OUT.")
-        hint.setStyleSheet("color:#5B6776;")
+        hint.setStyleSheet(f"color:{T['muted']};")
         edit_row.addWidget(hint)
         edit_row.addStretch()
         layout.addLayout(edit_row)
@@ -209,7 +210,7 @@ class StockViewTab(QWidget):
         # Low stock alert
         low = get_low_stock_items()
         if low:
-            self.alert_label.setText(f"⚠️  {len(low)} item(s) below minimum stock!")
+            self.alert_label.setText(f"{len(low)} item(s) below minimum stock")
         else:
             self.alert_label.setText("")
 
@@ -226,8 +227,8 @@ class StockViewTab(QWidget):
             row = self.stock_table.rowCount()
             self.stock_table.insertRow(row)
             is_low = item.get("low_stock", 0)
-            bg = QColor("#FFEBEE") if is_low else QColor("#FFFFFF")
-            status = "⚠️ Low" if is_low else "OK"
+            bg = QColor(T['critBg']) if is_low else QColor(T['surface'])
+            status = "Low" if is_low else "OK"
             for col, val in enumerate([
                 item["material_number"],
                 item.get("description",""),
@@ -373,13 +374,13 @@ class StockViewTab(QWidget):
             return
 
         self.refresh()
-        thresholds = (f"  ⚠️  {counts['thresholds_set']} low-stock threshold(s) set\n"
+        thresholds = (f"  {counts['thresholds_set']} low-stock threshold(s) set\n"
                       if counts["thresholds_set"]
-                      else "  ⚠️  no low-stock threshold was changed\n")
+                      else "  no low-stock threshold was changed\n")
         QMessageBox.information(
             self, "Import Result",
             f"Imported into {self._warehouse_label()}:\n"
-            f"  ✅  {counts['created']} new material(s) added\n"
+            f"  {counts['created']} new material(s) added\n"
             f"{counts['updated']} row(s) updated\n"
             f"{counts['unchanged']} already matched\n"
             f"{counts['transactions']} stock transaction(s) recorded\n"
@@ -537,7 +538,7 @@ class StockItemDialog(QDialog):
         self.mat_input.setPlaceholderText("e.g. VD000077")
         if self._editing:
             self.mat_input.setReadOnly(True)
-            self.mat_input.setStyleSheet("background:#f0f0f0;")
+            self.mat_input.setStyleSheet(f"background:{T['sunken']};")
         else:
             # Contains-matching, as in the Daily Log form: the numbers are long
             # and nobody remembers which one starts with what.
@@ -638,20 +639,20 @@ class StockItemDialog(QDialog):
             text = ("Quantity {:g} → {:g}: recorded as {} {:g} in the History "
                     "tab.".format(before, after,
                                   "IN" if delta > 0 else "OUT", abs(delta)))
-            colour = "#2E7D32" if delta > 0 else "#C62828"
+            colour = T['ok'] if delta > 0 else T['crit']
         elif known:
             text = ("Already {:g} on the shelf — the quantity stays as it is."
                     .format(before))
-            colour = "#5B6776"
+            colour = T['muted']
         elif after:
             text = ("New row: recorded as IN {:g} in the History tab."
                     .format(after))
-            colour = "#2E7D32"
+            colour = T['ok']
         else:
             text = "New row with nothing on the shelf yet."
-            colour = "#5B6776"
+            colour = T['muted']
         if known and not self._editing:
-            text = "⚠️  This material is already stocked here.  " + text
+            text = "This material is already stocked here.  " + text
         self.effect.setText(text)
         self.effect.setStyleSheet(f"color:{colour};")
 
@@ -704,7 +705,7 @@ class StockImportDialog(QDialog):
     Nothing here writes; the caller applies `selected_rows()` on Accepted.
     """
 
-    STATUS_COLORS = {"new": "#E8F5E9", "changed": "#FFF8E1", "unchanged": "#FFFFFF"}
+    STATUS_COLORS = {"new": T['okBg'], "changed": T['warnBg'], "unchanged": T['surface']}
     STATUS_LABELS = {"new": "New", "changed": "Changed", "unchanged": "= Unchanged"}
 
     def __init__(self, warehouse_label: str, parsed: dict, plan_rows: list,
@@ -743,7 +744,7 @@ class StockImportDialog(QDialog):
             said.append("Warehouse " + ", ".join(parsed["warehouses"]))
         self.source_label = QLabel(" · ".join(said) if said
                                    else "— the file does not name a site —")
-        self.source_label.setStyleSheet("color:#1565C0;font-weight:bold;")
+        self.source_label.setStyleSheet(f"color:{T['ink']};font-weight:bold;")
         form.addRow("File says:", self.source_label)
 
         info.setLayout(form)
@@ -753,25 +754,25 @@ class StockImportDialog(QDialog):
         notes = []
         if parsed["has_min_column"]:
             notes.append(
-                "ℹ️  This file has a Min Qty column, so the low-stock thresholds "
+                "This file has a Min Qty column, so the low-stock thresholds "
                 "in it will be applied. A row with an empty Min Qty cell keeps "
                 "the threshold already set in the app.")
         else:
             notes.append(
-                "ℹ️  This file has no Min Qty column, so every low-stock "
+                "This file has no Min Qty column, so every low-stock "
                 "threshold in this warehouse stays exactly as it is.")
         if parsed["ignored_columns"]:
             notes.append("Ignored column(s): "
                          + ", ".join(parsed["ignored_columns"]) + ".")
         note = QLabel("  ".join(notes))
         note.setWordWrap(True)
-        note.setStyleSheet("color:#455A64;")
+        note.setStyleSheet(f"color:{T['ink2']};")
         layout.addWidget(note)
 
         if parsed["problems"]:
-            warn = QLabel(f"⚠️  {len(parsed['problems'])} row(s) could not be "
+            warn = QLabel(f"{len(parsed['problems'])} row(s) could not be "
                           "read and are not listed below:")
-            warn.setStyleSheet("color:#C62828;font-weight:bold;")
+            warn.setStyleSheet(f"color:{T['crit']};font-weight:bold;")
             layout.addWidget(warn)
             box = QTextEdit()
             box.setReadOnly(True)
@@ -791,7 +792,7 @@ class StockImportDialog(QDialog):
                 f"{warehouse_label} — no quantity and no threshold would move. "
                 "Importing anyway only fills in descriptions and units.")
             calm.setWordWrap(True)
-            calm.setStyleSheet("color:#2E7D32;")
+            calm.setStyleSheet(f"color:{T['ok']};")
             layout.addWidget(calm)
 
         # ── the rows ──────────────────────────────────────────────────────
@@ -819,7 +820,7 @@ class StockImportDialog(QDialog):
                 min_text = f"{p['min_after']:g}"
             else:
                 min_text = "—"
-            bg = QColor(self.STATUS_COLORS.get(p["status"], "#FFFFFF"))
+            bg = QColor(self.STATUS_COLORS.get(p["status"], T['surface']))
             for col, value in enumerate([
                 p["material_number"],
                 p["description"] or p.get("current_description", ""),
@@ -851,7 +852,7 @@ class StockImportDialog(QDialog):
         btn_row.addStretch()
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
-        self.apply_btn = self.buttons.addButton("✅  Import",
+        self.apply_btn = self.buttons.addButton("Import",
                                                 QDialogButtonBox.AcceptRole)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
@@ -886,7 +887,7 @@ class StockImportDialog(QDialog):
         if s["thresholds"]:
             text += f" · {s['thresholds']} threshold(s) to set"
         self.summary_label.setText(text)
-        self.apply_btn.setText(f"✅  Import {s['total']} row(s)")
+        self.apply_btn.setText(f"Import {s['total']} row(s)")
         self.apply_btn.setEnabled(bool(chosen))
 
     def selected_rows(self) -> list:
@@ -936,7 +937,7 @@ class TransactionTab(QWidget):
         form.addRow("Material *:", self.mat_combo)
 
         self.mat_desc = QLabel("—")
-        self.mat_desc.setStyleSheet("color:#2E7D32;font-style:italic;")
+        self.mat_desc.setStyleSheet(f"color:{T['ok']};font-style:italic;")
         form.addRow("Description:", self.mat_desc)
 
         self.qty_spin = QDoubleSpinBox()
@@ -971,7 +972,7 @@ class TransactionTab(QWidget):
         clear_btn = SecondaryButton("Clear")
         clear_btn.clicked.connect(self._clear)
         btn_row.addWidget(clear_btn)
-        save_btn = PrimaryButton("✅  Record Transaction")
+        save_btn = PrimaryButton("Record transaction")
         save_btn.clicked.connect(self._save)
         btn_row.addWidget(save_btn)
         layout.addLayout(btn_row)
@@ -1079,11 +1080,11 @@ class StockHistoryTab(QWidget):
         txs   = get_transactions(warehouse_id=wh_id, limit=300)
         self.hist_table.setRowCount(0)
 
-        type_colors = {"IN":"#D4EDDA","OUT":"#F8D7DA","TRANSFER":"#E3F2FD"}
+        type_colors = {"IN":T['okBg'],"OUT":T['critBg'],"TRANSFER":T['sunken']}
         for tx in txs:
             row = self.hist_table.rowCount()
             self.hist_table.insertRow(row)
-            bg = QColor(type_colors.get(tx.get("transaction_type",""),"#FFFFFF"))
+            bg = QColor(type_colors.get(tx.get("transaction_type",""),T['surface']))
             for col, val in enumerate([
                 tx.get("date",""), tx.get("warehouse",""),
                 tx.get("material_number",""), tx.get("description",""),
@@ -1128,7 +1129,7 @@ class ConsumptionHistoryTab(QWidget):
             "it. The same rows are on the Work page. Internal: materials "
             "consumption is not part of the customer's monthly report.")
         note.setWordWrap(True)
-        note.setStyleSheet("color:#6B4E00;background:#FFF4D6;border:1px solid #E0C97F;"
+        note.setStyleSheet(f"color:{T['warn']};background:{T['warnBg']};border:1px solid {T['warnBd']};"
                            "border-radius:4px;padding:6px 8px;")
         layout.addWidget(note)
 
@@ -1156,7 +1157,7 @@ class ConsumptionHistoryTab(QWidget):
         layout.addWidget(self.cons_table)
 
         self.foot = QLabel("")
-        self.foot.setStyleSheet("color:#5B6776;")
+        self.foot.setStyleSheet(f"color:{T['muted']};")
         layout.addWidget(self.foot)
 
         self.search.returnPressed.connect(self._load)

@@ -30,6 +30,7 @@ from PyQt5.QtWidgets import (
 import services.availability_inputs_service as avi
 import services.report_workflow_service as rw
 from ui.components import PageHeader, SecondaryButton
+from ui.style import TOKENS as T
 
 MONTHS_EN = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July',
              'August', 'September', 'October', 'November', 'December']
@@ -39,19 +40,19 @@ class _Kpi(QFrame):
     def __init__(self, label, parent=None):
         super().__init__(parent)
         self.setObjectName("Kpi")
-        self.setStyleSheet("QFrame#Kpi{background:#FFFFFF;border:1px solid #DDE2E8;"
-                           "border-radius:6px;}")
+        self.setStyleSheet(f"QFrame#Kpi{{background:{T['surface']};border:1px solid {T['line']};"
+                           "border-radius:8px;}")
         l = QVBoxLayout(self)
         l.setContentsMargins(12, 8, 12, 10)
         l.setSpacing(2)
         cap = QLabel(label)
-        cap.setStyleSheet("color:#5B6776;font-size:11px;background:transparent;")
+        cap.setStyleSheet(f"color:{T['muted']};font-size:12px;background:transparent;")
         l.addWidget(cap)
         self.value = QLabel("—")
-        self.value.setStyleSheet("font-size:20px;font-weight:bold;background:transparent;")
+        self.value.setStyleSheet("font-size:22px;font-weight:bold;background:transparent;")
         l.addWidget(self.value)
         self.sub = QLabel("")
-        self.sub.setStyleSheet("color:#5B6776;font-size:11px;background:transparent;")
+        self.sub.setStyleSheet(f"color:{T['muted']};font-size:12px;background:transparent;")
         self.sub.setWordWrap(True)
         l.addWidget(self.sub)
 
@@ -101,13 +102,15 @@ class AvailabilityPage(QWidget):
 
         self.note = QLabel("")
         self.note.setWordWrap(True)
-        self.note.setStyleSheet("color:#5B6776;padding:0 18px 4px;")
+        self.note.setStyleSheet(f"color:{T['muted']};padding:0 18px 4px;")
         root.addWidget(self.note)
 
         # what SCADA saw around each waiting event
         self.sugg = QFrame()
+        self.sugg.setObjectName("Sugg")      # not every QFrame: labels are QFrames too
         self.sugg.setStyleSheet(
-            "QFrame{background:#F6F0FF;border:1px solid #5B3A8C;border-radius:6px;}")
+            f"QFrame#Sugg{{background:{T['waitBg']};border:1px solid {T['waitBd']};"
+            "border-radius:8px;}")
         sl = QVBoxLayout(self.sugg)
         sl.setContentsMargins(12, 8, 12, 10)
         sl.setSpacing(4)
@@ -133,7 +136,7 @@ class AvailabilityPage(QWidget):
 
         self.placeholder = QLabel(
             "Open a project to see the month's availability inputs.")
-        self.placeholder.setStyleSheet("color:#5B6776;padding:20px;")
+        self.placeholder.setStyleSheet(f"color:{T['muted']};padding:20px;")
         self.placeholder.setAlignment(Qt.AlignTop)
         self.host.addWidget(self.placeholder)
 

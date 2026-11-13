@@ -32,6 +32,7 @@ from PyQt5.QtCore import Qt, QDate, QTime, QDateTime, QThread, pyqtSignal, QUrl
 from PyQt5.QtGui import QColor, QDesktopServices
 
 from ui.components import PageHeader, PrimaryButton, SecondaryButton
+from ui.style import TOKENS as T
 import services.report_workflow_service as rw
 import services.availability_service as av
 import services.availability_inputs_service as avi
@@ -46,14 +47,14 @@ from services.report_workflow_service import (                      # noqa: F401
     CM_SKIP_LABELS as _SKIP_LABELS,
 )
 
-_WARN_STYLE = ("background:#FFF8E6;border:1px solid #F0D58C;border-radius:6px;"
-               "padding:6px 8px;color:#6B4E00;font-size:11px;")
-_LOCK_STYLE = ("background:#EEF3FA;border:1px solid #B9CBE3;border-radius:6px;"
-               "padding:6px 8px;color:#1F3B63;font-size:11px;")
-_ERR_STYLE = "color:#B4232A;font-size:11px;"
-_HINT_STYLE = "color:#5B6776;font-size:11px;"
-_COV_COLORS = {'full': '#3FA56B', 'partial': '#E8B64C', 'none': '#DCE2EA', 'future': '#F4F6F9'}
-_SEV_LABEL = {'crit': '⛔', 'warn': '⚠', 'info': 'ℹ'}
+_WARN_STYLE = (f"background:{T['warnBg']};border:1px solid {T['warnBd']};border-radius:4px;"
+               f"padding:6px 8px;color:{T['warn']};font-size:12px;")
+_LOCK_STYLE = (f"background:{T['sunken']};border:1px solid {T['line2']};border-radius:4px;"
+               f"padding:6px 8px;color:{T['ink']};font-size:12px;")
+_ERR_STYLE = f"color:{T['crit']};font-size:12px;"
+_HINT_STYLE = f"color:{T['muted']};font-size:12px;"
+_COV_COLORS = {'full': T['ok'], 'partial': T['warnBd'], 'none': T['line'], 'future': T['canvas']}
+_SEV_LABEL = {'crit': 'Critical', 'warn': 'Warning', 'info': 'Info'}
 
 
 def safety_incident_rows(text):
@@ -150,7 +151,7 @@ class ConfirmGenerateDialog(QDialog):
         t.horizontalHeader().setStretchLastSection(True)
         t.setEditTriggers(QAbstractItemView.NoEditTriggers)
         for i, q in enumerate(questions):
-            t.setItem(i, 0, QTableWidgetItem(f"{_SEV_LABEL.get(q['severity'], '')} {q['title']}"))
+            t.setItem(i, 0, QTableWidgetItem(f"{_SEV_LABEL.get(q['severity'], '')} · {q['title']}"))
             it = QTableWidgetItem(q['detail'])
             it.setToolTip(chr(10).join(x for x in (q['detail'], q.get('explain')) if x))
             t.setItem(i, 1, it)
@@ -418,7 +419,7 @@ def _fill_row(table, values, flags=None):
     for c, v in enumerate(values):
         it = QTableWidgetItem(str(v))
         if flags:
-            it.setForeground(QColor('#B4232A'))
+            it.setForeground(QColor(T['crit']))
             it.setToolTip('\n'.join(flags))
         table.setItem(row, c, it)
 
@@ -475,7 +476,7 @@ class MonthlyReportsPage(QWidget):
                              "exclusion windows — on the Availability page")
         avail_btn.clicked.connect(lambda: self.open_availability.emit())
         bar.addWidget(avail_btn)
-        self.month_lbl = QLabel(""); self.month_lbl.setStyleSheet("color:#5B6776;font-style:italic;")
+        self.month_lbl = QLabel(""); self.month_lbl.setStyleSheet(f"color:{T['muted']};font-style:italic;")
         bar.addWidget(self.month_lbl)
         bar.addStretch()
         root.addLayout(bar)
@@ -509,9 +510,9 @@ class MonthlyReportsPage(QWidget):
         self.pend_group = QGroupBox("Waiting for the desktop — phone events not in the report yet")
         pl = QVBoxLayout(self.pend_group)
         pr = QHBoxLayout()
-        b = PrimaryButton("✔  Review / confirm…"); b.clicked.connect(self._review_pending); pr.addWidget(b)
+        b = PrimaryButton("Review / confirm…"); b.clicked.connect(self._review_pending); pr.addWidget(b)
         self._editing(b)
-        b = SecondaryButton("✖  Reject…"); b.clicked.connect(self._reject_pending); pr.addWidget(b)
+        b = SecondaryButton("Reject…"); b.clicked.connect(self._reject_pending); pr.addWidget(b)
         self._editing(b)
         pr.addStretch(); pl.addLayout(pr)
         self.pend_table = _table(["ID", "Type", "Received", "What the phone sent", "Why it waits"],
@@ -534,7 +535,7 @@ class MonthlyReportsPage(QWidget):
         b3 = SecondaryButton("Delete"); b3.clicked.connect(self._del_pm); br.addWidget(b3)
         self._editing(b1, b2, b3)
         br.addStretch()
-        self.pm_summary = QLabel(""); self.pm_summary.setStyleSheet("color:#5B6776;font-style:italic;")
+        self.pm_summary = QLabel(""); self.pm_summary.setStyleSheet(f"color:{T['muted']};font-style:italic;")
         br.addWidget(self.pm_summary)
         gl.addLayout(br)
         self.pm_table = _table(["ID", "Date", "Block", "Hours", "Source", "Description", "Check"],
@@ -553,7 +554,7 @@ class MonthlyReportsPage(QWidget):
         ml = QVBoxLayout(mg)
         mr = QHBoxLayout()
         for txt, fn in [("Add", self._add_man), ("Edit", self._edit_man), ("Delete", self._del_man)]:
-            b = (PrimaryButton if txt.startswith("➕") else SecondaryButton)(txt); b.clicked.connect(fn)
+            b = SecondaryButton(txt); b.clicked.connect(fn)
             mr.addWidget(b); self._editing(b)
         mr.addStretch(); ml.addLayout(mr)
         self.man_table = _table(["ID", "Block", "LC", "From", "To", "Hours", "Source", "Cause", "Check"],
@@ -570,7 +571,7 @@ class MonthlyReportsPage(QWidget):
         eg = QGroupBox("Availability Exclusions"); el = QVBoxLayout(eg)
         er = QHBoxLayout()
         for txt, fn in [("Add", self._add_excl), ("Edit", self._edit_excl), ("Delete", self._del_excl)]:
-            b = (PrimaryButton if txt.startswith("➕") else SecondaryButton)(txt); b.clicked.connect(fn); er.addWidget(b)
+            b = SecondaryButton(txt); b.clicked.connect(fn); er.addWidget(b)
             self._editing(b)
         er.addStretch(); el.addLayout(er)
         self.excl_table = _table(["ID", "Type", "From", "To", "Blocks", "Description"], [0, 150, 130, 130, 100])
@@ -581,7 +582,7 @@ class MonthlyReportsPage(QWidget):
         bg = QGroupBox("Cycle-Balancing / Rested Blocks"); bl = QVBoxLayout(bg)
         brow = QHBoxLayout()
         for txt, fn in [("Add", self._add_bal), ("Edit", self._edit_bal), ("Delete", self._del_bal)]:
-            b = (PrimaryButton if txt.startswith("➕") else SecondaryButton)(txt); b.clicked.connect(fn); brow.addWidget(b)
+            b = SecondaryButton(txt); b.clicked.connect(fn); brow.addWidget(b)
             self._editing(b)
         brow.addStretch(); bl.addLayout(brow)
         self.bal_table = _table(["ID", "From", "To", "Blocks", "Note"], [0, 110, 110, 150])
@@ -692,7 +693,7 @@ class MonthlyReportsPage(QWidget):
         self.alarm_hint.setStyleSheet(_HINT_STYLE)
         acol.addWidget(self.alarm_status); acol.addWidget(self.alarm_hint)
         agl.addLayout(acol, 1)
-        self.store_alarms_btn = PrimaryButton("⤓  Store alarms")
+        self.store_alarms_btn = PrimaryButton("Store alarms")
         self.store_alarms_btn.clicked.connect(lambda: self._store_alarms(auto=False))
         agl.addWidget(self.store_alarms_btn, 0, Qt.AlignTop)
         self._al_worker = None
@@ -707,7 +708,7 @@ class MonthlyReportsPage(QWidget):
         self.cov_table.verticalHeader().setDefaultSectionSize(20)
         self.cov_table.setMaximumHeight(260)
         cl.addWidget(self.cov_table)
-        legend = QLabel("green — data · amber — part of the day · grey — no data · light — not due yet")
+        legend = QLabel("green — data · amber ½ — part of the day · grey – — no data · light — not due yet")
         legend.setStyleSheet(_HINT_STYLE); cl.addWidget(legend)
         self.month_end_lbl = QLabel(""); self.month_end_lbl.setWordWrap(True)
         cl.addWidget(self.month_end_lbl)
@@ -797,7 +798,7 @@ class MonthlyReportsPage(QWidget):
         hdr.addWidget(self.cm_include)
         hdr.addStretch()
         self.wr_count_lbl = QLabel("—")
-        self.wr_count_lbl.setStyleSheet("color:#5B6776;font-style:italic;")
+        self.wr_count_lbl.setStyleSheet(f"color:{T['muted']};font-style:italic;")
         self.wr_count_lbl.setWordWrap(True)
         hdr.addWidget(self.wr_count_lbl)
         wrl.addLayout(hdr)
@@ -805,7 +806,7 @@ class MonthlyReportsPage(QWidget):
         b = SecondaryButton("Edit record…"); b.clicked.connect(self._edit_corrective); act.addWidget(b)
         b = SecondaryButton("Resolve conflict…"); b.clicked.connect(self._resolve_corrective); act.addWidget(b)
         act.addStretch()
-        refresh_wr = SecondaryButton("⟲  Refresh")
+        refresh_wr = SecondaryButton("Refresh")
         refresh_wr.clicked.connect(self._refresh_work_reports)
         act.addWidget(refresh_wr)
         wrl.addLayout(act)
@@ -827,8 +828,8 @@ class MonthlyReportsPage(QWidget):
         self.gap_lbl.setWordWrap(True)
         self.gap_lbl.setVisible(False)
         self.gap_lbl.setStyleSheet(
-            "background:#FFF4F4;border:1px solid #F3C9C9;border-radius:6px;"
-            "padding:8px 10px;color:#9B2C2C;font-size:11px;")
+            f"background:{T['critBg']};border:1px solid {T['critBd']};border-radius:4px;"
+            f"padding:8px 10px;color:{T['crit']};font-size:12px;")
         wrl.addWidget(self.gap_lbl)
         l.addWidget(wrg)
 
@@ -865,7 +866,7 @@ class MonthlyReportsPage(QWidget):
 
         vg = QGroupBox("Versions"); vl = QVBoxLayout(vg)
         r = QHBoxLayout()
-        self.gen_btn = PrimaryButton("⚡  Generate v1"); self.gen_btn.setMinimumWidth(180)
+        self.gen_btn = PrimaryButton("Generate v1"); self.gen_btn.setMinimumWidth(180)
         self.gen_btn.clicked.connect(self._generate); r.addWidget(self.gen_btn)
         b = SecondaryButton("Open DOCX"); b.clicked.connect(self._open_docx); r.addWidget(b)
         b = SecondaryButton("Open manifest"); b.clicked.connect(self._open_manifest); r.addWidget(b)
@@ -885,7 +886,7 @@ class MonthlyReportsPage(QWidget):
         self.progress = QProgressBar(); self.progress.setRange(0, 0); self.progress.setVisible(False)
         self.progress.setFixedHeight(6); vl.addWidget(self.progress)
         self.log = QTextEdit(); self.log.setReadOnly(True); self.log.setMaximumHeight(150)
-        self.log.setStyleSheet("QTextEdit{background:#17212E;color:#8FA3BE;font-family:Consolas,monospace;font-size:11px;border-radius:4px;padding:6px;}")
+        self.log.setStyleSheet(f"QTextEdit{{background:{T['ink']};color:{T['chrome2']};font-family:Consolas,monospace;font-size:12px;border-radius:4px;padding:6px;}}")
         vl.addWidget(self.log)
         l.addWidget(vg)
 
@@ -1351,7 +1352,7 @@ class MonthlyReportsPage(QWidget):
             for c, v in enumerate(vals):
                 it = QTableWidgetItem(str(v))
                 if why in ('no_block', 'conflict'):
-                    it.setForeground(QColor('#B4232A'))
+                    it.setForeground(QColor(T['crit']))
                 self.wr_table.setItem(row, c, it)
         n = len(rows); nmob = sum(1 for r in rows if r['src'] == '📱')
         held = {}
@@ -1814,14 +1815,14 @@ class MonthlyReportsPage(QWidget):
             self.alarm_status.setText(
                 f"✓ {st['stored']:,} {mname} alarms stored {self._utc_to_local(st['stored_at'])} · "
                 f"history ends {self._dmy(st['last_activated_overall'])}")
-            self.store_alarms_btn.setText("⟲  Store again")
+            self.store_alarms_btn.setText("Store again")
             hint = ("Store again after exclusion windows or PM records change: the month's "
                     "alarms are tagged again. Alarms already stored are not added twice.")
         else:
             self.alarm_status.setText(
                 f"! {mname} alarms are not in the equipment history yet. "
                 f"History ends {self._dmy(st['last_activated_overall'])}.")
-            self.store_alarms_btn.setText(f"⤓  Store {mname} alarms")
+            self.store_alarms_btn.setText(f"Store {mname} alarms")
             hint = ("Storing them fills Equipment → history and \"Needs a report\". "
                     "Safe to repeat: alarms already stored are not added twice.")
         if last.get('in_month') is not None:
@@ -1930,7 +1931,9 @@ class MonthlyReportsPage(QWidget):
             for c in range(n_days):
                 iso = _dt.date(self._year, self._month, c + 1).isoformat()
                 state = g['days'].get(iso) or ('none' if iso in due else 'future')
-                it = QTableWidgetItem('')
+                # a mark as well as the colour: never colour alone
+                it = QTableWidgetItem({'partial': '½', 'none': '–'}.get(state, ''))
+                it.setTextAlignment(Qt.AlignCenter)
                 it.setBackground(QColor(_COV_COLORS[state]))
                 it.setToolTip(f"{g['label']} · {c + 1:02d}.{self._month:02d} · "
                               + {'full': 'data', 'partial': 'part of the day', 'none': 'no data',
@@ -1982,7 +1985,7 @@ class MonthlyReportsPage(QWidget):
         self.check_summary.setText(
             "No open questions." if not qs else
             f"{n} question(s) to settle or confirm" + (f", {len(qs) - n} for information" if len(qs) > n else ""))
-        self.tabs.setTabText(i, "2 · Check" + (f"  ({n} open)" if n else "  ✓"))
+        self.tabs.setTabText(i, "2 · Check" + (f"  ({n} open)" if n else " · clear"))
 
     def _select_by_id(self, table, ref):
         for r in range(table.rowCount()):
@@ -2088,7 +2091,7 @@ class MonthlyReportsPage(QWidget):
         if vers:
             self.versions_table.selectRow(0)
         nxt = rvs.next_version(self._pid, self._year, self._month)
-        self.gen_btn.setText(f"⚡  Generate v{nxt}")
+        self.gen_btn.setText(f"Generate v{nxt}")
 
         st = rvs.month_status(self._pid, self._year, self._month)
         sent, locked = st['sent'], bool(st['locked_at'])
@@ -2165,12 +2168,12 @@ class MonthlyReportsPage(QWidget):
         self.progress.setVisible(False); self.gen_btn.setEnabled(True)
         self._refresh_release()
         if row:
-            self.log.append(f"✅ v{row['version']}: {row['docx_abs']}")
+            self.log.append(f"Done · v{row['version']}: {row['docx_abs']}")
             QMessageBox.information(self, "Report ready", f"v{row['version']} saved:\n{row['docx_abs']}")
 
     def _on_err(self, msg):
         self.progress.setVisible(False); self.gen_btn.setEnabled(True)
-        self.log.append(f"❌ {msg}")
+        self.log.append(f"Failed · {msg}")
         QMessageBox.critical(self, "Error", msg[:2000] + "\n\nEarlier versions are not affected.")
 
     def _mark_sent(self):

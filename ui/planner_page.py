@@ -36,16 +36,17 @@ from ui.components import (PageHeader, PrimaryButton, SecondaryButton,
 from services.project_service import get_all_projects, get_project_by_id
 import services.planner_service as pl
 import services.team_service as team
+from ui.style import TOKENS as T
 
 MONTHS = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 STATUS_COLOUR = {
-    'planned':     '#3A4757',
-    'in_progress': '#8A6D1F',
-    'done':        '#1E8E3E',
-    'skipped':     '#9AA6B4',
-    'moved':       '#8A6D1F',
+    'planned':     T['ink2'],
+    'in_progress': T['warn'],
+    'done':        T['ok'],
+    'skipped':     T['muted'],
+    'moved':       T['warn'],
 }
 
 
@@ -73,7 +74,7 @@ class _CampaignDialog(QDialog):
             'day until every block is covered. Set the pace and the schedule '
             'is generated; you are not typing 70 rows.')
         intro.setWordWrap(True)
-        intro.setStyleSheet('color:#5B6776;')
+        intro.setStyleSheet(f'color:{T["muted"]};')
         lay.addWidget(intro)
 
         form = QFormLayout()
@@ -133,8 +134,8 @@ class _CampaignDialog(QDialog):
         self.preview = QLabel('')
         self.preview.setWordWrap(True)
         self.preview.setStyleSheet(
-            'background:#F5F8FC;border:1px solid #DDE6F0;border-radius:6px;'
-            'padding:8px 10px;color:#3A4757;font-size:11px;')
+            f'background:{T["sunken"]};border:1px solid {T["line"]};border-radius:4px;'
+            f'padding:8px 10px;color:{T["ink2"]};font-size:12px;')
         lay.addWidget(self.preview)
         for w in (self.per_day, self.hours):
             w.valueChanged.connect(self._refresh)
@@ -216,7 +217,7 @@ class _AssignDialog(QDialog):
             'technician writes comes back into the same record — not a second '
             'one. Sending twice does not duplicate them.')
         intro.setWordWrap(True)
-        intro.setStyleSheet('color:#5B6776;')
+        intro.setStyleSheet(f'color:{T["muted"]};')
         lay.addWidget(intro)
 
         form = QFormLayout()
@@ -296,7 +297,7 @@ class _AddJobDialog(QDialog):
 
         self.hint = QLabel('')
         self.hint.setWordWrap(True)
-        self.hint.setStyleSheet('color:#5B6776;font-size:11px;')
+        self.hint.setStyleSheet(f'color:{T["muted"]};font-size:12px;')
         lay.addWidget(self.hint)
         self.type_combo.currentIndexChanged.connect(self._on_type)
         self._types = {t['code']: t for t in types}
@@ -345,7 +346,7 @@ class _CompleteDialog(QDialog):
         sub = QLabel('Planned {} for {} h{}'.format(
             item.get('planned_date') or '—', item.get('planned_hours') or 0,
             f" · block {item['block']}" if item.get('block') else ''))
-        sub.setStyleSheet('color:#5B6776;font-size:11px;')
+        sub.setStyleSheet(f'color:{T["muted"]};font-size:12px;')
         lay.addWidget(sub)
 
         form = QFormLayout()
@@ -367,7 +368,7 @@ class _CompleteDialog(QDialog):
             note = QLabel('This type counts as unavailability — saving records '
                           'the downtime for the monthly report.')
             note.setWordWrap(True)
-            note.setStyleSheet('color:#8A6D1F;font-size:11px;')
+            note.setStyleSheet(f'color:{T["warn"]};font-size:12px;')
             lay.addWidget(note)
 
         box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -401,7 +402,7 @@ class _ImportDialog(QDialog):
         self.info = QLabel('Choose a file — the columns are matched automatically, '
                            'and you can correct the match below.')
         self.info.setWordWrap(True)
-        self.info.setStyleSheet('color:#5B6776;font-size:11px;')
+        self.info.setStyleSheet(f'color:{T["muted"]};font-size:12px;')
         lay.addWidget(self.info)
 
         self.map_tbl = QTableWidget(0, 2)
@@ -519,7 +520,7 @@ class _ChecklistPlanDialog(QDialog):
         cap = QLabel('Untick anything this campaign does not cover — "we are not '
                      'doing the RMU this time". The row stays in the customer\'s '
                      'file, empty, with your note.')
-        cap.setWordWrap(True); cap.setStyleSheet('color:#5B6776;font-size:11px;')
+        cap.setWordWrap(True); cap.setStyleSheet(f'color:{T["muted"]};font-size:12px;')
         lay.addWidget(cap)
 
         self.tbl = QTableWidget(0, 5)
@@ -530,7 +531,7 @@ class _ChecklistPlanDialog(QDialog):
         lay.addWidget(self.tbl, 1)
 
         row = QHBoxLayout()
-        b = SecondaryButton('＋  Add item…')
+        b = SecondaryButton('Add item…')
         b.setToolTip('An item this plant needs that the customer\'s file does '
                      'not list. It is written at the end of its group.')
         b.clicked.connect(self._add_item)
@@ -667,7 +668,7 @@ class _ChecklistFillDialog(QDialog):
         self._fill()
 
         self.note = QLabel('')
-        self.note.setStyleSheet('color:#5B6776;font-size:11px;')
+        self.note.setStyleSheet(f'color:{T["muted"]};font-size:12px;')
         lay.addWidget(self.note)
         self._refresh_note()
 
@@ -689,10 +690,10 @@ class _ChecklistFillDialog(QDialog):
             if excluded:
                 lbl = QTableWidgetItem('Excluded')
                 lbl.setFlags(Qt.ItemIsEnabled)
-                lbl.setForeground(QColor('#9AA6B4'))
+                lbl.setForeground(QColor(T['muted']))
                 self.tbl.setItem(r, 4, lbl)
                 for c in range(4):
-                    self.tbl.item(r, c).setForeground(QColor('#9AA6B4'))
+                    self.tbl.item(r, c).setForeground(QColor(T['muted']))
             else:
                 cb = QComboBox()
                 for label, code in self.RESULTS:
@@ -767,7 +768,7 @@ class _ActionImportDialog(QDialog):
         self.info = QLabel('Choose a file — the columns are matched '
                            'automatically, and you can correct the match below.')
         self.info.setWordWrap(True)
-        self.info.setStyleSheet('color:#5B6776;font-size:11px;')
+        self.info.setStyleSheet(f'color:{T["muted"]};font-size:12px;')
         lay.addWidget(self.info)
 
         self.map_tbl = QTableWidget(0, 2)
@@ -780,7 +781,7 @@ class _ActionImportDialog(QDialog):
                       'really changed and adds the new ones. An item already '
                       'here that is no longer in the file is kept, not deleted '
                       '— somebody may have been working on it.')
-        note.setWordWrap(True); note.setStyleSheet('color:#5B6776;font-size:11px;')
+        note.setWordWrap(True); note.setStyleSheet(f'color:{T["muted"]};font-size:12px;')
         lay.addWidget(note)
 
         box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -911,7 +912,7 @@ class _ActionItemDialog(QDialog):
         note = QLabel('An action item is organisational — it never reaches the '
                       'customer\'s monthly report, and it carries no block, no '
                       'hours and no availability.')
-        note.setWordWrap(True); note.setStyleSheet('color:#5B6776;font-size:11px;')
+        note.setWordWrap(True); note.setStyleSheet(f'color:{T["muted"]};font-size:12px;')
         lay.addWidget(note)
 
         box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -941,7 +942,7 @@ class _TypeDialog(QDialog):
         lay = QVBoxLayout(self)
         note = QLabel('For work this project does that the standard types do '
                       'not cover — commissioning, for instance.')
-        note.setWordWrap(True); note.setStyleSheet('color:#5B6776;font-size:11px;')
+        note.setWordWrap(True); note.setStyleSheet(f'color:{T["muted"]};font-size:12px;')
         lay.addWidget(note)
         form = QFormLayout()
         self.label = QLineEdit(); self.label.setPlaceholderText('Commissioning')
@@ -977,25 +978,25 @@ class PlannerPage(QWidget):
         root.setSpacing(0)
 
         header = PageHeader('Planner', 'PM campaigns · daily work · plan vs actual')
-        b = PrimaryButton('＋  Add job…')
+        b = PrimaryButton('Add job…')
         b.setToolTip('One job — a fault to chase, a report to write, an '
                      'inspection. For a PM round use the campaign button.')
         b.clicked.connect(self._add_job)
         header.add_action(b)
-        b = SecondaryButton('＋  New PM campaign…')
+        b = SecondaryButton('New PM campaign…')
         b.clicked.connect(self._new_campaign)
         header.add_action(b)
-        b = SecondaryButton('⤓  Import Excel…')
+        b = SecondaryButton('Import Excel…')
         b.clicked.connect(self._import_excel)
         header.add_action(b)
-        b = SecondaryButton('⤒  Export for customer…')
+        b = SecondaryButton('Export for customer…')
         b.setToolTip('Block, date and duration only — nothing else leaves here.')
         b.clicked.connect(self._export_customer)
         header.add_action(b)
         root.addWidget(header)
 
         bar = QWidget()
-        bar.setStyleSheet('background:#FFFFFF;border-bottom:1px solid #DDE2E8;')
+        bar.setStyleSheet(f'background:{T["surface"]};border-bottom:1px solid {T["line"]};')
         bl = QHBoxLayout(bar)
         bl.setContentsMargins(24, 10, 24, 10)
         bl.setSpacing(10)
@@ -1018,8 +1019,7 @@ class PlannerPage(QWidget):
         self.type_filter = QComboBox(); self.type_filter.setMinimumWidth(150)
         self.type_filter.currentIndexChanged.connect(self._reload)
         bl.addWidget(self.type_filter)
-        add_t = SecondaryButton('＋ type')
-        add_t.setFixedWidth(74)
+        add_t = SecondaryButton('Add type')
         add_t.clicked.connect(self._add_type)
         bl.addWidget(add_t)
 
@@ -1044,8 +1044,8 @@ class PlannerPage(QWidget):
 
         self.summary = QLabel('')
         self.summary.setStyleSheet(
-            'background:#FFFFFF;border-top:1px solid #DDE2E8;'
-            'padding:8px 24px;color:#3A4757;font-size:12px;')
+            f'background:{T["surface"]};border-top:1px solid {T["line"]};'
+            f'padding:8px 24px;color:{T["ink2"]};font-size:12px;')
         root.addWidget(self.summary)
 
     def _tab_schedule(self):
@@ -1061,16 +1061,16 @@ class PlannerPage(QWidget):
         self.empty_hint.setWordWrap(True)
         self.empty_hint.setAlignment(Qt.AlignCenter)
         self.empty_hint.setStyleSheet(
-            'color:#5B6776;font-size:12px;padding:18px;background:#FFFFFF;'
-            'border:1px dashed #D5DEE8;border-radius:8px;')
+            f'color:{T["muted"]};font-size:12px;padding:18px;background:{T["surface"]};'
+            f'border:1px dashed {T["line"]};border-radius:8px;')
         self.empty_hint.setVisible(False)
         lay.addWidget(self.empty_hint)
         row = QHBoxLayout()
         for label, slot, primary in (
-            ('✓  Mark done…', self._complete_selected, True),
+            ('Mark done…', self._complete_selected, True),
             ('Send to a technician…', self._send_to_phone, False),
-            ('↷  Move to…', self._move_selected, False),
-            ('↺  Reopen', self._reopen_selected, False),
+            ('Move to…', self._move_selected, False),
+            ('Reopen', self._reopen_selected, False),
             ('Delete', self._delete_selected, False),
         ):
             btn = (PrimaryButton if primary else SecondaryButton)(label)
@@ -1078,7 +1078,7 @@ class PlannerPage(QWidget):
             row.addWidget(btn)
         row.addStretch()
         hint = QLabel('Double-click a row to record what actually happened.')
-        hint.setStyleSheet('color:#5B6776;font-size:11px;')
+        hint.setStyleSheet(f'color:{T["muted"]};font-size:12px;')
         row.addWidget(hint)
         lay.addLayout(row)
         return w
@@ -1090,7 +1090,7 @@ class PlannerPage(QWidget):
                      'recorded before the planner existed, which for this plant '
                      'sits in the scheduled-maintenance exclusions. A campaign '
                      'should start here, not at block 1.')
-        cap.setWordWrap(True); cap.setStyleSheet('color:#5B6776;font-size:11px;')
+        cap.setWordWrap(True); cap.setStyleSheet(f'color:{T["muted"]};font-size:12px;')
         lay.addWidget(cap)
         row = QHBoxLayout()
         row.addWidget(QLabel('PM interval:'))
@@ -1126,16 +1126,16 @@ class PlannerPage(QWidget):
                      'issued. Planned checklists reach the phones on the next '
                      'sync; what the technicians tick comes back here, and the '
                      'export writes it into the customer\'s own file.')
-        cap.setWordWrap(True); cap.setStyleSheet('color:#5B6776;font-size:11px;')
+        cap.setWordWrap(True); cap.setStyleSheet(f'color:{T["muted"]};font-size:12px;')
         lay.addWidget(cap)
 
         row = QHBoxLayout()
-        b = SecondaryButton('⤓  Import checklist…')
+        b = SecondaryButton('Import checklist…')
         b.setToolTip('The customer\'s Excel checklist. Importing it again '
                      'updates the items and keeps what is already filled in.')
         b.clicked.connect(self._import_checklist)
         row.addWidget(b)
-        b = PrimaryButton('＋  Plan checklists…')
+        b = PrimaryButton('Plan checklists…')
         b.clicked.connect(self._plan_checklists)
         row.addWidget(b)
         row.addSpacing(12)
@@ -1149,7 +1149,7 @@ class PlannerPage(QWidget):
         # Which checklists this project has, without opening a dialog to find out
         self.cl_templates = QLabel('')
         self.cl_templates.setWordWrap(True)
-        self.cl_templates.setStyleSheet('color:#3A4757;font-size:11px;')
+        self.cl_templates.setStyleSheet(f'color:{T["ink2"]};font-size:12px;')
         lay.addWidget(self.cl_templates)
 
         self.cl_tbl = make_table(['Block', 'Checklist', 'Campaign', 'Date',
@@ -1159,9 +1159,9 @@ class PlannerPage(QWidget):
 
         row = QHBoxLayout()
         for label, slot, primary in (
-            ('✎  Open / fill…', self._open_checklist, True),
-            ('⤒  Export this one…', self._export_checklist, False),
-            ('⤒  Export the campaign…', self._export_campaign_checklists, False),
+            ('Open / fill…', self._open_checklist, True),
+            ('Export this one…', self._export_checklist, False),
+            ('Export the campaign…', self._export_campaign_checklists, False),
             ('Delete', self._delete_checklist, False),
         ):
             btn = (PrimaryButton if primary else SecondaryButton)(label)
@@ -1169,7 +1169,7 @@ class PlannerPage(QWidget):
             row.addWidget(btn)
         row.addStretch()
         hint = QLabel('Double-click a row to fill it in.')
-        hint.setStyleSheet('color:#5B6776;font-size:11px;')
+        hint.setStyleSheet(f'color:{T["muted"]};font-size:12px;')
         row.addWidget(hint)
         lay.addLayout(row)
         return w
@@ -1185,16 +1185,16 @@ class PlannerPage(QWidget):
                      'hours, so nothing here reaches the customer\'s monthly '
                      'report. An item given to a person shows up in Tasks on '
                      'that phone after the next sync.')
-        cap.setWordWrap(True); cap.setStyleSheet('color:#5B6776;font-size:11px;')
+        cap.setWordWrap(True); cap.setStyleSheet(f'color:{T["muted"]};font-size:12px;')
         lay.addWidget(cap)
 
         row = QHBoxLayout()
-        b = SecondaryButton('⤓  Import from Excel…')
+        b = SecondaryButton('Import from Excel…')
         b.setToolTip('Importing the same sheet again updates what changed and '
                      'adds what is new — nothing already worked on is lost.')
         b.clicked.connect(self._import_actions)
         row.addWidget(b)
-        b = PrimaryButton('＋  Add item…')
+        b = PrimaryButton('Add item…')
         b.clicked.connect(self._add_action)
         row.addWidget(b)
         row.addSpacing(12)
@@ -1217,10 +1217,10 @@ class PlannerPage(QWidget):
 
         row = QHBoxLayout()
         for label, slot, primary in (
-            ('✎  Edit…', self._edit_action, True),
+            ('Edit…', self._edit_action, True),
             ('Assign…', self._assign_action, False),
-            ('✓  Mark done…', self._done_action, False),
-            ('⤒  Export to Excel…', self._export_actions, False),
+            ('Mark done…', self._done_action, False),
+            ('Export to Excel…', self._export_actions, False),
             ('Delete', self._delete_action, False),
         ):
             btn = (PrimaryButton if primary else SecondaryButton)(label)
@@ -1228,7 +1228,7 @@ class PlannerPage(QWidget):
             row.addWidget(btn)
         row.addStretch()
         hint = QLabel('Double-click a row to edit it.  Overdue items are red.')
-        hint.setStyleSheet('color:#5B6776;font-size:11px;')
+        hint.setStyleSheet(f'color:{T["muted"]};font-size:12px;')
         row.addWidget(hint)
         lay.addLayout(row)
         return w
@@ -1352,12 +1352,15 @@ class PlannerPage(QWidget):
                 if c in (2, 5, 7):
                     cell.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.tbl.setItem(r, c, cell)
-            col = STATUS_COLOUR.get(it.get('status'), '#3A4757')
+            col = STATUS_COLOUR.get(it.get('status'), T['ink2'])
             self.tbl.item(r, 8).setForeground(QColor(col))
             if it.get('moved_from'):
                 self.tbl.item(r, 0).setToolTip(
                     f"first planned for {it['moved_from']}")
-                self.tbl.item(r, 0).setForeground(QColor('#8A6D1F'))
+                self.tbl.item(r, 0).setForeground(QColor(T['warn']))
+                if 'moved' not in self.tbl.item(r, 8).text():
+                    # the amber date says it in words too
+                    self.tbl.item(r, 8).setText(self.tbl.item(r, 8).text() + ' · moved')
             self.tbl.item(r, 0).setData(Qt.UserRole, it)
         self._show_empty_hint()
 
@@ -1378,9 +1381,9 @@ class PlannerPage(QWidget):
         else:
             self.empty_hint.setText(
                 f'Nothing planned for {month} yet.\n\n'
-                '“＋ Add job…” records one piece of work — a fault to chase, a '
-                'report to write.  “＋ New PM campaign…” lays a whole PM round '
-                'across the calendar.  “⤓ Import Excel…” brings in a plan you '
+                '“Add job…” records one piece of work — a fault to chase, a '
+                'report to write.  “New PM campaign…” lays a whole PM round '
+                'across the calendar.  “Import Excel…” brings in a plan you '
                 'already have.')
         self.empty_hint.setVisible(True)
 
@@ -1424,7 +1427,7 @@ class PlannerPage(QWidget):
                 self.due_tbl.setItem(i, c, cell)
             if r['never'] or (over is not None and over > 0):
                 for c in range(4):
-                    self.due_tbl.item(i, c).setForeground(QColor('#B4232A'))
+                    self.due_tbl.item(i, c).setForeground(QColor(T['crit']))
 
     def _load_plans(self):
         if not self._project_id:
@@ -1483,9 +1486,9 @@ class PlannerPage(QWidget):
                     cell.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.cl_tbl.setItem(i, c, cell)
             if r['n_nok']:
-                self.cl_tbl.item(i, 5).setForeground(QColor('#B4232A'))
+                self.cl_tbl.item(i, 5).setForeground(QColor(T['crit']))
             self.cl_tbl.item(i, 6).setForeground(
-                QColor('#1E8E3E' if r['status'] == 'Done' else '#8A6D1F'))
+                QColor(T['ok'] if r['status'] == 'Done' else T['warn']))
             self.cl_tbl.item(i, 0).setData(Qt.UserRole, r)
 
     def _selected_checklist(self):
@@ -1529,7 +1532,7 @@ class PlannerPage(QWidget):
         if not tpls:
             QMessageBox.information(
                 self, 'No checklist yet',
-                'Import the customer\'s checklist first (⤓ Import checklist…).')
+                'Import the customer\'s checklist first (Import checklist…).')
             return
         dlg = _ChecklistPlanDialog(tpls, self._n_blocks(), self)
         if dlg.exec_() != QDialog.Accepted:
@@ -1668,9 +1671,11 @@ class PlannerPage(QWidget):
                 self.act_tbl.item(i, 2).setToolTip(it.get('todo') or '')
             if it.get('overdue'):
                 for c in range(self.act_tbl.columnCount()):
-                    self.act_tbl.item(i, c).setForeground(QColor('#B4232A'))
+                    self.act_tbl.item(i, c).setForeground(QColor(T['crit']))
+                # red rows say why in words
+                self.act_tbl.item(i, 5).setText(self.act_tbl.item(i, 5).text() + ' · Overdue')
             elif (it.get('status') or '') == 'done':
-                self.act_tbl.item(i, 5).setForeground(QColor('#1E8E3E'))
+                self.act_tbl.item(i, 5).setForeground(QColor(T['ok']))
             self.act_tbl.item(i, 0).setData(Qt.UserRole, it)
 
     def _selected_action(self):
@@ -1756,7 +1761,7 @@ class PlannerPage(QWidget):
             QMessageBox.information(
                 self, 'No people yet',
                 'The list of accounts comes from the sync server. Sync once '
-                '(🔄 in the toolbar) and try again.')
+                '(the sync chip in the top bar) and try again.')
             return
         dlg = _AssignDialog(users, 1, self)
         dlg.setWindowTitle('Give this action item to…')
@@ -1892,7 +1897,7 @@ class PlannerPage(QWidget):
             QMessageBox.information(
                 self, 'No technicians yet',
                 'The list of accounts comes from the sync server. Sync once '
-                '(🔄 in the toolbar) and try again.')
+                '(the sync chip in the top bar) and try again.')
             return
         if not self._selected_items() and QMessageBox.question(
                 self, 'Send every job shown',

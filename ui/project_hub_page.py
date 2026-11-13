@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ui.components import PageHeader, PrimaryButton, SecondaryButton
+from ui.style import TOKENS as T
 
 
 class ProjectHubPage(QWidget):
@@ -78,7 +79,7 @@ class ProjectHubPage(QWidget):
                 b.setEnabled(False)
             gl.addWidget(b, i // 2, (i % 2) * 2)
             h = QLabel(hint)
-            h.setStyleSheet("color:#5B6776;")
+            h.setStyleSheet(f"color:{T['muted']};")
             h.setWordWrap(True)
             gl.addWidget(h, i // 2, (i % 2) * 2 + 1)
         gl.setColumnStretch(1, 1)
@@ -93,7 +94,7 @@ class ProjectHubPage(QWidget):
             "they open unchanged and their data is the same data the new pages read. "
             "They stay here for one release, while the new screens take over.")
         note.setWordWrap(True)
-        note.setStyleSheet("color:#5B6776;")
+        note.setStyleSheet(f"color:{T['muted']};")
         al.addWidget(note)
 
         grid = QGridLayout()
@@ -110,7 +111,7 @@ class ProjectHubPage(QWidget):
             b.clicked.connect(lambda _=False, p=idx: self.page_requested.emit(p))
             grid.addWidget(b, i // 2, (i % 2) * 2)
             h = QLabel(hint)
-            h.setStyleSheet("color:#5B6776;")
+            h.setStyleSheet(f"color:{T['muted']};")
             h.setWordWrap(True)
             grid.addWidget(h, i // 2, (i % 2) * 2 + 1)
             self._archive_buttons.append((label, idx, b))

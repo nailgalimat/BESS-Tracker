@@ -23,20 +23,22 @@ from PyQt5.QtWidgets import (
 )
 
 import services.today_service as ts
+from ui.style import TOKENS as T
+from ui.components import SecondaryButton
 
-SEV_COLOR = {'crit': '#A61B1B', 'warn': '#7A5200', 'info': '#5B6776',
-             'ok': '#1E6B3A', 'pend': '#5B3A8C'}
+SEV_COLOR = {'crit': T['crit'], 'warn': T['warn'], 'info': T['muted'],
+             'ok': T['ok'], 'pend': T['wait']}
 
-_PANEL = ("QFrame#Panel{background:#FFFFFF;border:1px solid #DDE2E8;"
-          "border-radius:6px;}")
+_PANEL = (f"QFrame#Panel{{background:{T['surface']};border:1px solid {T['line']};"
+          "border-radius:8px;}")
 
 
 def _chip(text, kind='info'):
     lbl = QLabel(text)
-    col = SEV_COLOR.get(kind, '#5B6776')
+    col = SEV_COLOR.get(kind, T['muted'])
     lbl.setStyleSheet(
         f"color:{col};border:1px solid {col};border-radius:8px;"
-        "padding:1px 7px;font-size:11px;background:transparent;")
+        "padding:1px 7px;font-size:12px;background:transparent;")
     lbl.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
     return lbl
 
@@ -58,15 +60,15 @@ class Panel(QFrame):
         head.addWidget(self.title_lbl)
         self.count_lbl = QLabel("")
         self.count_lbl.setStyleSheet(
-            "background:#F4F6F8;border-radius:9px;padding:0 8px;"
-            "font-weight:bold;color:#17212E;")
+            f"background:{T['sunken']};border-radius:8px;padding:0 8px;"
+            f"font-weight:bold;color:{T['ink']};")
         head.addWidget(self.count_lbl)
         head.addStretch()
         self.link_btn = QPushButton("")
         self.link_btn.setFlat(True)
         self.link_btn.setCursor(Qt.PointingHandCursor)
         self.link_btn.setStyleSheet(
-            "QPushButton{color:#17212E;border:none;background:transparent;"
+            f"QPushButton{{color:{T['ink']};border:none;background:transparent;"
             "text-align:right;padding:0;}QPushButton:hover{text-decoration:underline;}")
         self.link_btn.setVisible(False)
         head.addWidget(self.link_btn)
@@ -106,7 +108,7 @@ class Panel(QFrame):
     def empty(self, text):
         """An empty block is one line, not an empty table."""
         lbl = QLabel(text)
-        lbl.setStyleSheet("color:#5B6776;background:transparent;")
+        lbl.setStyleSheet(f"color:{T['muted']};background:transparent;")
         lbl.setWordWrap(True)
         self.body.addWidget(lbl)
 
@@ -122,16 +124,13 @@ class Panel(QFrame):
         line.addWidget(lbl, 1)
         if right:
             r = QLabel(right)
-            r.setStyleSheet("color:#5B6776;background:transparent;")
+            r.setStyleSheet(f"color:{T['muted']};background:transparent;")
             line.addWidget(r)
         if action:
-            b = QPushButton(action)
+            b = SecondaryButton(action)
             b.setCursor(Qt.PointingHandCursor)
             b.setFixedHeight(24)
-            b.setStyleSheet(
-                "QPushButton{border:1px solid #C7CDD6;border-radius:4px;"
-                "padding:1px 10px;background:#FFFFFF;}"
-                "QPushButton:hover{border-color:#17212E;color:#17212E;}")
+            b.setStyleSheet("padding:1px 10px;")     # compact, inside a row
             if action_slot:
                 b.clicked.connect(lambda _=False, s=action_slot: s())
             line.addWidget(b)
@@ -165,10 +164,10 @@ class TodayPage(QWidget):
         bar = QHBoxLayout()
         bar.setContentsMargins(20, 10, 20, 4)
         self.head_lbl = QLabel("")
-        self.head_lbl.setStyleSheet("color:#5B6776;background:transparent;")
+        self.head_lbl.setStyleSheet(f"color:{T['muted']};background:transparent;")
         bar.addWidget(self.head_lbl)
         bar.addStretch()
-        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn = SecondaryButton("Refresh")
         self.refresh_btn.setCursor(Qt.PointingHandCursor)
         self.refresh_btn.clicked.connect(self.refresh)
         bar.addWidget(self.refresh_btn)
