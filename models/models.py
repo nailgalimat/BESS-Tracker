@@ -71,6 +71,7 @@ CONTAINER_TYPES = [
     "Battery",
     "PCS / Converter",
     "LC Cabinet",
+    "SCC Cabinet",
     "SCU",
     "MVS",
     "Transformer",
@@ -91,7 +92,7 @@ CONTAINER_TYPES = [
 
 CONTAINER_TYPES_BY_PROJECT = {
     "BESS": [
-        "Battery", "PCS / Converter", "LC Cabinet",
+        "Battery", "PCS / Converter", "LC Cabinet", "SCC Cabinet",
         "SCU", "MVS", "Transformer", "RMU", "Auxiliary", "Other",
     ],
     "PV String": [

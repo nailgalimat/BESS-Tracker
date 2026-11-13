@@ -22,10 +22,12 @@ def create_project(project: Project) -> int:
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO projects (name, description, num_zones, num_blocks, num_containers)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO projects (name, description, num_zones, num_blocks, num_containers,
+                              project_type)
+        VALUES (?, ?, ?, ?, ?, ?)
     """, (project.name, project.description,
-          project.num_zones, project.num_blocks, project.num_containers))
+          project.num_zones, project.num_blocks, project.num_containers,
+          project.project_type or "BESS"))
     project_id = cursor.lastrowid
     conn.commit()
     conn.close()

@@ -3,7 +3,10 @@ ui/project_dialog.py
 ---------------------
 Project creation wizard — supports three project types:
 
-  BESS       — zones × blocks × containers (LC Cabinet / PCS / Battery...)
+  BESS       — zones × blocks; a block holds the equipment ticked in
+               "Each block has" (Transformer, RMU, SCC, LC, PCS) and a number
+               of battery containers. A plant with the PCS inside the battery
+               container and the LC inside the MVS simply leaves those unticked.
   PV String  — blocks × (1 MVS + N string inverters per block)
   PV Central — blocks × (N master units + N slave units + combiner boxes per unit)
                All units share one serial number per block.
@@ -34,7 +37,7 @@ class ProjectDialog(QDialog):
         self.setWindowTitle("Create New Project")
         self.setMinimumSize(900, 700)
         self._project_type = "BESS"
-        self._zone_spins   = []      # BESS only: (blocks_spin, cont_spin) per zone
+        self._zone_spins   = []      # BESS only: (blocks_spin, batteries_spin) per zone
         self._container_rows = []    # all project types: row tracking
         self._build_ui()
         self._apply_zone_count()     # init BESS zone cards
@@ -109,6 +112,8 @@ class ProjectDialog(QDialog):
         self.container_table.setColumnWidth(4, 180)
         self.container_table.horizontalHeader().setStretchLastSection(True)
         self.container_table.setAlternatingRowColors(True)
+        # the type drop-down needs the height, or its text is cut off
+        self.container_table.verticalHeader().setDefaultSectionSize(36)
         tl.addWidget(self.container_table)
         table_group.setLayout(tl)
         layout.addWidget(table_group)
@@ -119,13 +124,9 @@ class ProjectDialog(QDialog):
         cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(cancel_btn)
-        save_btn = QPushButton("💾  Save Project")
-        save_btn.setFixedHeight(40)
-        save_btn.setStyleSheet(
-            "QPushButton{background:#1976D2;color:white;font-weight:bold;"
-            "border-radius:4px;padding:0 20px;}"
-            "QPushButton:hover{background:#0D47A1;}"
-        )
+        save_btn = QPushButton("Save project")
+        save_btn.setObjectName("PrimaryButton")
+        save_btn.setFixedHeight(36)
         save_btn.clicked.connect(self._save_project)
         btn_row.addWidget(save_btn)
         layout.addLayout(btn_row)
@@ -141,24 +142,47 @@ class ProjectDialog(QDialog):
         group = QGroupBox("Step 2 — Zone & Block Configuration")
         outer = QVBoxLayout()
 
+        # Most plants have the same number of blocks in every zone, so that
+        # is one row and one button; a zone that differs is changed on its
+        # own card below, and stays as set until the button is pressed again.
         row = QHBoxLayout()
-        row.addWidget(QLabel("Number of Zones:"))
+        row.setSpacing(8)
+        row.addWidget(QLabel("Number of zones:"))
         self.zones_spin = QSpinBox()
         self.zones_spin.setRange(1, 50)
         self.zones_spin.setValue(1)
         self.zones_spin.setFixedWidth(65)
         row.addWidget(self.zones_spin)
-        apply_btn = QPushButton("Apply")
-        apply_btn.setFixedWidth(65)
-        apply_btn.clicked.connect(self._apply_zone_count)
-        row.addWidget(apply_btn)
-        row.addWidget(QLabel("  ← click Apply after changing zone count"))
+        row.addSpacing(16)
+        row.addWidget(QLabel("Blocks per zone:"))
+        self.all_blocks_spin = QSpinBox()
+        self.all_blocks_spin.setRange(1, 50)
+        self.all_blocks_spin.setValue(1)
+        self.all_blocks_spin.setFixedWidth(65)
+        row.addWidget(self.all_blocks_spin)
+        row.addWidget(QLabel("Batteries per block:"))
+        self.all_batteries_spin = QSpinBox()
+        self.all_batteries_spin.setRange(0, 20)
+        self.all_batteries_spin.setValue(4)
+        self.all_batteries_spin.setFixedWidth(65)
+        row.addWidget(self.all_batteries_spin)
+        self.apply_all_btn = QPushButton("Apply to all zones")
+        self.apply_all_btn.setObjectName("SecondaryButton")
+        self.apply_all_btn.setFixedHeight(30)
+        self.apply_all_btn.setToolTip(
+            "Give every zone this number of blocks and batteries. "
+            "A single zone can still be changed on its card afterwards.")
+        self.apply_all_btn.clicked.connect(self._apply_to_all_zones)
+        row.addWidget(self.apply_all_btn)
         row.addStretch()
         outer.addLayout(row)
+        hint = QLabel("A zone that differs from the rest can be changed on its own card below.")
+        hint.setStyleSheet("color:#5B6776;font-size:11px;")
+        outer.addWidget(hint)
 
         self.zone_scroll = QScrollArea()
         self.zone_scroll.setWidgetResizable(True)
-        self.zone_scroll.setMaximumHeight(130)
+        self.zone_scroll.setMaximumHeight(140)
         self.zone_scroll.setFrameShape(QFrame.StyledPanel)
         self.zone_inner = QWidget()
         self.zone_inner_layout = QHBoxLayout(self.zone_inner)
@@ -166,28 +190,46 @@ class ProjectDialog(QDialog):
         self.zone_inner_layout.setSpacing(8)
         self.zone_scroll.setWidget(self.zone_inner)
         outer.addWidget(self.zone_scroll)
+        # the cards follow the zone count by themselves — no separate Apply
+        self.zones_spin.valueChanged.connect(self._apply_zone_count)
 
-        # Optional equipment per block
+        # What every block holds besides its battery containers. Plants
+        # differ: some have a separate PCS and LC cabinet, in others the PCS
+        # is inside the battery container and the controller is the SCC
+        # cabinet of the MV station — so each is a choice, not a fixed slot.
         from PyQt5.QtWidgets import QCheckBox
         opt_row = QHBoxLayout()
-        opt_row.addWidget(QLabel("Optional per block:"))
-        self.bess_has_transformer = QCheckBox("Transformer")
-        self.bess_has_transformer.setChecked(False)
-        self.bess_has_rmu = QCheckBox("RMU")
-        self.bess_has_rmu.setChecked(False)
-        opt_row.addWidget(self.bess_has_transformer)
-        opt_row.addWidget(self.bess_has_rmu)
+        opt_row.addWidget(QLabel("Each block has:"))
+        self._bess_options = []          # (checkbox, equipment type), in block order
+        for attr, label, eq_type, on, tip in (
+                ("bess_has_transformer", "Transformer", "Transformer", False, ""),
+                ("bess_has_rmu", "RMU", "RMU", False, ""),
+                ("bess_has_scc", "SCC cabinet", "SCC Cabinet", False,
+                 "The controller cabinet inside the MV station — used instead "
+                 "of a separate LC cabinet."),
+                ("bess_has_lc", "LC cabinet", "LC Cabinet", True,
+                 "Untick when the plant has no separate LC cabinet."),
+                ("bess_has_pcs", "PCS", "PCS / Converter", True,
+                 "Untick when the PCS is built into the battery container.")):
+            cb = QCheckBox(label)
+            cb.setChecked(on)
+            if tip:
+                cb.setToolTip(tip)
+            setattr(self, attr, cb)
+            self._bess_options.append((cb, eq_type))
+            opt_row.addWidget(cb)
         opt_row.addStretch()
         outer.addLayout(opt_row)
 
         gen_row = QHBoxLayout()
-        gen_btn = QPushButton("⚙  Generate Table")
-        gen_btn.setFixedSize(160, 36)
-        gen_btn.setStyleSheet(
-            "QPushButton{background:#F57F17;color:white;font-weight:bold;border-radius:4px;}"
-        )
+        gen_btn = QPushButton("Generate table")
+        gen_btn.setObjectName("SecondaryButton")
+        gen_btn.setFixedHeight(34)
         gen_btn.clicked.connect(self._generate_bess_table)
         gen_row.addWidget(gen_btn)
+        self.bess_summary = QLabel("")
+        self.bess_summary.setStyleSheet("color:#5B6776;")
+        gen_row.addWidget(self.bess_summary)
         gen_row.addStretch()
         outer.addLayout(gen_row)
 
@@ -244,11 +286,9 @@ class ProjectDialog(QDialog):
         hint.setStyleSheet("color:#555;font-size:11px;font-style:italic;")
         form.addRow("", hint)
 
-        gen_btn = QPushButton("⚙  Generate Table")
-        gen_btn.setFixedSize(160, 36)
-        gen_btn.setStyleSheet(
-            "QPushButton{background:#F57F17;color:white;font-weight:bold;border-radius:4px;}"
-        )
+        gen_btn = QPushButton("Generate table")
+        gen_btn.setObjectName("SecondaryButton")
+        gen_btn.setFixedHeight(34)
         gen_btn.clicked.connect(self._generate_pvs_table)
         form.addRow("", gen_btn)
         group.setLayout(form)
@@ -324,11 +364,9 @@ class ProjectDialog(QDialog):
         hint.setStyleSheet("color:#555;font-size:11px;font-style:italic;")
         form.addRow("", hint)
 
-        gen_btn = QPushButton("⚙  Generate Table")
-        gen_btn.setFixedSize(160, 36)
-        gen_btn.setStyleSheet(
-            "QPushButton{background:#F57F17;color:white;font-weight:bold;border-radius:4px;}"
-        )
+        gen_btn = QPushButton("Generate table")
+        gen_btn.setObjectName("SecondaryButton")
+        gen_btn.setFixedHeight(34)
         gen_btn.clicked.connect(self._generate_pvc_table)
         form.addRow("", gen_btn)
         group.setLayout(form)
@@ -346,6 +384,14 @@ class ProjectDialog(QDialog):
 
     # ── BESS zone cards ───────────────────────────────────────────────────
 
+    def _apply_to_all_zones(self):
+        """One button: every zone gets the same blocks and batteries."""
+        if len(self._zone_spins) != self.zones_spin.value():
+            self._apply_zone_count()
+        for blocks_spin, batteries_spin in self._zone_spins:
+            blocks_spin.setValue(self.all_blocks_spin.value())
+            batteries_spin.setValue(self.all_batteries_spin.value())
+
     def _apply_zone_count(self):
         num_zones = self.zones_spin.value()
         old = [(b.value(), c.value()) for b, c in self._zone_spins]
@@ -354,13 +400,15 @@ class ProjectDialog(QDialog):
             if item.widget(): item.widget().deleteLater()
         self._zone_spins = []
         for z in range(1, num_zones + 1):
-            pb = old[z-1][0] if z-1 < len(old) else 1
-            pc = old[z-1][1] if z-1 < len(old) else 3
+            # an existing zone keeps what was set on its card; a new one
+            # starts from the "same for all zones" row
+            pb = old[z-1][0] if z-1 < len(old) else self.all_blocks_spin.value()
+            pc = old[z-1][1] if z-1 < len(old) else self.all_batteries_spin.value()
             frame = QFrame()
             frame.setFrameShape(QFrame.Box)
             frame.setStyleSheet(
-                "QFrame{border:1px solid #90CAF9;border-radius:6px;"
-                "background:#E3F2FD;padding:4px;}"
+                "QFrame{border:1px solid #DDE2E8;border-radius:6px;"
+                "background:#EEF1F4;padding:4px;}"
             )
             col = QVBoxLayout(frame)
             col.setSpacing(4)
@@ -368,17 +416,21 @@ class ProjectDialog(QDialog):
             lbl = QLabel(f"Zone {z}")
             lbl.setAlignment(Qt.AlignCenter)
             lbl.setStyleSheet(
-                "font-weight:bold;font-size:12px;color:#1565C0;"
+                "font-weight:bold;font-size:12px;color:#17212E;"
                 "border:none;background:transparent;"
             )
             col.addWidget(lbl)
-            for sub_lbl, spin_val in [("Blocks:", pb), ("Cont/Blk:", pc)]:
+            for sub_lbl, spin_val in [("Blocks:", pb), ("Batteries:", pc)]:
                 r = QHBoxLayout()
                 sl = QLabel(sub_lbl)
-                sl.setStyleSheet("font-size:10px;color:#555;border:none;background:transparent;")
-                sl.setFixedWidth(48)
+                sl.setStyleSheet("font-size:11px;color:#5B6776;border:none;background:transparent;")
+                sl.setFixedWidth(58)
                 sp = QSpinBox()
-                sp.setRange(1, 50 if "Blocks" in sub_lbl else 20)
+                if "Blocks" in sub_lbl:
+                    sp.setRange(1, 50)
+                else:
+                    sp.setRange(0, 20)
+                    sp.setToolTip("Battery containers in each block of this zone")
                 sp.setValue(spin_val)
                 sp.setFixedWidth(55)
                 r.addWidget(sl); r.addWidget(sp)
@@ -399,9 +451,13 @@ class ProjectDialog(QDialog):
             row = r["table_row"]
             t_w = self.container_table.cellWidget(row, 2)
             s_i = self.container_table.item(row, 4)
-            saved[(r["block"], r["idx"])] = {
+            # BESS rows are remembered by what they are ("Battery 1"), so a
+            # serial follows its unit when an option shifts the places
+            saved[(r.get("zone_block", r["block"]), r.get("label", r["idx"]))] = {
                 "type":   t_w.currentText() if t_w else "",
                 "serial": s_i.text().strip() if s_i else "",
+                # what this place in the block was generated as (BESS)
+                "gen":    r.get("gen", ""),
             }
         self.container_table.setRowCount(0)
         self._container_rows = []
@@ -450,66 +506,75 @@ class ProjectDialog(QDialog):
             "table_row": row,
         })
 
+    def _bess_block_layout(self, batteries: int):
+        """Equipment of one block, in order: the ticked options, then the
+        battery containers. [(equipment type, label)]"""
+        out = [(eq_type, eq_type) for cb, eq_type in self._bess_options if cb.isChecked()]
+        out += [("Battery", "Battery {}".format(n)) for n in range(1, batteries + 1)]
+        return out
+
     def _generate_bess_table(self):
-        saved = self._clear_table()
         num_zones = self.zones_spin.value()
+        if len(self._zone_spins) != num_zones:
+            self._apply_zone_count()         # the zone count was changed without Apply
+        empty = [z for z in range(1, num_zones + 1)
+                 if not self._bess_block_layout(self._zone_spins[z - 1][1].value())]
+        if empty:
+            QMessageBox.warning(
+                self, "Nothing in the block",
+                "Zone {} has no equipment in its blocks. Tick at least one item "
+                "in \"Each block has\" or set the number of batteries."
+                .format(", ".join(str(z) for z in empty)))
+            return
+
+        saved = self._clear_table()
         self._container_rows = []
         self.container_table.setRowCount(0)
-
-        has_transformer = self.bess_has_transformer.isChecked()
-        has_rmu         = self.bess_has_rmu.isChecked()
+        fixed = {"Transformer", "RMU", "SCC Cabinet"}
 
         block_num = 0
         for z in range(1, num_zones + 1):
             bs, cs = self._zone_spins[z - 1]
+            layout = self._bess_block_layout(cs.value())
             for b in range(1, bs.value() + 1):
                 block_num += 1
-                idx = 1
-
-                # Optional: Transformer (before regular containers)
-                if has_transformer:
-                    key = (block_num, idx)
+                for idx, (eq_type, label) in enumerate(layout, start=1):
+                    # What was typed into a row is kept only while that
+                    # place still holds the same kind of equipment. After an
+                    # option is ticked or unticked the places shift, and a
+                    # transformer's serial must not land on a battery.
+                    was = saved.get((block_num, label), {})
                     row = self.container_table.rowCount()
                     self.container_table.insertRow(row)
-                    self._fill_bess_row(row, block_num, idx, z, b, idx,
-                                        "Transformer",
-                                        saved.get(key, {}).get("serial", ""),
-                                        "#FFF3E0")
+                    self._fill_bess_row(
+                        row, block_num, idx, z, b, label,
+                        was.get("type", "") or eq_type,
+                        was.get("serial", ""),
+                        "#FFF5DC" if eq_type in fixed else None)
                     self._container_rows.append({
                         "zone": z, "block": b, "zone_block": block_num,
-                        "idx": idx, "table_row": row,
+                        "idx": idx, "table_row": row, "gen": eq_type, "label": label,
                     })
-                    idx += 1
 
-                # Optional: RMU
-                if has_rmu:
-                    key = (block_num, idx)
-                    row = self.container_table.rowCount()
-                    self.container_table.insertRow(row)
-                    self._fill_bess_row(row, block_num, idx, z, b, idx,
-                                        "RMU",
-                                        saved.get(key, {}).get("serial", ""),
-                                        "#FFF3E0")
-                    self._container_rows.append({
-                        "zone": z, "block": b, "zone_block": block_num,
-                        "idx": idx, "table_row": row,
-                    })
-                    idx += 1
-
-                # Regular containers (LC Cabinet, PCS, Battery...)
-                for c in range(1, cs.value() + 1):
-                    key = (block_num, idx)
-                    saved_type   = saved.get(key, {}).get("type", "") or default_container_type(c, "BESS")
-                    saved_serial = saved.get(key, {}).get("serial", "")
-                    row = self.container_table.rowCount()
-                    self.container_table.insertRow(row)
-                    self._fill_bess_row(row, block_num, idx, z, b, c,
-                                        saved_type, saved_serial)
-                    self._container_rows.append({
-                        "zone": z, "block": b, "zone_block": block_num,
-                        "idx": idx, "table_row": row,
-                    })
-                    idx += 1
+        # say what was built, so a wrong tick is seen before Save
+        per_zone = {}
+        for z in range(1, num_zones + 1):
+            names = []
+            for eq_type, _label in self._bess_block_layout(self._zone_spins[z - 1][1].value()):
+                if eq_type == "Battery":
+                    continue
+                names.append(eq_type)
+            n = self._zone_spins[z - 1][1].value()
+            if n:
+                names.append("{} × Battery".format(n))
+            per_zone.setdefault(", ".join(names), []).append(z)
+        if len(per_zone) == 1:
+            what = "each block: " + next(iter(per_zone))
+        else:
+            what = "; ".join("zone {}: {}".format(", ".join(str(z) for z in zs), k)
+                             for k, zs in per_zone.items())
+        self.bess_summary.setText("{} block(s) · {} item(s) · {}".format(
+            block_num, len(self._container_rows), what))
 
     def _fill_bess_row(self, row, block_num, idx, z, b, c,
                         eq_type, serial, bg_hex=None):
@@ -527,7 +592,7 @@ class ProjectDialog(QDialog):
         type_combo.setCurrentText(eq_type if eq_type in CONTAINER_TYPES_BY_PROJECT["BESS"] else "Other")
         self.container_table.setCellWidget(row, 2, type_combo)
 
-        label_item = QTableWidgetItem(f"Z{z}/B{b}/C{idx}")
+        label_item = QTableWidgetItem(f"Z{z}/B{b} — {c}")
         if bg: label_item.setBackground(bg)
         self.container_table.setItem(row, 3, label_item)
 
@@ -739,7 +804,7 @@ class ProjectDialog(QDialog):
             name=name,
             description=self.desc_input.toPlainText().strip(),
             num_zones=self.zones_spin.value() if self._project_type == "BESS" else 1,
-            num_blocks=max(r["block"] for r in self._container_rows),
+            num_blocks=max(r.get("zone_block", r["block"]) for r in self._container_rows),
             num_containers=max(r["idx"] for r in self._container_rows),
             project_type=self._project_type,
         )

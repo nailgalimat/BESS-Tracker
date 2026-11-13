@@ -364,7 +364,20 @@ class EditProjectDialog(QDialog):
             ph.setBackground(blue)
             self.container_table.setItem(row, 6, ph)
 
-    def _add_new_row(self, zone, block, idx):
+    def _block_template(self):
+        """The equipment of a typical block of this project, in order — what
+        a new block should hold. A plant whose blocks have no LC cabinet or
+        no separate PCS gets new blocks without them too. [] when unknown."""
+        from collections import Counter
+        blocks = {}
+        for c in sorted(self._existing or [],
+                        key=lambda c: (c.zone_number, c.block_number, c.container_index)):
+            blocks.setdefault((c.zone_number, c.block_number), []).append(c.container_type)
+        if not blocks:
+            return []
+        return list(Counter(tuple(v) for v in blocks.values()).most_common(1)[0][0])
+
+    def _add_new_row(self, zone, block, idx, eq_type=None):
         """Adds a green new-container row."""
         row = self.container_table.rowCount()
         self.container_table.insertRow(row)
@@ -400,7 +413,7 @@ class EditProjectDialog(QDialog):
 
         type_combo = QComboBox()
         type_combo.addItems(CONTAINER_TYPES)
-        type_combo.setCurrentText(default_container_type(idx))
+        type_combo.setCurrentText(eq_type or default_container_type(idx))
         self.container_table.setCellWidget(row, 4, type_combo)
 
         serial_item = QTableWidgetItem("")
@@ -644,11 +657,15 @@ class EditProjectDialog(QDialog):
                     max(r["idx"] for r in rows_in_block)
                     if rows_in_block else 0
                 )
-                target = max(current_max, 3 if not rows_in_block else current_max)
+                # a new block is built like the project's other blocks
+                template = self._block_template() if not rows_in_block else []
+                target = max(current_max,
+                             (len(template) or 3) if not rows_in_block else current_max)
 
                 for c in range(1, target + 1):
                     if (z, b, c) not in existing_keys:
-                        self._add_new_row(z, b, c)
+                        self._add_new_row(z, b, c,
+                                          template[c - 1] if c <= len(template) else None)
                         existing_keys.add((z, b, c))
                         added += 1
 
